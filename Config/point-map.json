@@ -1,0 +1,129 @@
+[
+  {
+    "tag": "MACHINE_STATUS",
+    "dataGroup": "MACHINE_STATUS",
+    "fieldName": "machine_status"
+  },
+  {
+    "tag": "MACHINE_MODE",
+    "dataGroup": "MACHINE_STATUS",
+    "fieldName": "machine_mode"
+  },
+
+  {
+    "tag": "CYCLE_ACTIVE",
+    "dataGroup": "PRODUCTION",
+    "fieldName": "cycle_active"
+  },
+  {
+    "tag": "WORK_ORDER",
+    "dataGroup": "PRODUCTION",
+    "fieldName": "work_order"
+  },
+  {
+    "tag": "GOOD_QTY",
+    "dataGroup": "PRODUCTION",
+    "fieldName": "good_quantity"
+  },
+  {
+    "tag": "NG_QTY",
+    "dataGroup": "PRODUCTION",
+    "fieldName": "ng_quantity"
+  },
+
+  {
+    "tag": "TORQUE_1",
+    "dataGroup": "PROCESS",
+    "fieldName": "actual_value"
+  },
+  {
+    "tag": "RECIPE_ID",
+    "dataGroup": "PROCESS",
+    "fieldName": "recipe_id"
+  },
+
+  {
+    "tag": "TEST_RESULT",
+    "dataGroup": "QUALITY",
+    "fieldName": "test_result"
+  },
+
+  {
+    "tag": "IMAGE_RESULT",
+    "dataGroup": "QUALITY",
+    "fieldName": "image_result"
+  },
+
+  {
+    "tag": "ALARM_STATUS",
+    "dataGroup": "ALARM",
+    "fieldName": "alarm_status"
+  },
+  {
+    "tag": "ALARM_CODE",
+    "dataGroup": "ALARM",
+    "fieldName": "alarm_code"
+  },
+
+
+
+
+
+
+
+  {
+    "tag": "machine_id",
+    "dataGroup": "MOTION",
+    "fieldName": "machine_id"
+  },
+  {
+    "tag": "axis",
+    "dataGroup": "MOTION",
+    "fieldName": "axis"
+  },
+  {
+    "tag": "world",
+    "dataGroup": "MOTION",
+    "fieldName": "world"
+  },
+  {
+    "tag": "pulse",
+    "dataGroup": "MOTION",
+    "fieldName": "pulse"
+  },
+  {
+    "tag": "speed",
+    "dataGroup": "MOTION",
+    "fieldName": "speed"
+  },
+  {
+    "tag": "force",
+    "dataGroup": "MOTION",
+    "fieldName": "force"
+  },
+  {
+    "tag": "machine_id_io",
+    "dataGroup": "IO",
+    "fieldName": "machine_id"
+  },
+  {
+    "tag": "totalbits",
+    "dataGroup": "IO",
+    "fieldName": "totalbits"
+  },
+
+  {
+    "tag": "value",
+    "dataGroup": "IO",
+    "fieldName": "value"
+  },
+
+
+
+
+  {
+    "tag": "unknown",
+    "dataGroup": "UNIDENTIFIED",
+    "fieldName": ""
+  }
+]

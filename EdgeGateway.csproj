@@ -1,0 +1,51 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>EdgeGateway</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Remove="Config\machine-config.json" />
+    <None Remove="Config\mqtt-config.json" />
+    <None Remove="Config\point-map.json" />
+    <None Remove="Config\timestamp-rules.json" />
+    <None Remove="wwwroot\config\app.css" />
+    <None Remove="wwwroot\config\app.js" />
+    <None Remove="wwwroot\config\index.html" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="Config\machine-config.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Config\mqtt-config.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Config\point-map.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Config\timestamp-rules.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="wwwroot\config\app.css">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="wwwroot\config\app.js">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="wwwroot\config\index.html">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.12" />
+    <PackageReference Include="MQTTnet" Version="4.3.7.1207" />
+
+  </ItemGroup>
+
+</Project>

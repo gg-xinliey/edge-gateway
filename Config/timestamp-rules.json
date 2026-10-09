@@ -1,0 +1,48 @@
+{
+  "MACHINE_STATUS": {
+    "mode": "Span",
+    "triggerField": "machine_status",
+    "startField": "status_start_time",
+    "endField": "status_end_time"
+  },
+  "PRODUCTION": {
+    "mode": "Span",
+    "triggerField": "cycle_active",
+    "startField": "cycle_start_time",
+    "endField": "cycle_end_time"
+  },
+  "PROCESS": {
+    "mode": "SinglePoint",
+    "timestampField": "parameter_timestamp"
+  },
+  "QUALITY": {
+    "mode": "SinglePoint",
+    "timestampField": "test_timestamp"
+  },
+  "TRACEABILITY": {
+    "mode": "SinglePoint",
+    "timestampField": "record_timestamp"
+  },
+  "MATERIAL": {
+    "mode": "SinglePoint",
+    "timestampField": "record_timestamp"
+  },
+  "OPERATOR": {
+    "mode": "SinglePoint",
+    "timestampField": "record_timestamp"
+  },
+  "ALARM": {
+    "mode": "Span",
+    "triggerField": "alarm_status",
+    "startField": "alarm_start_time",
+    "endField": "alarm_clear_time"
+  },
+  "MAINTENANCE": {
+    "mode": "SinglePoint",
+    "timestampField": "record_timestamp"
+  },
+    "UNIDENTIFIED": {
+      "mode": "SinglePoint",
+      "timestampField": "test_timestamp"
+    }
+  }

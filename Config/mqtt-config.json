@@ -1,0 +1,6 @@
+{
+  "brokerAddress": "192.168.251.189",
+  "brokerPort": 1883,
+  "clientIdSuffix": "EdgeGateway",
+  "reconnectCooldownSeconds": 5
+}

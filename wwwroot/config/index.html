@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Gateway Config</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="/config/app.css" />
+</head>
+<body>
+  <div class="window">
+    <aside class="side">
+      <h1>ConfigFile</h1>
+      <button class="nav active" data-view="point-map">PointMap</button>
+      <button class="nav" data-view="timestamp-rules">TimeStamp</button>
+      <button class="nav" data-view="mqtt-config">MQTTConfig</button>
+      <button class="nav" data-view="machine-config">MachineConfig</button>
+      <div class="gw-status" id="gwStatus"><span class="dot"></span><span id="gwText">checking gateway…</span></div>
+    </aside>
+
+    <main class="panel">
+      <div class="searchbar">
+        <input id="search" type="search" aria-label="Search" />
+        <button id="searchBtn" type="button">Search</button>
+      </div>
+
+      <div class="picker-row" id="pickerRow">
+        <select id="picker" aria-label="Data group"></select>
+        <span class="hint" id="pickerHint"></span>
+      </div>
+
+      <div id="view" class="view"></div>
+
+      <div class="footer">
+        <span class="note" id="note"></span>
+        <button id="saveBtn" class="save" type="button">save</button>
+      </div>
+    </main>
+  </div>
+
+  <dialog id="restartDialog">
+    <p class="dlg-title">Saved</p>
+    <p id="restartText">Restart the gateway now?</p>
+    <p class="dlg-small">Connected machines are dropped for a moment and must reconnect.</p>
+    <div class="dlg-buttons">
+      <button id="restartLater" type="button">Later</button>
+      <button id="restartNow" type="button" class="primary">Restart now</button>
+    </div>
+  </dialog>
+
+  <div id="busy" class="busy" hidden><div class="busy-box" id="busyText">Restarting gateway…</div></div>
+  <div id="toast" class="toast" role="status"></div>
+  <script src="/config/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,38 @@
+// Replace the configuration + runtime objects in Program.cs with the version below,
+// keeping your existing EdgeGateway.Models/Services using statements.
+
+using EdgeGateway.Admin;
+
+const int adminPort = 5100;
+
+var configStore = new GatewayConfigStore("Config", jsonOptions);
+
+void OnMessage(string raw)
+{
+    var config = configStore.Current;
+    var rawTags = PayloadParser.Parse(raw);
+    var buckets = config.Normalizer.Sort(rawTags);
+
+    foreach (var (dataGroup, fields) in buckets)
+    {
+        config.TimeStamper.Stamp(machineId, dataGroup, fields);
+        var envelope = envelopeBuilder.Build(machineId, dataGroup, fields);
+        outbox.Write(envelope);
+        Console.WriteLine($"[outbox] queued {envelope.event_id} ({dataGroup})");
+    }
+}
+
+var adminServer = new AdminWebServer(
+    adminPort,
+    "wwwroot",
+    "Config",
+    configStore,
+    jsonOptions);
+
+Console.WriteLine("Edge gateway starting — Ctrl+C to stop");
+Console.WriteLine($"Configuration UI: http://localhost:{adminPort}/config/");
+
+await Task.WhenAll(
+    tcpServer.RunAsync(cts.Token),
+    forwarder.RunAsync(cts.Token),
+    adminServer.RunAsync(cts.Token));

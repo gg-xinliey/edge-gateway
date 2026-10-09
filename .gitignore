@@ -1,0 +1,11 @@
+# build output and Visual Studio state
+bin/
+obj/
+.vs/
+*.user
+
+# local runtime data
+outbox/
+
+# backups the config page writes on every save (Config/<file>.bak)
+Config/*.bak
