@@ -87,23 +87,10 @@ status of "potential issue" above
 3. tests: offline bench added; still no automated unit tests for normalizer / mqtt
 
 remaining
-- no git on this PC: install Git for Windows to version this folder
 - live gateway still runs the old build until it is stopped, rebuilt (Release) and started
+- ..\LocalMqttTest is outside this folder, so it is not in this git repo
 
-commit message (for when git is set up)
---------------------------------------------------------------------------
-MQTT: SpotWelding payload, fixed topic endings; new config page
-
-- Relay unwraps {"topic","payload"} lines and publishes the inner payload,
-  timestamp as "yyyy-MM-dd HH:mm:ss.fff", on the line's own topic.
-- Topic must end in IO/input, IO/output, motion/position or motion/status
-  (case fixed); other IO/motion endings are dropped with a warning.
-  Removes routes/publishTopicTemplate from mqtt-config.json.
-- New config page in the mockup layout: PointMap, TimeStamp, MQTTConfig,
-  MachineConfig, new groups, unidentified-tag mapping, restart on save.
-- Machine settings move to Config/machine-config.json; GatewayHost
-  restarts the pipeline in-process while the page stays up.
-- Config is validated before it is written; page and runtime share the
-  Config folder next to the exe.
-- Adds LocalMqttTest offline bench (local broker, ports 19000/15100).
---------------------------------------------------------------------------
+git
+- this folder is a git repo since 2026-10-09 (first commit 411ea17, see "git log")
+- git is not on PATH; it is at C:\Users\Atm_Theppanadda\Downloads\PortableGit\bin\git.exe
+- Config/*.bak (written by the page on every save), bin/, obj/, .vs/, outbox/ are ignored
