@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using EdgeGateway.Models;
 
@@ -47,9 +48,9 @@ public sealed class MqttRelay : IAsyncDisposable
     // writes one line instead of flooding the console.
     private readonly ConcurrentDictionary<string, byte> _warnedTopics = new();
 
-    public MqttRelay(MqttConnectionConfig config)
+    public MqttRelay(MqttConnectionConfig config, GatewayStats? stats = null)
     {
-        _publisher = new MqttPublisher(config);
+        _publisher = new MqttPublisher(config, stats);
     }
 
     // true  = it was a twin line; it has been handed to MQTT (or dropped), MES must skip it.
@@ -62,45 +63,45 @@ public sealed class MqttRelay : IAsyncDisposable
         if (text.Length == 0 || text[0] != '{')
             return false;
 
-        string topic;
-        string? payload;
-
         try
         {
             using var doc = JsonDocument.Parse(line);
-            var root = doc.RootElement;
-            if (root.ValueKind != JsonValueKind.Object ||
-                !root.TryGetProperty("topic", out var topicEl) || topicEl.ValueKind != JsonValueKind.String)
-                return false;
-
-            var rawTopic = topicEl.GetString() ?? "";
-            var normalised = NormaliseTopic(rawTopic, out var isTwin);
-            if (!isTwin)
-                return false;
-
-            if (normalised is null)
-            {
-                WarnOnce(rawTopic, "topic must end in IO/input, IO/output, motion/position or motion/status");
-                return true;
-            }
-
-            topic = normalised;
-            payload = ExtractPayload(root);
+            return TryRelay(doc.RootElement);
         }
         catch (JsonException)
         {
             // Not valid JSON: not ours. The MES pipeline will report it.
             return false;
         }
+    }
 
+    // Same, for a line the gateway already parsed (each line is parsed once).
+    public bool TryRelay(JsonElement root)
+    {
+        if (root.ValueKind != JsonValueKind.Object ||
+            !root.TryGetProperty("topic", out var topicEl) || topicEl.ValueKind != JsonValueKind.String)
+            return false;
+
+        var rawTopic = topicEl.GetString() ?? "";
+        var topic = NormaliseTopic(rawTopic, out var isTwin);
+        if (!isTwin)
+            return false;
+
+        if (topic is null)
+        {
+            WarnOnce(rawTopic, "topic must end in IO/input, IO/output, motion/position or motion/status");
+            return true;
+        }
+
+        var payload = ExtractPayload(root);
         if (payload is null)
         {
             WarnOnce(topic, "\"payload\" is missing or not a JSON object");
             return true;
         }
 
-        // Fire and forget: the TCP reader must never wait on the broker.
-        _ = _publisher.PublishRawAsync(topic, payload);
+        // Queued, never awaited: the TCP reader must never wait on the broker.
+        _publisher.Enqueue(topic, payload);
         return true;
     }
 
@@ -159,32 +160,86 @@ public sealed class MqttRelay : IAsyncDisposable
         }
     }
 
-    // Compact JSON, same property order, "timestamp" as yyyy-MM-dd HH:mm:ss.fff.
+    // Compact JSON, same property order, "timestamp" as yyyy-MM-dd HH:mm:ss.fff,
+    // and nested objects sent as JSON text unpacked into real objects.
     private static string Rewrite(JsonElement obj)
     {
         var buffer = new ArrayBufferWriter<byte>();
-        using (var writer = new Utf8JsonWriter(buffer))
-        {
-            writer.WriteStartObject();
-            foreach (var prop in obj.EnumerateObject())
-            {
-                if (prop.NameEquals("timestamp") && prop.Value.ValueKind == JsonValueKind.String &&
-                    DateTime.TryParse(prop.Value.GetString(), CultureInfo.InvariantCulture,
-                        DateTimeStyles.RoundtripKind, out var ts))
-                {
-                    if (ts.Kind == DateTimeKind.Utc)
-                        ts = ts.ToLocalTime(); // SpotWelding stamps local time
-                    writer.WriteString(prop.Name, ts.ToString(TimestampFormat, CultureInfo.InvariantCulture));
-                }
-                else
-                {
-                    prop.WriteTo(writer);
-                }
-            }
-            writer.WriteEndObject();
-        }
+        using (var writer = new Utf8JsonWriter(buffer, WriterOptions))
+            WriteObject(writer, obj, topLevel: true);
 
         return Encoding.UTF8.GetString(buffer.WrittenSpan);
+    }
+
+    // Plain quotes instead of " etc.; the output is MQTT payload, not HTML.
+    private static readonly JsonWriterOptions WriterOptions = new() { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
+
+    private static void WriteObject(Utf8JsonWriter writer, JsonElement obj, bool topLevel)
+    {
+        writer.WriteStartObject();
+        foreach (var prop in obj.EnumerateObject())
+        {
+            writer.WritePropertyName(prop.Name);
+
+            if (topLevel && prop.NameEquals("timestamp") && prop.Value.ValueKind == JsonValueKind.String &&
+                DateTime.TryParse(prop.Value.GetString(), CultureInfo.InvariantCulture,
+                    DateTimeStyles.RoundtripKind, out var ts))
+            {
+                if (ts.Kind == DateTimeKind.Utc)
+                    ts = ts.ToLocalTime(); // SpotWelding stamps local time
+                writer.WriteStringValue(ts.ToString(TimestampFormat, CultureInfo.InvariantCulture));
+            }
+            else
+            {
+                WriteValue(writer, prop.Value);
+            }
+        }
+        writer.WriteEndObject();
+    }
+
+    private static void WriteValue(Utf8JsonWriter writer, JsonElement value)
+    {
+        if (value.ValueKind == JsonValueKind.Object)
+        {
+            WriteObject(writer, value, topLevel: false);
+        }
+        else if (value.ValueKind == JsonValueKind.Array)
+        {
+            writer.WriteStartArray();
+            foreach (var item in value.EnumerateArray())
+                WriteValue(writer, item);
+            writer.WriteEndArray();
+        }
+        else if (value.ValueKind == JsonValueKind.String && TryParseEmbedded(value.GetString(), out var embedded))
+        {
+            // The machine sends e.g. "world":"{\"X\":9.3,...}"; publish "world":{"X":9.3,...}.
+            using (embedded)
+                WriteValue(writer, embedded!.RootElement);
+        }
+        else
+        {
+            value.WriteTo(writer);
+        }
+    }
+
+    // A string that is a whole JSON object or array. Anything else (including
+    // text that only looks like JSON) stays a string.
+    private static bool TryParseEmbedded(string? text, out JsonDocument? document)
+    {
+        document = null;
+        var trimmed = text.AsSpan().Trim();
+        if (trimmed.Length < 2 || !((trimmed[0] == '{' && trimmed[^1] == '}') || (trimmed[0] == '[' && trimmed[^1] == ']')))
+            return false;
+
+        try
+        {
+            document = JsonDocument.Parse(text!);
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     private void WarnOnce(string topic, string reason)

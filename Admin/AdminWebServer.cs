@@ -22,6 +22,7 @@ public sealed class AdminWebServer
     private readonly GatewayConfigStore _configStore;
     private readonly GatewayHost _gateway;
     private readonly UnidentifiedTagTracker _unidentified;
+    private readonly GatewayLog _log;
     private readonly JsonSerializerOptions _jsonOptions;
     private readonly int _port;
 
@@ -52,8 +53,10 @@ public sealed class AdminWebServer
         GatewayConfigStore configStore,
         GatewayHost gateway,
         UnidentifiedTagTracker unidentified,
+        GatewayLog log,
         JsonSerializerOptions jsonOptions)
     {
+        _log = log;
         _port = port;
         _wwwRoot = Path.IsPathRooted(webRoot)
             ? Path.GetFullPath(webRoot)
@@ -139,7 +142,8 @@ public sealed class AdminWebServer
                 gatewayId = _gateway.Machine.GatewayId,
                 machineId = _gateway.Machine.MachineId,
                 tcpPort = _gateway.Machine.TcpPort,
-                adminPort = _port
+                adminPort = _port,
+                stats = _gateway.Stats.Latest // per-second rates over the last 10 s
             });
             return;
         }
@@ -154,6 +158,15 @@ public sealed class AdminWebServer
 
             _gateway.Restart();
             await WriteJsonAsync(context.Response, 202, new { ok = true, message = "Restarting gateway." });
+            return;
+        }
+
+        // Log lines newer than ?after=<id> (all kept lines when omitted), plus the
+        // total number of problem lines since the gateway started.
+        if (HttpMethodsEqual(context, "GET") && path.Equals("/api/logs", StringComparison.OrdinalIgnoreCase))
+        {
+            _ = long.TryParse(context.Request.QueryString["after"], out var after);
+            await WriteJsonAsync(context.Response, 200, new { lines = _log.Since(after), errorCount = _log.ErrorCount });
             return;
         }
 

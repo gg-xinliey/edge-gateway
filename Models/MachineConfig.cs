@@ -16,4 +16,8 @@ public class MachineConfig
     public string DataSource { get; set; } = "TCP-BRIDGE-01";
     public string ProtocolLabel { get; set; } = "TCP/JSON-CSV";
     public string MesUrl { get; set; } = "http://localhost:5000/api/v1/machine-events";
+
+    // Rows MES has acknowledged are deleted after this many days.
+    // Rows not yet delivered are never deleted.
+    public int OutboxKeepSentDays { get; set; } = 7;
 }

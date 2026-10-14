@@ -52,6 +52,17 @@ button, input, select { font: inherit; color: inherit; }
 .nav:hover { background: #fff; border-color: #9c9c9c; }
 .nav.active { background: var(--accent-soft); border-color: var(--accent); }
 .nav .dirty { color: var(--warn); font-style: normal; }
+.nav.nav-small { height: 40px; }
+
+.err-badge { display: block; height: auto; margin-top: 6px; padding: 3px 8px; border-color: var(--bad); background: #fdecea; color: var(--bad); font-size: 12px; }
+.err-badge[hidden] { display: none; }
+
+/* ---- Log view ---- */
+.log-tools { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; font-size: 13px; }
+.log { margin: 0; padding: 8px 10px; max-height: 420px; overflow: auto; background: var(--field); border: 1px solid var(--line); font: 12px/1.5 Consolas, "Cascadia Mono", monospace; }
+.log-line { white-space: pre-wrap; word-break: break-word; }
+.log-line .t { color: var(--muted); margin-right: 8px; }
+.log-line.err { color: var(--bad); }
 
 .gw-status { margin-top: auto; padding: 8px 4px 0; font-size: 12px; line-height: 1.45; color: var(--muted); }
 .gw-status .dot { display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; background: #9e9e9e; vertical-align: 1px; }
@@ -59,6 +70,8 @@ button, input, select { font: inherit; color: inherit; }
 .gw-status.restarting .dot, .gw-status.starting .dot { background: var(--warn); }
 .gw-status.error .dot { background: var(--bad); }
 .gw-status.error { color: var(--bad); }
+.gw-stats { display: block; margin-top: 4px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.gw-stats:empty { display: none; }
 
 /* ---- right: search, picker, rows, save ---- */
 .panel { display: flex; flex-direction: column; min-width: 0; }
@@ -85,6 +98,8 @@ select { height: 32px; min-width: 190px; padding: 0 6px; background: var(--field
 .hint { font-size: 12px; color: var(--warn); }
 
 .view { flex: 1; overflow: auto; }
+/* MQTTConfig / MachineConfig have no dropdown: keep the same gap under the search bar */
+.picker-row[hidden] + .view { margin-top: 22px; }
 
 .grid { display: grid; gap: 12px 12px; align-items: center; max-width: 640px; }
 .grid.two { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 30px; }

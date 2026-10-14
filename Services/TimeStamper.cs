@@ -17,15 +17,16 @@ public class TimeStamper
         _rules = rules;
     }
 
-    public void Stamp(string machineId, string dataGroup, Dictionary<string, object?> fields)
+    // at = when it happened on the machine (its "timestamp"); arrival time when it sent none.
+    public void Stamp(string machineId, string dataGroup, Dictionary<string, object?> fields, DateTimeOffset? at = null)
     {
+        var now = at ?? DateTimeOffset.Now;
+
         if (!_rules.TryGetValue(dataGroup, out var rule))
         {
-            fields["record_timestamp"] = FormatIso(DateTimeOffset.Now);
+            fields["record_timestamp"] = FormatIso(now);
             return;
         }
-
-        var now = DateTimeOffset.Now;
 
         if (rule.Mode == TimestampMode.SinglePoint)
         {

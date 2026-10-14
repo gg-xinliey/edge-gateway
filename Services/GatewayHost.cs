@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using EdgeGateway.Models;
 
@@ -33,6 +34,10 @@ public sealed class GatewayHost
     public DateTimeOffset? StartedAt { get; private set; }
     public int RunNumber { get; private set; }
     public MachineConfig Machine { get; private set; } = new();
+
+    // Throughput; sampled every StatsEvery into a [stats] line and /api/status.
+    public GatewayStats Stats { get; } = new();
+    private static readonly TimeSpan StatsEvery = TimeSpan.FromSeconds(10);
 
     public void Restart()
     {
@@ -88,38 +93,73 @@ public sealed class GatewayHost
         _configStore.Reload(); // point-map.json + timestamp-rules.json
 
         var envelopeBuilder = new EnvelopeBuilder(machine.GatewayId, machine.DataSource, machine.ProtocolLabel);
-        var outbox = new Outbox("outbox/outbox.db");
+        // Next to the exe (not the working directory: a Windows service starts in System32).
+        // Disposed last, so envelopes still queued in memory are written before the run ends.
+        await using var outbox = new Outbox(Path.Combine(AppContext.BaseDirectory, "outbox"), machine.OutboxKeepSentDays, Stats);
 
         var mqttPublisher = new MqttPublisherService(mqttOptions);
         var twinForwarder = new TwinForwarder(mqttPublisher, mqttOptions, machine.MachineId);
-        await using var mqttRelay = new MqttRelay(relayConfig);
+        await using var mqttRelay = new MqttRelay(relayConfig, Stats);
 
-        using var http = new HttpClient();
-        var mesForwarder = new MesForwarder(http, machine.MesUrl, outbox);
+        // 16 parallel sends; a hung MES must not hold a slot for the default 100 s.
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+        var mesForwarder = new MesForwarder(http, machine.MesUrl, outbox, Stats);
 
-        void OnMessage(string raw)
+        // MES data goes out per data group on its interval (sendEveryMs, read live).
+        var intervalSender = new IntervalSender(outbox, envelopeBuilder, () => _configStore.Current);
+
+        var rejected = new ThrottledLog(TimeSpan.FromSeconds(60));
+
+        // One line from one machine, parsed once: IO/motion lines go to MQTT,
+        // everything else to MES. "machine_id" and "timestamp" describe the
+        // message; they are not data tags.
+        void OnMessage(string raw, string sender)
         {
-            if (mqttRelay.TryRelay(raw)) return;
+            Stats.Received();
+            Dictionary<string, object?> rawTags;
+            var text = raw.AsSpan().TrimStart();
+            if (text.Length > 0 && text[0] == '{')
+            {
+                using var doc = JsonDocument.Parse(raw);
+                if (mqttRelay.TryRelay(doc.RootElement)) return;
+                rawTags = PayloadParser.Parse(doc.RootElement);
+            }
+            else
+            {
+                rawTags = PayloadParser.ParseCsv(raw);
+            }
+
+            // Shared server: data must never be filed under the wrong machine, so
+            // a line that doesn't say which machine it is from is rejected.
+            var machineId = TakeString(rawTags, "machine_id")
+                ?? (rawTags.TryGetValue("topic_machine_id", out var m) ? m as string : null);
+            if (string.IsNullOrWhiteSpace(machineId))
+            {
+                Stats.Rejected();
+                rejected.Write($"no-machine|{sender}", $"[ingest] line from {sender} rejected: no \"machine_id\"");
+                return;
+            }
+
+            // When it happened on the machine; arrival time if it sent none.
+            DateTimeOffset? eventTime =
+                TakeString(rawTags, "timestamp") is { } stamp &&
+                DateTimeOffset.TryParse(stamp, CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var at)
+                    ? at
+                    : null;
+
             var config = _configStore.Current;
-            var rawTags = PayloadParser.Parse(raw);
-
-            var resolvedMachineId = rawTags.TryGetValue("topic_machine_id", out var m) && m is string ms ? ms : machine.MachineId;
             var qualifier = rawTags.TryGetValue("topic_qualifier", out var q) ? q?.ToString() : null;
-
             var buckets = config.Normalizer.Sort(rawTags);
 
             foreach (var (dataGroup, fields) in buckets)
             {
                 if (TwinRouter.IsTwinOnly(dataGroup))
                 {
-                    _ = twinForwarder.PublishRecordAsync(resolvedMachineId, dataGroup, qualifier, fields);
+                    _ = twinForwarder.PublishRecordAsync(machineId, dataGroup, qualifier, fields);
                     continue;
                 }
 
-                config.TimeStamper.Stamp(resolvedMachineId, dataGroup, fields);
-                var envelope = envelopeBuilder.Build(resolvedMachineId, dataGroup, fields);
-                outbox.Write(envelope);
-                Console.WriteLine($"[outbox] queued {envelope.event_id} ({dataGroup})");
+                intervalSender.Accept(machineId, dataGroup, fields, eventTime);
             }
         }
 
@@ -130,9 +170,11 @@ public sealed class GatewayHost
         using var parts = CancellationTokenSource.CreateLinkedTokenSource(runToken);
         var tasks = new[]
         {
-            tcpServer.RunAsync(parts.Token),     // task on fetching from machine
-            mesForwarder.RunAsync(parts.Token),  // task on sending to mes
-            twinForwarder.RunAsync(parts.Token)  // task on publishing to the digital twin
+            tcpServer.RunAsync(parts.Token),       // task on fetching from machine
+            intervalSender.RunAsync(parts.Token),  // task on releasing MES data per group interval
+            mesForwarder.RunAsync(parts.Token),    // task on sending to mes
+            twinForwarder.RunAsync(parts.Token),   // task on publishing to the digital twin
+            ReportStatsAsync(outbox, parts.Token)  // one [stats] line every 10 s
         };
 
         try
@@ -153,10 +195,54 @@ public sealed class GatewayHost
         {
             parts.Cancel();
             await Task.WhenAny(Task.WhenAll(tasks), Task.Delay(StopTimeout));
+            intervalSender.FlushAll(); // lines the TCP workers drained after the sender stopped
 
             try { await mqttPublisher.DisconnectAsync(); }
             catch { /* shutting this run down anyway */ }
         }
+    }
+
+    // Instead of a line per message: one summary every StatsEvery, only when
+    // something is moving. (Avoids the words the log treats as problems.)
+    private async Task ReportStatsAsync(Outbox outbox, CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            await Task.Delay(StatsEvery, ct);
+
+            long backlog;
+            try { backlog = outbox.CountUnsent(); }
+            catch { backlog = -1; } // outbox busy: report the rest anyway
+
+            var r = Stats.Sample(StatsEvery, backlog);
+            if (r.InPerSec == 0 && r.MqttPerSec == 0 && r.MesDeliveredPerSec == 0 && r.Backlog <= 0)
+                continue;
+
+            Console.WriteLine(
+                $"[stats] in {r.InPerSec:0}/s" +
+                (r.RejectedPerSec > 0 ? $" ({r.RejectedPerSec:0}/s without machine_id)" : "") +
+                $" · mqtt {r.MqttPerSec:0}/s" +
+                (r.MqttLostPerSec > 0 ? $" ({r.MqttLostPerSec:0}/s lost)" : "") +
+                $" · mes queued {r.MesQueuedPerSec:0}/s, delivered {r.MesDeliveredPerSec:0}/s" +
+                $" · backlog {(r.Backlog < 0 ? "?" : r.Backlog.ToString("N0", CultureInfo.InvariantCulture))}");
+        }
+    }
+
+    // Removes key (any case) from the tags and returns its value as text.
+    private static string? TakeString(Dictionary<string, object?> tags, string key)
+    {
+        var name = tags.Keys.FirstOrDefault(k => k.Equals(key, StringComparison.OrdinalIgnoreCase));
+        if (name is null)
+            return null;
+
+        var value = tags[name];
+        tags.Remove(name);
+        return value switch
+        {
+            null => null,
+            string s => s,
+            _ => Convert.ToString(value, CultureInfo.InvariantCulture)
+        };
     }
 
     private MachineConfig LoadMachineConfig()

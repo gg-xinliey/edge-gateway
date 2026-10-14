@@ -10,8 +10,10 @@ public class MqttConnectionConfig
     public string BrokerAddress { get; set; } = "192.168.251.189";
     public int BrokerPort { get; set; } = 1883;
 
-    // Client id = <this PC's name>_<suffix>. Must not match the client id the
-    // production software uses (it uses <PC name>_<its sectionName>).
+    // Client id = <this PC's name>_<suffix> (the twin connection adds
+    // "_TwinPublisher"). Must not match the client id the production software
+    // uses (it uses <PC name>_<its sectionName>), and must differ between two
+    // gateways on one PC, or the broker keeps kicking one of them off.
     public string ClientIdSuffix { get; set; } = "EdgeGateway";
 
     // After a failed connect, wait this long before trying again.

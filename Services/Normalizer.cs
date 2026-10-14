@@ -49,8 +49,9 @@ public class Normalizer
             }
             else
             {
-                Console.WriteLine($"[normaliser] unmapped tag '{tag}' — map it on the config page (PointMap > Unidentified)");
-                _unidentified?.Record(tag, value);
+                // Logged the first time only; the config page keeps the count.
+                if (_unidentified?.Record(tag, value) ?? true)
+                    Console.WriteLine($"[normaliser] unmapped tag '{tag}' — map it on the config page (PointMap > Unidentified)");
                 bucketKey = "UNIDENTIFIED";
                 fieldName = tag;
             }

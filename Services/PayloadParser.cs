@@ -17,14 +17,20 @@ public static class PayloadParser
     private static Dictionary<string, object?> ParseJson(string raw)
     {
         using var doc = JsonDocument.Parse(raw);
-        var root = doc.RootElement;
+        return Parse(doc.RootElement);
+    }
+
+    // For a line that is already parsed (the gateway parses each line once).
+    public static Dictionary<string, object?> Parse(JsonElement root)
+    {
         var result = new Dictionary<string, object?>();
 
         if (root.TryGetProperty("topic", out var topicEl) && topicEl.ValueKind == JsonValueKind.String
-            && root.TryGetProperty("payload", out var payloadEl) && payloadEl.ValueKind == JsonValueKind.Object)
+            && root.TryGetProperty("payload", out var payloadEl) && TryPayloadObject(payloadEl, out var payloadDoc, out var payload))
         {
-            foreach (var prop in payloadEl.EnumerateObject())
-                result[prop.Name] = ParseValue(prop.Value);
+            using (payloadDoc)
+                foreach (var prop in payload.EnumerateObject())
+                    result[prop.Name] = ParseValue(prop.Value);
 
             var segments = (topicEl.GetString() ?? "").Split('/', StringSplitOptions.RemoveEmptyEntries);
             if (segments.Length > 0) result["topic_machine_id"] = segments[0];
@@ -38,6 +44,33 @@ public static class PayloadParser
         }
 
         return result;
+    }
+
+    // "payload" as an object, or as JSON text holding an object (how the
+    // machines send it). document is the parsed text, to dispose; null otherwise.
+    private static bool TryPayloadObject(JsonElement payload, out JsonDocument? document, out JsonElement obj)
+    {
+        document = null;
+        obj = payload;
+        if (payload.ValueKind == JsonValueKind.Object)
+            return true;
+        if (payload.ValueKind != JsonValueKind.String)
+            return false;
+
+        try
+        {
+            document = JsonDocument.Parse(payload.GetString() ?? "");
+            obj = document.RootElement;
+            if (obj.ValueKind == JsonValueKind.Object)
+                return true;
+        }
+        catch (JsonException)
+        {
+        }
+
+        document?.Dispose();
+        document = null;
+        return false;
     }
 
     // Recurses into objects/arrays instead of calling GetString() on them —
@@ -54,7 +87,7 @@ public static class PayloadParser
         _ => element.GetString()
     };
 
-    private static Dictionary<string, object?> ParseCsv(string raw)
+    public static Dictionary<string, object?> ParseCsv(string raw)
     {
         var parts = raw.Split(',', StringSplitOptions.TrimEntries);
         if (parts.Length < 2)

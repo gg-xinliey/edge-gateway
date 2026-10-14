@@ -25,7 +25,14 @@ const state = {
   search: '',
   status: null,
   restartToApply: false,
+  logs: [],                 // log lines received so far (newest last)
+  lastLogId: 0,
+  errorCount: 0,            // problem lines since the gateway started
+  seenErrors: 0,            // errorCount when the Log view was last opened
+  logsLoaded: false,        // no pop-ups for the backlog on first load
+  errorsOnly: false,
 };
+const MAX_LOG_LINES = 500;
 
 // ---------- small helpers ----------
 
@@ -135,13 +142,78 @@ function render() {
   const view = $('view');
   view.replaceChildren();
 
+  const isLog = state.view === 'log';
+  $('saveBtn').hidden = isLog;
+
   if (state.view === 'point-map') renderPointMap(view);
   else if (state.view === 'timestamp-rules') renderTimestamp(view);
+  else if (isLog) renderLog(view);
   else renderForm(view);
 
-  $('note').textContent = FILES[state.view].restartToApply
-    ? 'Applies after the gateway restarts.'
-    : 'Applies as soon as you save.';
+  $('note').textContent =
+    isLog ? 'Newest at the bottom. Full history: logs\\gateway-<date>.log next to the exe (14 days).' :
+    FILES[state.view].restartToApply ? 'Applies after the gateway restarts.' :
+    'Applies as soon as you save.';
+}
+
+// Log: everything the gateway printed, problems in red.
+function renderLog(view) {
+  state.seenErrors = state.errorCount;
+  updateErrorBadge();
+
+  const onlyErrors = h('input', {
+    type: 'checkbox', checked: state.errorsOnly,
+    onchange: e => { state.errorsOnly = e.target.checked; render(); },
+  });
+  view.append(h('label', { class: 'log-tools' }, onlyErrors, 'Show problems only'));
+
+  const lines = state.logs.filter(l => (!state.errorsOnly || l.isError) && matches(l.text));
+  const box = h('div', { class: 'log', id: 'logBox' });
+  if (!lines.length)
+    box.append(h('div', { class: 'empty', textContent: state.logs.length ? 'No lines match.' : 'No log lines yet.' }));
+  for (const line of lines)
+    box.append(h('div', { class: line.isError ? 'log-line err' : 'log-line' },
+      h('span', { class: 't', textContent: new Date(line.time).toLocaleTimeString() }), line.text));
+
+  view.append(box);
+  box.scrollTop = box.scrollHeight;
+}
+
+function updateErrorBadge() {
+  const unseen = state.errorCount - state.seenErrors;
+  $('errBadge').hidden = unseen <= 0;
+  $('errBadge').textContent = `⚠ ${unseen} new problem${unseen === 1 ? '' : 's'} · view log`;
+}
+
+async function pollLogs() {
+  let result;
+  try { result = await request(`/api/logs?after=${state.lastLogId}`); }
+  catch { return; }
+
+  const fresh = result.lines;
+  if (fresh.length) {
+    state.logs.push(...fresh);
+    if (state.logs.length > MAX_LOG_LINES) state.logs.splice(0, state.logs.length - MAX_LOG_LINES);
+    state.lastLogId = fresh[fresh.length - 1].id;
+  }
+  state.errorCount = result.errorCount;
+
+  // Pop up the newest new problem (only for lines that arrive while the page is open).
+  const newest = fresh.filter(l => l.isError).pop();
+  if (state.logsLoaded && newest && state.view !== 'log') toast(`Gateway: ${newest.text}`, true);
+  state.logsLoaded = true;
+
+  if (state.view === 'log') {
+    if (fresh.length) {
+      const box = $('logBox');
+      const atBottom = !box || box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+      const keepTop = box?.scrollTop ?? 0;
+      render(); // scrolls to the newest line
+      if (!atBottom) $('logBox').scrollTop = keepTop; // reading older lines: stay there
+    }
+  } else {
+    updateErrorBadge();
+  }
 }
 
 // PointMap: incoming tag <-> fieldName, one data group at a time.
@@ -308,11 +380,25 @@ function renderTimestamp(view) {
       }));
   }
 
+  // How often this group's changes go to MES (applies live on save).
+  form.append(
+    h('div', { class: 'label', textContent: 'sendEveryMs' }),
+    h('input', {
+      type: 'number', min: '0', step: '1',
+      value: rule.sendEveryMs ?? '', placeholder: '1000 (default)', 'aria-label': 'sendEveryMs',
+      oninput: e => {
+        if (e.target.value === '') delete rule.sendEveryMs;
+        else rule.sendEveryMs = Number(e.target.value);
+        markDirty('timestamp-rules');
+      },
+    }));
+
   view.append(form, h('p', {
     class: 'section-note',
-    textContent: span
+    textContent: (span
       ? 'Span: when triggerField changes value, the running span is closed (endField) and a new one starts (startField).'
-      : 'SinglePoint: timestampField is set to the time each record arrives.',
+      : 'SinglePoint: timestampField is set to the time of each change (the machine\'s timestamp when sent).') +
+      ' sendEveryMs: every change is sent to MES at the next tick, per machine; no change, nothing sent.',
   }), h('button', {
     type: 'button', textContent: 'remove rule',
     onclick: () => {
@@ -420,11 +506,15 @@ function buildBody(key) {
   if (key === 'timestamp-rules') {
     for (const [group, rule] of Object.entries(data)) {
       rule.mode ??= 'SinglePoint';
-      const keep = rule.mode === 'Span' ? ['mode', 'triggerField', 'startField', 'endField'] : ['mode', 'timestampField'];
+      const fields = rule.mode === 'Span' ? ['triggerField', 'startField', 'endField'] : ['timestampField'];
+      const keep = ['mode', ...fields, 'sendEveryMs'];
       for (const k of Object.keys(rule)) if (!keep.includes(k)) delete rule[k];
       for (const k of keep) if (typeof rule[k] === 'string') rule[k] = rule[k].trim();
 
-      if (rule.mode === 'Span' && keep.slice(1).some(k => !rule[k]))
+      if ('sendEveryMs' in rule && !(Number.isInteger(rule.sendEveryMs) && rule.sendEveryMs >= 0 && rule.sendEveryMs <= 3600000))
+        throw new Error(`${group}: sendEveryMs must be a whole number from 0 to 3600000 (empty = 1000).`);
+
+      if (rule.mode === 'Span' && fields.some(k => !rule[k]))
         throw new Error(`${group}: Span needs triggerField, startField and endField.`);
       if (rule.mode !== 'Span' && !rule.timestampField) delete rule.timestampField; // falls back to record_timestamp
     }
@@ -528,9 +618,18 @@ function showStatus(status) {
   $('gwStatus').className = `gw-status ${status.state}`;
   const since = status.startedAt ? new Date(status.startedAt).toLocaleTimeString() : '';
   $('gwText').textContent =
-    status.state === 'running' ? `Gateway running · ${status.machineId} · TCP ${status.tcpPort} · since ${since}` :
+    status.state === 'running' ? `Gateway running · TCP ${status.tcpPort} · since ${since}` :
     status.state === 'error' ? `Gateway stopped: ${status.lastError}` :
     `Gateway ${status.state}…`;
+
+  // Last 10 s, per second: lines in, MQTT out, MES delivered, rows waiting for MES.
+  const s = status.stats;
+  const n = v => Math.round(v).toLocaleString();
+  $('gwStats').textContent = s && s.at
+    ? `in ${n(s.inPerSec)}/s · MQTT ${n(s.mqttPerSec)}/s · MES ${n(s.mesDeliveredPerSec)}/s · backlog ${s.backlog < 0 ? '?' : n(s.backlog)}` +
+      (s.rejectedPerSec > 0 ? ` · ${n(s.rejectedPerSec)}/s without machine_id` : '') +
+      (s.mqttLostPerSec > 0 ? ` · MQTT lost ${n(s.mqttLostPerSec)}/s` : '')
+    : '';
 }
 
 async function pollStatus() {
@@ -566,6 +665,7 @@ $('search').addEventListener('keydown', e => { if (e.key === 'Enter') render(); 
 $('searchBtn').addEventListener('click', () => { state.search = $('search').value; render(); });
 
 $('saveBtn').addEventListener('click', save);
+$('errBadge').addEventListener('click', () => switchView('log'));
 $('restartNow').addEventListener('click', restartGateway);
 $('restartLater').addEventListener('click', () => {
   $('restartDialog').close();
@@ -584,5 +684,6 @@ window.addEventListener('beforeunload', e => {
     $('view').replaceChildren(h('div', { class: 'empty', textContent: `Could not load the configuration: ${e.message}` }));
   }
   pollStatus();
-  setInterval(pollStatus, 4000);
+  pollLogs();
+  setInterval(() => { pollStatus(); pollLogs(); }, 4000);
 })();

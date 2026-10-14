@@ -3,13 +3,15 @@
     "mode": "Span",
     "triggerField": "machine_status",
     "startField": "status_start_time",
-    "endField": "status_end_time"
+    "endField": "status_end_time",
+    "sendEveryMs": 100
   },
   "PRODUCTION": {
     "mode": "Span",
     "triggerField": "cycle_active",
     "startField": "cycle_start_time",
-    "endField": "cycle_end_time"
+    "endField": "cycle_end_time",
+    "sendEveryMs": 10000
   },
   "PROCESS": {
     "mode": "SinglePoint",

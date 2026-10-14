@@ -13,6 +13,10 @@ var adminPort = adminPortArg >= 0 && adminPortArg + 1 < args.Length && int.TryPa
     ? port
     : 5100;
 
+// First: every console line also goes to logs\gateway-<date>.log (kept 14 days)
+// and to the config page's Log view, so errors are not lost in the background.
+var log = GatewayLog.Install(Path.Combine(AppContext.BaseDirectory, "logs"), keepDays: 14);
+
 var jsonOptions = new JsonSerializerOptions
 {
     PropertyNameCaseInsensitive = true,
@@ -22,7 +26,7 @@ var jsonOptions = new JsonSerializerOptions
 var unidentified = new UnidentifiedTagTracker();
 var configStore = new GatewayConfigStore("Config", jsonOptions, unidentified);
 var gateway = new GatewayHost(configStore, jsonOptions);
-var adminServer = new AdminWebServer(adminPort, "wwwroot", configStore, gateway, unidentified, jsonOptions);
+var adminServer = new AdminWebServer(adminPort, "wwwroot", configStore, gateway, unidentified, log, jsonOptions);
 
 Console.WriteLine("Edge gateway starting — Ctrl+C to stop");
 Console.WriteLine($"Configuration UI: http://localhost:{adminPort}/config/");

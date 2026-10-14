@@ -22,4 +22,9 @@ public class TimestampRule
     public string? TriggerField { get; set; }
     public string? StartField { get; set; }
     public string? EndField { get; set; }
+
+    // How often this group's changes are sent to MES, per machine.
+    // Every change is sent (in order, at the next tick); no change, no send.
+    // 0 = right away. Not set = IntervalSender.DefaultSendEveryMs.
+    public int? SendEveryMs { get; set; }
 }

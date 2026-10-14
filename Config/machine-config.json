@@ -4,5 +4,6 @@
   "tcpPort": 9000,
   "dataSource": "TCP-BRIDGE-01",
   "protocolLabel": "TCP/JSON-CSV",
-  "mesUrl": "http://localhost:5000/api/v1/machine-events"
+  "mesUrl": "http://localhost:5000/api/v1/machine-events",
+  "outboxKeepSentDays": 7
 }

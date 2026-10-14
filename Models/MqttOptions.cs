@@ -12,6 +12,11 @@ public class MqttOptions
     public string BrokerAddress { get; set; } = "127.0.0.1";
     public int BrokerPort { get; set; } = 1883;
 
+    // Same key as MqttConnectionConfig.ClientIdSuffix. The twin connection's
+    // client id is <PC name>_<suffix>_TwinPublisher, so two gateways on one PC
+    // with different suffixes don't kick each other off the broker.
+    public string ClientIdSuffix { get; set; } = "EdgeGateway";
+
     // Topic prefix for topics the gateway builds itself: svi/<area>/<machine_id>/...
     public string Area { get; set; } = "TEST";
 

@@ -92,5 +92,62 @@ remaining
 
 git
 - this folder is a git repo since 2026-10-09 (first commit 411ea17, see "git log")
-- git is not on PATH; it is at C:\Users\Atm_Theppanadda\Downloads\PortableGit\bin\git.exe
-- Config/*.bak (written by the page on every save), bin/, obj/, .vs/, outbox/ are ignored
+- git is not on PATH; it is at C:\Users\Atm_Theppanadda\Desktop\PortableGit\cmd\git.exe
+- Config/*.bak (written by the page on every save), bin/, obj/, .vs/, outbox/, logs/ are ignored
+
+
+==========================================================================
+update 2026-10-12 .. 10-14 : shared server for many machines
+==========================================================================
+
+why
+- the gateway is no longer one machine's local gateway: ~50 machines send to it.
+  designed for 5,000 messages/s in. user guide: USE_CASE.md
+
+changes
+1. machine_id + timestamp in every message are message details, not tags.
+   a MES line without machine_id is rejected (CSV TAG,value lines too)
+2. MES data per data group on an interval: sendEveryMs in timestamp-rules.json
+   (MACHINE_STATUS 100, PRODUCTION 10000, default 1000, 0 = right away), live.
+   only changes are sent, every change, in order; full snapshot after 60 s silence
+3. outbox: one background writer with batch transactions; one file per day
+   (outbox\outbox-yyyy-MM-dd.db); a day file older than outboxKeepSentDays is
+   deleted only when all its rows were delivered; old outbox.db still read
+4. ingest: TCP readers only queue lines; up to 8 worker lanes, one lane per
+   connection (each machine in order); each line parsed once
+5. MES forwarder: 2,000 rows per pass, 16 machines in parallel, each in order,
+   no pause while there is a backlog, 15 s HTTP timeout
+6. MQTT relay: one send queue + one sender (drop oldest when full)
+7. logs: unmapped tags logged once; repeated problems once a minute with a count;
+   [stats] line every 10 s; logs\gateway-<date>.log (14 days); Log view on the page
+8. config page: sendEveryMs field, live rates in the status area, 22 px gap fix
+9. MQTT client ids from clientIdSuffix (twin = <PC>_<suffix>_TwinPublisher)
+10. motion: world/joint/pulse sent as JSON text are published as real objects
+
+bugs found by the load test (all fixed)
+1. one SQLite write per row on the TCP thread: capped at ~300 rows/s and
+   stopped the gateway from reading machines
+2. thread starvation from those writes: MQTT took 36 s to connect
+3. MES forwarder sent one request at a time: ~50/s max
+4. TwinPublisher disposed its client while another connect used it
+   ("Cannot access a disposed object ... AsyncLockWaiter")
+5. point-map maps tag machine_id into MOTION, so every machine's data was
+   filed as ASSY-L01-FCT-01 (machine_id is now metadata, never a tag)
+6. 'timestamp' not in point-map: "unmapped tag" logged 3,000 times/s
+7. two gateways with the same client id on one broker kick each other off
+
+load test, 50 machines, 5,000 msg/s, same laptop (..\LocalMqttTest --load 5000 60 50)
+                     before        after
+  accepted           1,312/s       5,000/s (all)
+  MQTT latency p95   65 s          13 ms
+  MES delivered      6/s           2,600/s under load, 4,000/s draining
+  console lines/70 s 27,015        217
+  problems           9             0
+- the tester's data changes every message (worst case: 3,800 MES records/s);
+  that is slightly more than one laptop delivers, so its backlog grows during
+  the test and drains after. re-run on the real server
+
+open
+- MES batch (array in one POST): ~10x faster if MES supports it; ask the MES team
+- Machines view on the page, server heartbeat + per-machine online/offline (part D)
+- run as a Windows service

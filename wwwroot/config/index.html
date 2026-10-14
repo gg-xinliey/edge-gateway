@@ -15,7 +15,12 @@
       <button class="nav" data-view="timestamp-rules">TimeStamp</button>
       <button class="nav" data-view="mqtt-config">MQTTConfig</button>
       <button class="nav" data-view="machine-config">MachineConfig</button>
-      <div class="gw-status" id="gwStatus"><span class="dot"></span><span id="gwText">checking gateway…</span></div>
+      <button class="nav nav-small" data-view="log">Log</button>
+      <div class="gw-status" id="gwStatus">
+        <span class="dot"></span><span id="gwText">checking gateway…</span>
+        <span id="gwStats" class="gw-stats"></span>
+        <button id="errBadge" class="err-badge" type="button" hidden></button>
+      </div>
     </aside>
 
     <main class="panel">

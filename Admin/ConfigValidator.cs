@@ -59,6 +59,9 @@ public static class ConfigValidator
             if (rule is null)
                 return $"{group}: the rule is empty.";
 
+            if (rule.SendEveryMs is < 0 or > 3_600_000)
+                return $"{group}: sendEveryMs must be between 0 and 3600000 (1 hour).";
+
             if (rule.Mode == TimestampMode.Span &&
                 (string.IsNullOrWhiteSpace(rule.TriggerField) ||
                  string.IsNullOrWhiteSpace(rule.StartField) ||
@@ -77,6 +80,8 @@ public static class ConfigValidator
             return "brokerAddress is empty.";
         if (relay.BrokerPort is < 1 or > 65535)
             return "brokerPort must be between 1 and 65535.";
+        if (string.IsNullOrWhiteSpace(relay.ClientIdSuffix))
+            return "clientIdSuffix is empty.";
         if (relay.ReconnectCooldownSeconds < 0)
             return "reconnectCooldownSeconds cannot be negative.";
         if (string.IsNullOrWhiteSpace(options.Area))
@@ -105,6 +110,8 @@ public static class ConfigValidator
             return $"tcpPort cannot be {adminPort}; the config page uses it.";
         if (!Uri.TryCreate(machine.MesUrl, UriKind.Absolute, out var mes) || (mes.Scheme != "http" && mes.Scheme != "https"))
             return "mesUrl must be a full http:// or https:// address.";
+        if (machine.OutboxKeepSentDays < 1)
+            return "outboxKeepSentDays must be at least 1.";
 
         return null;
     }

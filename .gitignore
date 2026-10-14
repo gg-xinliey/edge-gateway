@@ -6,6 +6,7 @@ obj/
 
 # local runtime data
 outbox/
+logs/
 
 # backups the config page writes on every save (Config/<file>.bak)
 Config/*.bak
