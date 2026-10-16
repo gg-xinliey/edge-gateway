@@ -109,7 +109,9 @@ changes
    a MES line without machine_id is rejected (CSV TAG,value lines too)
 2. MES data per data group on an interval: sendEveryMs in timestamp-rules.json
    (MACHINE_STATUS 100, PRODUCTION 10000, default 1000, 0 = right away), live.
-   only changes are sent, every change, in order; full snapshot after 60 s silence
+   only changes are sent, every change, in order; no change = nothing sent
+   (a 60 s repeat of unchanged data was removed on 2026-10-16: MES could
+   count it as new events)
 3. outbox: one background writer with batch transactions; one file per day
    (outbox\outbox-yyyy-MM-dd.db); a day file older than outboxKeepSentDays is
    deleted only when all its rows were delivered; old outbox.db still read
@@ -146,6 +148,30 @@ load test, 50 machines, 5,000 msg/s, same laptop (..\LocalMqttTest --load 5000 6
 - the tester's data changes every message (worst case: 3,800 MES records/s);
   that is slightly more than one laptop delivers, so its backlog grows during
   the test and drains after. re-run on the real server
+
+manual test session 2026-10-16 (4-pane test window: broker, MES, gateway, source)
+tools (outside this repo, in ..\): LocalMqttTest\test-env\start-test-env.ps1 opens
+the window; MachineSim simulates N machines (motion 20 ms, data 3 s, IO 9 s,
+reconnects); OutboxDump reads the outbox read-only to compare with expectations
+- passed: unmapped -> mapped tags; no change = nothing sent; fast changes; 1 and
+  5 min loops (182/182 envelopes); MES down 1 and 3 machines (all delivered after);
+  3 machines + motion 50/s each (245/245 MES, 18,034/18,034 MQTT, no cross-talk);
+  restart under load (253/253 MES, back in 32 ms, no false alarm)
+- fixed during the session:
+  1. 60 s full-snapshot repeat removed (MES could count unchanged data again)
+  2. envelopes written with plain "+07:00" instead of "+07:00"
+  3. intentional restart no longer logged as "ERR twin connection dropped"
+  4. [stats] shows 0.1/s instead of 0/s at low rates
+  5. [stats] divides by the real window (after a restart it showed 179/s for ~151/s)
+  6. new line when MES is back: "MES reachable again after N s (N tries) — N rows delivered"
+- found, by design: a restart forgets last values (first message after it is
+  always sent); a machine loses ~1 line written on the dead connection plus
+  whatever falls due before it reconnects
+- on hold (team to decide):
+  1. PROCESS-type data: every change vs latest value per interval (volume)
+  2. Span records: one record should hold the full span (start + end); today the
+     raise record carries the previous state's end and the clear record has no
+     original start
 
 open
 - MES batch (array in one POST): ~10x faster if MES supports it; ask the MES team

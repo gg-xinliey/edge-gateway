@@ -34,6 +34,8 @@ public class MesForwarder
     private readonly Outbox _outbox;
     private readonly ThrottledLog _problems = new(TimeSpan.FromSeconds(60));
     private DateTimeOffset _nextMaintenance = DateTimeOffset.MinValue; // first pass runs right away
+    private long _downSinceTicks;   // 0 = MES fine; else UTC ticks of the first failed send
+    private long _triesWhileDown;
 
     private readonly GatewayStats? _stats;
 
@@ -72,6 +74,7 @@ public class MesForwarder
                 {
                     _outbox.MarkSent(delivered); // one transaction per file for the whole pass
                     _stats?.MesDelivered(delivered.Count);
+                    ReportRecovery(delivered.Count);
                 }
             }
 
@@ -94,7 +97,7 @@ public class MesForwarder
     {
         try
         {
-            var json = JsonSerializer.Serialize(envelope);
+            var json = JsonSerializer.Serialize(envelope, EnvelopeJson.Options);
             using var response = await _http.PostAsync(
                 _endpoint,
                 new StringContent(json, Encoding.UTF8, "application/json"),
@@ -115,7 +118,32 @@ public class MesForwarder
             _problems.Write("send", $"[forwarder] send failed for {envelope.event_id}: {ex.Message} — will retry");
         }
 
+        // Remember when the trouble started, for the "reachable again" line.
+        Interlocked.CompareExchange(ref _downSinceTicks, DateTimeOffset.UtcNow.UtcTicks, 0);
+        Interlocked.Increment(ref _triesWhileDown);
         return false;
+    }
+
+    // First delivery after a period of failed sends: one line saying it is over.
+    // (The failures themselves are logged only once a minute, so without this
+    // nobody can tell from the log when MES came back.)
+    // deliveredNow = rows the first successful pass delivered (it can take the
+    // whole backlog at once, so counting what is left afterwards said "0").
+    private void ReportRecovery(int deliveredNow)
+    {
+        var since = Interlocked.Exchange(ref _downSinceTicks, 0);
+        if (since == 0)
+            return;
+
+        var tries = Interlocked.Exchange(ref _triesWhileDown, 0);
+        var seconds = (DateTimeOffset.UtcNow.UtcTicks - since) / (double)TimeSpan.TicksPerSecond;
+        long left;
+        try { left = _outbox.CountUnsent(); } catch { left = -1; }
+
+        // Worded without the log's problem words: this is the good news.
+        Console.WriteLine($"[forwarder] MES reachable again after {seconds:0} s ({tries} tries) — " +
+                          $"{deliveredNow:N0} waiting rows delivered" +
+                          (left > 0 ? $", {left:N0} still to go" : ""));
     }
 
     private void MaintainOutbox()

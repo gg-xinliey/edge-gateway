@@ -17,10 +17,18 @@ public sealed class GatewayStats
 
     public StatsRates Latest { get; private set; } = new(0, 0, 0, 0, 0, 0, 0, null);
 
-    // Rates since the previous call; resets the counters.
-    public StatsRates Sample(TimeSpan period, long backlog)
+    private long _lastSample = System.Diagnostics.Stopwatch.GetTimestamp();
+
+    // Rates since the previous call; resets the counters. Divides by the time
+    // that really passed: after a restart the window is longer than 10 s, and a
+    // fixed 10 s showed e.g. 179.6/s instead of ~151/s.
+    public StatsRates Sample(long backlog)
     {
-        double Take(ref long counter) => Interlocked.Exchange(ref counter, 0) / period.TotalSeconds;
+        var now = System.Diagnostics.Stopwatch.GetTimestamp();
+        var seconds = Math.Max(0.001, System.Diagnostics.Stopwatch.GetElapsedTime(_lastSample, now).TotalSeconds);
+        _lastSample = now;
+
+        double Take(ref long counter) => Interlocked.Exchange(ref counter, 0) / seconds;
 
         Latest = new StatsRates(
             Take(ref _received), Take(ref _rejected),

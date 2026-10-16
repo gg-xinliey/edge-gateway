@@ -57,7 +57,7 @@ Gateway → MQTT, topic `svi/TEST/ASSY-L01-FCT-01/IO/input`:
 - A message that changes nothing is ignored.
 - Each change becomes one record: all current values of that group, with timestamps.
 - Records wait for the group's next tick (`sendEveryMs`), then **every** waiting record is sent, oldest first. Example with PRODUCTION every 10 s: changes at 10:00:03 and 10:00:07 are both sent at 10:00:10.
-- No change for 60 s: the current values are sent once anyway, so MES never goes stale.
+- No change, nothing is sent: there are no periodic repeats.
 - Current settings: MACHINE_STATUS every 100 ms, PRODUCTION every 10 s, other groups every 1 s (the default).
 
 ## 4. Wrong or different input
@@ -75,7 +75,8 @@ Gateway → MQTT, topic `svi/TEST/ASSY-L01-FCT-01/IO/input`:
 | Tag not in `point-map.json` | Sent to MES in group `UNIDENTIFIED` | Console `unmapped tag 'X'` the first time only; listed under **⚠ Unidentified** on the config page |
 | Line that is not valid JSON | Skipped | Once a minute per sender: `[tcp] failed to process message from <ip> ...` with a count |
 | Broker down | MQTT messages are dropped, not queued; retried after 5 s | `[mqtt] cannot connect ...`; `[mqtt] N messages dropped` once a minute |
-| MES down | Kept in the outbox, retried every 2 s, each machine's data in order | `[forwarder] send failed ... will retry`, once a minute; backlog grows in `[stats]` |
+| MES down | Kept in the outbox, retried every 2 s, each machine's data in order | `[forwarder] send failed ... will retry`, once a minute; backlog grows in `[stats]`. When MES is back: one `[forwarder] MES reachable again after N s (N tries) — N waiting rows delivered` line |
+| Gateway restarts (config page) | Connected machines are dropped; the gateway is back within ~50 ms. Lines a machine sends on the dead connection are lost, and so is anything it can't send until it reconnects | `[tcp] client disconnected` / `client connected`. The first message after a restart is always sent, even if unchanged (the gateway forgets last values) |
 
 ## 5. How to change the config
 

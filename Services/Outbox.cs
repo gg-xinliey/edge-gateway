@@ -138,7 +138,7 @@ public sealed class Outbox : IAsyncDisposable
         {
             eventId.Value = envelope.event_id;
             dataGroup.Value = envelope.data_group;
-            body.Value = JsonSerializer.Serialize(envelope);
+            body.Value = JsonSerializer.Serialize(envelope, EnvelopeJson.Options);
             createdAt.Value = now;
             cmd.ExecuteNonQuery();
         }

@@ -24,6 +24,7 @@ public class MqttPublisherService : IMqttPublisher
     private readonly IMqttClient _client;
     private readonly SemaphoreSlim _connectGate = new(1, 1);
     private readonly ThrottledLog _problems = new(TimeSpan.FromSeconds(60));
+    private volatile bool _disconnecting;
 
     public bool IsConnected => _client.IsConnected;
 
@@ -34,7 +35,9 @@ public class MqttPublisherService : IMqttPublisher
         _client = new MqttFactory().CreateMqttClient();
         _client.DisconnectedAsync += _ =>
         {
-            _problems.Write("disconnected", "[mqtt] twin connection dropped — will reconnect");
+            // Our own DisconnectAsync (gateway stopping / restarting) is not a problem.
+            if (!_disconnecting)
+                _problems.Write("disconnected", "[mqtt] twin connection dropped — will reconnect");
             return Task.CompletedTask;
         };
     }
@@ -111,6 +114,7 @@ public class MqttPublisherService : IMqttPublisher
 
     public async Task DisconnectAsync()
     {
+        _disconnecting = true;
         if (_client.IsConnected)
             await _client.DisconnectAsync();
     }

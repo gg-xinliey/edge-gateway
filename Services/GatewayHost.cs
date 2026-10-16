@@ -214,19 +214,23 @@ public sealed class GatewayHost
             try { backlog = outbox.CountUnsent(); }
             catch { backlog = -1; } // outbox busy: report the rest anyway
 
-            var r = Stats.Sample(StatsEvery, backlog);
+            var r = Stats.Sample(backlog);
             if (r.InPerSec == 0 && r.MqttPerSec == 0 && r.MesDeliveredPerSec == 0 && r.Backlog <= 0)
                 continue;
 
             Console.WriteLine(
-                $"[stats] in {r.InPerSec:0}/s" +
-                (r.RejectedPerSec > 0 ? $" ({r.RejectedPerSec:0}/s without machine_id)" : "") +
-                $" · mqtt {r.MqttPerSec:0}/s" +
-                (r.MqttLostPerSec > 0 ? $" ({r.MqttLostPerSec:0}/s lost)" : "") +
-                $" · mes queued {r.MesQueuedPerSec:0}/s, delivered {r.MesDeliveredPerSec:0}/s" +
+                $"[stats] in {Rate(r.InPerSec)}/s" +
+                (r.RejectedPerSec > 0 ? $" ({Rate(r.RejectedPerSec)}/s without machine_id)" : "") +
+                $" · mqtt {Rate(r.MqttPerSec)}/s" +
+                (r.MqttLostPerSec > 0 ? $" ({Rate(r.MqttLostPerSec)}/s lost)" : "") +
+                $" · mes queued {Rate(r.MesQueuedPerSec)}/s, delivered {Rate(r.MesDeliveredPerSec)}/s" +
                 $" · backlog {(r.Backlog < 0 ? "?" : r.Backlog.ToString("N0", CultureInfo.InvariantCulture))}");
         }
     }
+
+    // One decimal below 10/s, so 1 message in 10 s shows as 0.1/s, not 0/s.
+    private static string Rate(double perSecond) =>
+        perSecond.ToString(perSecond < 10 ? "0.0" : "0", CultureInfo.InvariantCulture);
 
     // Removes key (any case) from the tags and returns its value as text.
     private static string? TakeString(Dictionary<string, object?> tags, string key)

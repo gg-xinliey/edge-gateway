@@ -14,13 +14,13 @@ namespace EdgeGateway.Services;
 //   * Each tick (sendEveryMs from timestamp-rules.json, read live) every
 //     waiting record is written to the outbox, oldest first. So every change
 //     reaches MES, at most one interval late.
-//   * If nothing was sent for a machine + group for 60 s, its current
-//     snapshot is sent once, so MES never goes stale.
+//   * Nothing changes, nothing is sent: no periodic repeats. (A 60 s
+//     "full snapshot" used to repeat unchanged data with a new event_id and
+//     a new record_timestamp, which MES could count as new events.)
 //   * When the gateway stops or restarts, waiting records are written first.
 public sealed class IntervalSender
 {
     public const int DefaultSendEveryMs = 1000;
-    private static readonly TimeSpan FullSnapshotEvery = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan TickResolution = TimeSpan.FromMilliseconds(20);
 
     private readonly Outbox _outbox;
@@ -55,8 +55,6 @@ public sealed class IntervalSender
                 state.Pending.Add(record);
                 return;
             }
-
-            state.LastSent = DateTimeOffset.UtcNow;
         }
 
         _outbox.Write(_envelopes.Build(machineId, dataGroup, record)); // sendEveryMs = 0: right away
@@ -100,14 +98,6 @@ public sealed class IntervalSender
                 {
                     toSend = state.Pending;
                     state.Pending = new List<Dictionary<string, object?>>();
-                    state.LastSent = now;
-                }
-                else if (!force && state.Snapshot.Count > 0 && now - state.LastSent >= FullSnapshotEvery)
-                {
-                    var record = new Dictionary<string, object?>(state.Snapshot);
-                    config.TimeStamper.Stamp(machineId, dataGroup, record);
-                    toSend = new List<Dictionary<string, object?>> { record };
-                    state.LastSent = now;
                 }
             }
 
@@ -154,7 +144,5 @@ public sealed class IntervalSender
     {
         public Dictionary<string, object?> Snapshot = new();
         public List<Dictionary<string, object?>> Pending = new();
-        public DateTimeOffset NextDue = DateTimeOffset.MinValue;
-        public DateTimeOffset LastSent = DateTimeOffset.UtcNow; // first full snapshot 60 s after the first data
-    }
+        public DateTimeOffset NextDue = DateTimeOffset.MinValue;    }
 }

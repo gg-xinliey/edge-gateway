@@ -625,10 +625,11 @@ function showStatus(status) {
   // Last 10 s, per second: lines in, MQTT out, MES delivered, rows waiting for MES.
   const s = status.stats;
   const n = v => Math.round(v).toLocaleString();
+  const rate = v => v < 10 ? v.toFixed(1) : n(v); // 1 message in 10 s shows as 0.1, not 0
   $('gwStats').textContent = s && s.at
-    ? `in ${n(s.inPerSec)}/s · MQTT ${n(s.mqttPerSec)}/s · MES ${n(s.mesDeliveredPerSec)}/s · backlog ${s.backlog < 0 ? '?' : n(s.backlog)}` +
-      (s.rejectedPerSec > 0 ? ` · ${n(s.rejectedPerSec)}/s without machine_id` : '') +
-      (s.mqttLostPerSec > 0 ? ` · MQTT lost ${n(s.mqttLostPerSec)}/s` : '')
+    ? `in ${rate(s.inPerSec)}/s · MQTT ${rate(s.mqttPerSec)}/s · MES ${rate(s.mesDeliveredPerSec)}/s · backlog ${s.backlog < 0 ? '?' : n(s.backlog)}` +
+      (s.rejectedPerSec > 0 ? ` · ${rate(s.rejectedPerSec)}/s without machine_id` : '') +
+      (s.mqttLostPerSec > 0 ? ` · MQTT lost ${rate(s.mqttLostPerSec)}/s` : '')
     : '';
 }
 
