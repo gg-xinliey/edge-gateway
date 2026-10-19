@@ -6,7 +6,9 @@ namespace EdgeGateway.Services;
 
 // Sends MES data per data group on an interval instead of per message.
 //
-// For each machine + data group it keeps the latest values (the snapshot).
+// For each machine + data_source + data group it keeps the latest values (the
+// snapshot). Different data_sources never mix: the same group from two sources
+// gives two separate envelopes, even when both arrive at the same time.
 //   * A message that changes nothing is ignored.
 //   * A message that changes something becomes one record: the full group
 //     snapshot after the change, time-stamped (TimeStamper) with the machine's
@@ -26,7 +28,8 @@ public sealed class IntervalSender
     private readonly Outbox _outbox;
     private readonly EnvelopeBuilder _envelopes;
     private readonly Func<ConfigSnapshot> _config;
-    private readonly ConcurrentDictionary<(string Machine, string Group), GroupState> _states = new();
+    // DataSource "" = the message had no data_source (the configured one is used).
+    private readonly ConcurrentDictionary<(string Machine, string DataSource, string Group), GroupState> _states = new();
 
     public IntervalSender(Outbox outbox, EnvelopeBuilder envelopes, Func<ConfigSnapshot> config)
     {
@@ -36,10 +39,13 @@ public sealed class IntervalSender
     }
 
     // Called by the ingest workers for every MES-bound bucket of a message.
-    public void Accept(string machineId, string dataGroup, Dictionary<string, object?> fields, DateTimeOffset? eventTime)
+    // dataSource = the message's "data_source": part of the key, so each
+    // source has its own snapshot, changes and envelopes.
+    public void Accept(string machineId, string dataGroup, Dictionary<string, object?> fields, DateTimeOffset? eventTime, string? dataSource = null)
     {
         var config = _config();
-        var state = _states.GetOrAdd((machineId, dataGroup), _ => new GroupState());
+        var source = dataSource?.Trim() ?? "";
+        var state = _states.GetOrAdd((machineId, source, dataGroup), _ => new GroupState());
         Dictionary<string, object?> record;
 
         lock (state)
@@ -48,7 +54,7 @@ public sealed class IntervalSender
                 return; // same values as last time: nothing new for MES
 
             record = new Dictionary<string, object?>(state.Snapshot);
-            config.TimeStamper.Stamp(machineId, dataGroup, record, eventTime);
+            config.TimeStamper.Stamp(machineId, dataGroup, record, eventTime, source);
 
             if (SendEveryMs(config, dataGroup) > 0)
             {
@@ -57,7 +63,7 @@ public sealed class IntervalSender
             }
         }
 
-        _outbox.Write(_envelopes.Build(machineId, dataGroup, record)); // sendEveryMs = 0: right away
+        _outbox.Write(_envelopes.Build(machineId, dataGroup, record, source)); // sendEveryMs = 0: right away
     }
 
     public async Task RunAsync(CancellationToken ct)
@@ -84,7 +90,7 @@ public sealed class IntervalSender
         var config = _config();
         var now = DateTimeOffset.UtcNow;
 
-        foreach (var ((machineId, dataGroup), state) in _states)
+        foreach (var ((machineId, dataSource, dataGroup), state) in _states)
         {
             List<Dictionary<string, object?>>? toSend = null;
 
@@ -104,8 +110,8 @@ public sealed class IntervalSender
             if (toSend is null)
                 continue;
 
-            foreach (var record in toSend)
-                _outbox.Write(_envelopes.Build(machineId, dataGroup, record));
+            foreach (var fields in toSend)
+                _outbox.Write(_envelopes.Build(machineId, dataGroup, fields, dataSource));
         }
     }
 

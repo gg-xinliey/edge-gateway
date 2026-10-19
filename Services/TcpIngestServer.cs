@@ -18,16 +18,20 @@ public class TcpIngestServer
 {
     private const int LaneCapacity = 20_000; // per lane; when full the reader waits (back-pressure to the machine)
 
+    private readonly IPAddress _address;
     private readonly int _port;
-    private readonly Action<string, string> _onMessage; // (line, sender ip)
+    private readonly Action<string, string> _onMessage; // (line, sender = "ip:port" of the connection)
+    private readonly TrafficRegistry? _traffic;
     private readonly Channel<(string Line, string Sender)>[] _lanes;
     private readonly ThrottledLog _problems = new(TimeSpan.FromSeconds(60));
     private int _nextLane;
 
-    public TcpIngestServer(int port, Action<string, string> onMessage)
+    public TcpIngestServer(IPAddress address, int port, Action<string, string> onMessage, TrafficRegistry? traffic = null)
     {
+        _address = address;
         _port = port;
         _onMessage = onMessage;
+        _traffic = traffic;
         _lanes = Enumerable.Range(0, Math.Clamp(Environment.ProcessorCount, 1, 8))
             .Select(_ => Channel.CreateBounded<(string, string)>(
                 new BoundedChannelOptions(LaneCapacity) { SingleReader = true, FullMode = BoundedChannelFullMode.Wait }))
@@ -36,9 +40,9 @@ public class TcpIngestServer
 
     public async Task RunAsync(CancellationToken ct)
     {
-        var listener = new TcpListener(IPAddress.Any, _port);
+        var listener = new TcpListener(_address, _port);
         listener.Start();
-        Console.WriteLine($"[tcp] listening on port {_port} ({_lanes.Length} worker lanes)");
+        Console.WriteLine($"[tcp] listening on {_address}:{_port} ({_lanes.Length} worker lanes)");
 
         // Workers drain their lane even after a stop, so lines already read are not lost.
         var workers = _lanes.Select(lane => Task.Run(() => WorkAsync(lane))).ToArray();
@@ -64,8 +68,9 @@ public class TcpIngestServer
     private async Task HandleClientAsync(TcpClient client, Channel<(string, string)> lane, CancellationToken ct)
     {
         var endpoint = client.Client.RemoteEndPoint;
-        var sender = (endpoint as IPEndPoint)?.Address.ToString() ?? "?";
+        var sender = endpoint?.ToString() ?? "?"; // ip:port: one machine per connection, even behind one IP
         Console.WriteLine($"[tcp] client connected: {endpoint}");
+        _traffic?.Opened(sender);
 
         try
         {
@@ -76,8 +81,10 @@ public class TcpIngestServer
                 string? line;
                 while ((line = await reader.ReadLineAsync(ct)) != null)
                 {
-                    if (!string.IsNullOrWhiteSpace(line))
-                        await lane.Writer.WriteAsync((line, sender), ct);
+                    if (string.IsNullOrWhiteSpace(line))
+                        continue;
+                    _traffic?.LineReceived(sender);
+                    await lane.Writer.WriteAsync((line, sender), ct);
                 }
             }
         }
@@ -91,6 +98,7 @@ public class TcpIngestServer
         }
 
         Console.WriteLine($"[tcp] client disconnected: {endpoint}");
+        _traffic?.Closed(sender);
     }
 
     private async Task WorkAsync(Channel<(string Line, string Sender)> lane)
@@ -103,6 +111,7 @@ public class TcpIngestServer
             }
             catch (Exception ex)
             {
+                _traffic?.Unreadable(sender);
                 _problems.Write($"{sender}|{ex.GetType().Name}", $"[tcp] failed to process message from {sender}: {ex.Message}");
             }
         }

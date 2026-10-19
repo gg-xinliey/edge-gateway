@@ -22,10 +22,13 @@ public sealed class GatewayHost
     private readonly object _sync = new();
     private CancellationTokenSource? _currentRun;
 
-    public GatewayHost(GatewayConfigStore configStore, JsonSerializerOptions jsonOptions)
+    private readonly TrafficRegistry? _traffic;
+
+    public GatewayHost(GatewayConfigStore configStore, JsonSerializerOptions jsonOptions, TrafficRegistry? traffic = null)
     {
         _configStore = configStore;
         _jsonOptions = jsonOptions;
+        _traffic = traffic;
     }
 
     // starting | running | restarting | error
@@ -111,8 +114,8 @@ public sealed class GatewayHost
         var rejected = new ThrottledLog(TimeSpan.FromSeconds(60));
 
         // One line from one machine, parsed once: IO/motion lines go to MQTT,
-        // everything else to MES. "machine_id" and "timestamp" describe the
-        // message; they are not data tags.
+        // everything else to MES. "machine_id", "data_source" and "timestamp"
+        // describe the message; they are not data tags.
         void OnMessage(string raw, string sender)
         {
             Stats.Received();
@@ -121,7 +124,11 @@ public sealed class GatewayHost
             if (text.Length > 0 && text[0] == '{')
             {
                 using var doc = JsonDocument.Parse(raw);
-                if (mqttRelay.TryRelay(doc.RootElement)) return;
+                if (mqttRelay.TryRelay(doc.RootElement))
+                {
+                    _traffic?.Message(MachineFromTopic(doc.RootElement), sender, "MQTT", null);
+                    return;
+                }
                 rawTags = PayloadParser.Parse(doc.RootElement);
             }
             else
@@ -136,14 +143,21 @@ public sealed class GatewayHost
             if (string.IsNullOrWhiteSpace(machineId))
             {
                 Stats.Rejected();
+                _traffic?.Rejected(sender);
                 rejected.Write($"no-machine|{sender}", $"[ingest] line from {sender} rejected: no \"machine_id\"");
                 return;
             }
 
+            // Which source system sent it; the configured dataSource if none.
+            var dataSource = TakeString(rawTags, "data_source");
+            _traffic?.Message(machineId, sender, "MES", dataSource);
+
             // When it happened on the machine; arrival time if it sent none.
+            // No zone in the text: timestampsWithoutZone (UTC by default).
+            var zoneless = machine.ZonelessIsUtc ? DateTimeStyles.AssumeUniversal : DateTimeStyles.AssumeLocal;
             DateTimeOffset? eventTime =
                 TakeString(rawTags, "timestamp") is { } stamp &&
-                DateTimeOffset.TryParse(stamp, CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var at)
+                DateTimeOffset.TryParse(stamp, CultureInfo.InvariantCulture, zoneless, out var at)
                     ? at
                     : null;
 
@@ -159,11 +173,11 @@ public sealed class GatewayHost
                     continue;
                 }
 
-                intervalSender.Accept(machineId, dataGroup, fields, eventTime);
+                intervalSender.Accept(machineId, dataGroup, fields, eventTime, dataSource);
             }
         }
 
-        var tcpServer = new TcpIngestServer(machine.TcpPort, OnMessage);
+        var tcpServer = new TcpIngestServer(System.Net.IPAddress.Parse(machine.ListenAddress), machine.TcpPort, OnMessage, _traffic);
 
         // Own token for the parts, so one failing part can stop the others
         // without looking like a Restart().
@@ -186,7 +200,7 @@ public sealed class GatewayHost
                 RunNumber++;
                 StartedAt = DateTimeOffset.Now;
                 State = "running";
-                Console.WriteLine($"[gateway] running: machine {machine.MachineId}, gateway {machine.GatewayId}, tcp port {machine.TcpPort}");
+                Console.WriteLine($"[gateway] running: gateway {machine.GatewayId}, tcp {machine.ListenAddress}:{machine.TcpPort}");
             }
 
             await await Task.WhenAny(tasks);
@@ -231,6 +245,16 @@ public sealed class GatewayHost
     // One decimal below 10/s, so 1 message in 10 s shows as 0.1/s, not 0/s.
     private static string Rate(double perSecond) =>
         perSecond.ToString(perSecond < 10 ? "0.0" : "0", CultureInfo.InvariantCulture);
+
+    // Machine of an MQTT line: the topic segment before the fixed two-part
+    // ending, e.g. svi/TEST/NXT102/IO/input -> NXT102 (only 2 segments: the first).
+    private static string MachineFromTopic(JsonElement root)
+    {
+        if (!root.TryGetProperty("topic", out var t) || t.ValueKind != JsonValueKind.String)
+            return "(no topic)";
+        var segments = (t.GetString() ?? "").Split('/', StringSplitOptions.RemoveEmptyEntries);
+        return segments.Length >= 3 ? segments[^3] : segments.Length > 0 ? segments[0] : "(no topic)";
+    }
 
     // Removes key (any case) from the tags and returns its value as text.
     private static string? TakeString(Dictionary<string, object?> tags, string key)

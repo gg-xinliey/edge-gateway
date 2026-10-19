@@ -25,8 +25,9 @@ var jsonOptions = new JsonSerializerOptions
 
 var unidentified = new UnidentifiedTagTracker();
 var configStore = new GatewayConfigStore("Config", jsonOptions, unidentified);
-var gateway = new GatewayHost(configStore, jsonOptions);
-var adminServer = new AdminWebServer(adminPort, "wwwroot", configStore, gateway, unidentified, log, jsonOptions);
+var traffic = new TrafficRegistry(); // per connection / machine counts for the Machines view
+var gateway = new GatewayHost(configStore, jsonOptions, traffic);
+var adminServer = new AdminWebServer(adminPort, "wwwroot", configStore, gateway, unidentified, log, jsonOptions, traffic);
 
 Console.WriteLine("Edge gateway starting — Ctrl+C to stop");
 Console.WriteLine($"Configuration UI: http://localhost:{adminPort}/config/");

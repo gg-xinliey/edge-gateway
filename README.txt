@@ -177,3 +177,95 @@ open
 - MES batch (array in one POST): ~10x faster if MES supports it; ask the MES team
 - Machines view on the page, server heartbeat + per-machine online/offline (part D)
 - run as a Windows service
+
+
+==========================================================================
+update 2026-10-16 .. 10-19 : remote devices, UTC, data_source, Machines + Outbox views
+==========================================================================
+
+changes
+1. listen address: machine-config.json "listenAddress" (now 192.168.250.78, port 9000).
+   "0.0.0.0" = every address of this PC. the page refuses an IP that is not on this PC
+2. machine_id AND data_source come from each message. envelope data_source = the
+   message's; the configured dataSource is only used when a message has none
+3. data is kept apart per machine + data_source + group: own snapshot, own changes,
+   own sendEveryMs queue, own spans, own envelopes. two sources with the same group
+   are never merged into one record
+4. UTC everywhere for MES: record / start / end times and publish_timestamp are
+   "2026-10-16T08:25:28.086Z". an incoming "timestamp" without a zone is read as UTC
+   (machine-config "timestampsWithoutZone": "UTC" | "local"); with Z or +07:00 it is
+   taken as written. MQTT is unchanged: SpotWelding local "yyyy-MM-dd HH:mm:ss.fff"
+5. config page, new view "Machines" (refresh 4 s, Services/TrafficRegistry.cs)
+   - per machine_id: green (open + message in last 60 s) / orange (open, quiet) /
+     grey (disconnected), connection ip:port, last message, messages, to MES, to MQTT,
+     per s, count per data_source
+   - per TCP connection: lines received, lines without machine_id, unreadable lines
+     (red above 0), last line, machines on it. last 200 closed connections kept
+   - a connection is now named ip:port (was ip), so 2 machines behind 1 IP stay apart
+   - API: GET /api/machines
+6. config page, new view "Outbox" (read-only, Admin/OutboxReader.cs)
+   - day list (rows, waiting, MB); filter by machine, group, data source, sent/waiting
+     (no case: nxt101 = NXT101); newest 100 rows + "load older rows"; click a row =
+     the whole envelope
+   - files opened read-only without pooling: the writer and the daily cleanup are
+     never blocked. only yyyy-MM-dd or "legacy" map to a file (no path tricks)
+   - API: GET /api/outbox/days , /api/outbox?day=&machine=&group=&source=&status=&before=&limit= ,
+     /api/outbox/row?day=&id=   (no file for the day / no row = 404 with a message)
+7. USE_CASE.md: Machines + Outbox sections, 2 troubleshooting rows
+
+bugs fixed / found
+1. one Nexim message put a 192-item component list into unrelated events:
+   cause: one snapshot per machine + group merged the fields of every event type
+   -> snapshot per machine + data_source + group. if the source sends event_name as
+   data_source, only that event keeps its own fields
+2. timestamps without a zone were read as local time (UTC+7) -> read as UTC by default
+3. Outbox view: machine filter was case-sensitive -> COLLATE NOCASE
+4. Outbox view: unknown / deleted day returned an empty list -> 404 "No outbox file
+   for that day"
+5. Outbox view: machine suggestions did not show (input "list" is read-only as a JS
+   property -> setAttribute); 4 s refresh of Machines jumped the page to the top
+
+discoveries / notes
+- listenAddress 192.168.250.78 = 127.0.0.1 is refused. local tools must send to
+  192.168.250.78:9000. remote devices also need an inbound firewall rule for TCP 9000
+  (IT / admin, not done by the gateway)
+- Machines counts live in memory: kept on "Restart now", reset when the exe closes
+- "lines" on a connection is counted when the line arrives, before parsing. if the
+  source's sent count = "lines", nothing was lost on the way in
+- Span memory (last trigger value + start) lives in TimeStamper, which is rebuilt on
+  every config reload: restart AND saving PointMap / TimeStamp on the page. the next
+  message then opens a new span with no end and no previous_<trigger>
+- data_source is matched exactly (after trim): "PRODSTARTED" and "prodstarted" are
+  two sources
+- MachineConfig.machineId is no longer what the data is filed under; every message
+  must carry machine_id (the TODO comment on it is out of date)
+
+how to test
+- ..\LocalMqttTest\test-env\start-test-env.ps1 -NoSource : broker, MES, gateway
+  (builds first); devices send to 192.168.250.78:9000
+- page -> Machines: compare the source's sent count with "lines" on its connection
+- page -> Outbox: pick the day, type a machine, click a row
+
+tested 2026-10-19
+- build: 0 warnings, 0 errors
+- Outbox view on outbox-2026-10-16.db (3,350 rows, 0 waiting):
+  machine nxt101 + group traceability 100 rows, all NXT101 / TRACEABILITY   ok
+  load older: next 100, all ids lower                                        ok
+  data source PRODSTARTED: 146 rows, all PRODSTARTED                         ok
+  status waiting: 0                                                          ok
+  click a row: full envelope with UTC times                                  ok
+  day "..\..\x" and 2026-10-01: 404 ; row id 999999999: 404                  ok
+- Machines view: loads, empty state shown; NOT yet tested with live traffic
+
+status of earlier items
+- "Machines view ... per-machine online/offline (part D)": done (connection state,
+  60 s idle, counts). a server heartbeat to MES is still not done
+- on hold (PROCESS volume, full span in one record): unchanged
+
+remaining
+- Machines view with live traffic (2 machines, mixed data_source, 1 line without
+  machine_id)
+- line framing: one JSON per line works; one JSON spread over several lines does not
+- span memory lost on config save / restart (see notes) if MES needs every span closed
+- point-map edits made on the page are in bin\Debug\net8.0\Config, not in Config\
+- MES batch, Windows service (see "open" above)

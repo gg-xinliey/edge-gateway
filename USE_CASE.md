@@ -49,7 +49,10 @@ Gateway → MQTT, topic `svi/TEST/ASSY-L01-FCT-01/IO/input`:
 ```
 {"machine_id":"ASSY-L01-FCT-01","timestamp":"2026-10-12T10:00:00.123","MACHINE_STATUS":"RUN","GOOD_QTY":125}
 ```
-- `machine_id` is required. `timestamp` is optional: it is when the event happened on the machine, and the gateway uses it for MES times (otherwise the arrival time is used). Neither is a data tag.
+- `machine_id` is required. `timestamp` is optional: it is when the event happened on the machine, and the gateway uses it for MES times (otherwise the arrival time is used). A timestamp with `Z` or an offset (`+07:00`) is taken as written. **Without one it is UTC** (setting `timestampsWithoutZone` in machine-config.json: `UTC` or `local`).
+- Each `data_source` is kept apart: the same data group from two data sources (e.g. `mcstatechange` and `mcstartstate`, both with traceability tags) gives **two separate envelopes**, even when they arrive at the same time. Changes, intervals and Span times are tracked per machine + data_source + group.
+- **All MES times are sent in UTC with `Z`**, e.g. `2026-10-16T08:25:28.086Z` (`record_timestamp`, start/end times, `publish_timestamp`). MQTT keeps the SpotWelding local format `yyyy-MM-dd HH:mm:ss.fff`. `data_source` is optional: it goes into the envelope's `data_source` (otherwise `dataSource` from machine-config.json is used). None of these three is a data tag.
+- Any other field is a data tag. Tags not in the point map go to MES in group `UNIDENTIFIED` until you map them.
 - Put many tags in one message. One tag per line costs far more work.
 - Each tag is mapped through `point-map.json` into its data group.
 
@@ -87,7 +90,7 @@ All files are in the `Config\` folder **next to the running exe**, e.g. `bin\Rel
 | `point-map.json` | incoming tag → data group + fieldName | live, on save |
 | `timestamp-rules.json` | per data group: timestamp (SinglePoint / Span) and `sendEveryMs` (how often changes go to MES; 0 = right away, empty = 1000) | live, on save |
 | `mqtt-config.json` | broker address/port, `clientIdSuffix`, area, keepalive, deadband, rate | after restart |
-| `machine-config.json` | gatewayId, machineId, TCP port, MES URL, data source, `outboxKeepSentDays` | after restart |
+| `machine-config.json` | gatewayId, `listenAddress` + TCP port (`0.0.0.0` = all addresses; a specific IP = only that network card, then `127.0.0.1` is refused), MES URL, default data source, `timestampsWithoutZone` (`UTC` or `local`), `outboxKeepSentDays` | after restart |
 
 - **Best way:** use the config page. It checks your changes before saving, so a bad config is never written.
 - **By hand:** edit the file, then restart the gateway.
@@ -127,6 +130,26 @@ Open **http://localhost:5100/config/**. It only opens on the gateway PC itself.
 1. Edit the values.
 2. These only apply after a restart.
 
+**Machines** (read-only, updates every 4 s)
+1. One row per `machine_id` the gateway has received: a dot for the state, the connection (ip:port), the last message, and the message counts.
+   - Green = connection open and a message in the last 60 s. Orange = open but quiet for over 60 s. Grey = disconnected.
+   - **messages** = all lines with this machine; **to MES** = lines that went into the outbox; **to MQTT** = lines relayed to the broker.
+   - **data sources** = how many messages came with each `data_source`.
+2. **Connections** lists each TCP connection (open first, plus the last 200 closed ones):
+   - **lines**: non-empty lines received on it.
+   - **without machine_id** (red if above 0): lines that were dropped.
+   - **unreadable** (red if above 0): lines that weren't valid JSON.
+3. To check that nothing was missed: the source's count of sent lines must equal **lines** on its connection. Every line is counted when it arrives, before it is handled.
+4. Counts start when the exe starts. A **Restart now** from the page keeps them; closing the exe resets them.
+
+**Outbox** (read-only)
+1. Pick a day. Each day shows its rows, how many still wait for MES, and its size. Days are kept for 7 days after all rows were delivered.
+2. Filter by machine, group, data source, or **sent to MES** / **waiting**. Machine and data source don't care about upper or lower case.
+3. The list shows the newest 100 rows. **load older rows** shows the next 100.
+4. Click a row to show the whole envelope exactly as it went (or will go) to MES. Click it again to close it.
+5. **refresh** reloads the day list and the rows.
+6. Times show in this PC's local time. The envelope itself keeps UTC (`…Z`).
+
 **Log**
 1. Shows everything the gateway printed, with problems in red. Tick **Show problems only** to filter.
 2. When a new problem arrives, the page shows a red pop-up, and the status area shows **⚠ N new problems · view log**. Click it to open the Log.
@@ -149,6 +172,8 @@ Open **http://localhost:5100/config/**. It only opens on the gateway PC itself.
 | MQTT keeps disconnecting and reconnecting | Two gateways share a `clientIdSuffix` on the same broker. |
 | Tag shows up as UNIDENTIFIED | Map it in PointMap → ⚠ Unidentified. |
 | A machine's data never reaches MES | Look for `[ingest] ... rejected: no "machine_id"` in the Log. Does each message have `machine_id`? |
+| Not sure every line arrived | Config page → **Machines** → **Connections**: **lines** must equal what the source sent. Check **without machine_id** and **unreadable** too. |
+| Need to see what MES got for a machine | Config page → **Outbox** → pick the day, type the machine, click a row. |
 | A change reaches MES late | It waits for the group's `sendEveryMs` (PRODUCTION: up to 10 s). |
 | Backlog keeps growing | MES delivered/s is lower than queued/s in `[stats]`. Check that MES is reachable and fast enough. |
 | Page says "Gateway stopped: …" | Fix the named setting (e.g. port in use), save, then **Restart now**. |

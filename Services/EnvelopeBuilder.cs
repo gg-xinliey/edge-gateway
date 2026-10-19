@@ -17,14 +17,15 @@ public class EnvelopeBuilder
         _protocol = protocol;
     }
 
-    public Envelope Build(string machineId, string dataGroup, Dictionary<string, object?> payload)
+    // dataSource: the message's own "data_source"; the configured one when it sent none.
+    public Envelope Build(string machineId, string dataGroup, Dictionary<string, object?> payload, string? dataSource = null)
     {
         return new Envelope
         {
             event_id = Guid.NewGuid().ToString(),
             gateway_id = _gatewayId,
             machine_id = machineId,
-            data_source = _dataSource,
+            data_source = string.IsNullOrWhiteSpace(dataSource) ? _dataSource : dataSource,
             protocol = _protocol,
             data_group = dataGroup,
             publish_timestamp = TimeStamper.FormatIso(DateTimeOffset.Now),

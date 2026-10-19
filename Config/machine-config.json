@@ -1,8 +1,10 @@
 {
   "gatewayId": "TEST",
   "machineId": "ASSY-L01-FCT-01",
+  "listenAddress": "192.168.250.78",
   "tcpPort": 9000,
   "dataSource": "TCP-BRIDGE-01",
+  "timestampsWithoutZone": "UTC",
   "protocolLabel": "TCP/JSON-CSV",
   "mesUrl": "http://localhost:5000/api/v1/machine-events",
   "outboxKeepSentDays": 7

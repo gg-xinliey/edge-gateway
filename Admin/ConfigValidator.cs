@@ -104,6 +104,11 @@ public static class ConfigValidator
             return "gatewayId is empty.";
         if (string.IsNullOrWhiteSpace(machine.MachineId))
             return "machineId is empty.";
+        if (!System.Net.IPAddress.TryParse(machine.ListenAddress, out var listen))
+            return "listenAddress must be an IP address, e.g. 0.0.0.0 (all) or 192.168.250.78.";
+        if (!listen.Equals(System.Net.IPAddress.Any) && !System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces()
+                .SelectMany(n => n.GetIPProperties().UnicastAddresses).Any(a => a.Address.Equals(listen)))
+            return $"listenAddress {machine.ListenAddress} is not an address of this PC.";
         if (machine.TcpPort is < 1 or > 65535)
             return "tcpPort must be between 1 and 65535.";
         if (machine.TcpPort == adminPort)
@@ -112,6 +117,8 @@ public static class ConfigValidator
             return "mesUrl must be a full http:// or https:// address.";
         if (machine.OutboxKeepSentDays < 1)
             return "outboxKeepSentDays must be at least 1.";
+        if (machine.TimestampsWithoutZone.Trim().ToLowerInvariant() is not ("utc" or "local"))
+            return "timestampsWithoutZone must be UTC or local.";
 
         return null;
     }

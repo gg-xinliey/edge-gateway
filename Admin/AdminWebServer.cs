@@ -23,6 +23,7 @@ public sealed class AdminWebServer
     private readonly GatewayHost _gateway;
     private readonly UnidentifiedTagTracker _unidentified;
     private readonly GatewayLog _log;
+    private readonly TrafficRegistry? _traffic;
     private readonly JsonSerializerOptions _jsonOptions;
     private readonly int _port;
 
@@ -54,9 +55,11 @@ public sealed class AdminWebServer
         GatewayHost gateway,
         UnidentifiedTagTracker unidentified,
         GatewayLog log,
-        JsonSerializerOptions jsonOptions)
+        JsonSerializerOptions jsonOptions,
+        TrafficRegistry? traffic = null)
     {
         _log = log;
+        _traffic = traffic;
         _port = port;
         _wwwRoot = Path.IsPathRooted(webRoot)
             ? Path.GetFullPath(webRoot)
@@ -158,6 +161,48 @@ public sealed class AdminWebServer
 
             _gateway.Restart();
             await WriteJsonAsync(context.Response, 202, new { ok = true, message = "Restarting gateway." });
+            return;
+        }
+
+        // Machines view: connections + machines with status and message counts.
+        if (HttpMethodsEqual(context, "GET") && path.Equals("/api/machines", StringComparison.OrdinalIgnoreCase))
+        {
+            await WriteJsonAsync(context.Response, 200, _traffic?.Snapshot() ?? new { machines = Array.Empty<object>(), connections = Array.Empty<object>() });
+            return;
+        }
+
+        // Outbox view (read-only): days, one day's rows (filters + paging), one row in full.
+        if (HttpMethodsEqual(context, "GET") && path.Equals("/api/outbox/days", StringComparison.OrdinalIgnoreCase))
+        {
+            await WriteJsonAsync(context.Response, 200, OutboxReader.Days());
+            return;
+        }
+
+        if (HttpMethodsEqual(context, "GET") && path.Equals("/api/outbox", StringComparison.OrdinalIgnoreCase))
+        {
+            var q = context.Request.QueryString;
+            var before = long.TryParse(q["before"], out var b) ? b : (long?)null;
+            var limit = int.TryParse(q["limit"], out var l) ? l : 100;
+            var page = OutboxReader.Query(q["day"] ?? "", q["machine"], q["group"], q["source"], q["status"], before, limit);
+            if (page is null)
+                await WriteJsonAsync(context.Response, 404, new { error = "No outbox file for that day (older than 7 days, or not a yyyy-MM-dd day)." });
+            else
+                await WriteJsonAsync(context.Response, 200, page);
+            return;
+        }
+
+        if (HttpMethodsEqual(context, "GET") && path.Equals("/api/outbox/row", StringComparison.OrdinalIgnoreCase))
+        {
+            var q = context.Request.QueryString;
+            var body = long.TryParse(q["id"], out var id) ? OutboxReader.Row(q["day"] ?? "", id) : null;
+            if (body is null)
+            {
+                await WriteJsonAsync(context.Response, 404, new { error = "Row not found." });
+                return;
+            }
+
+            using var envelope = JsonDocument.Parse(body);
+            await WriteJsonAsync(context.Response, 200, envelope.RootElement);
             return;
         }
 

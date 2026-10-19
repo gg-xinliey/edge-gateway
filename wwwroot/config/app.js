@@ -31,6 +31,8 @@ const state = {
   seenErrors: 0,            // errorCount when the Log view was last opened
   logsLoaded: false,        // no pop-ups for the backlog on first load
   errorsOnly: false,
+  machines: null,           // /api/machines
+  outbox: { days: null, day: null, machine: '', group: '', source: '', status: '', rows: [], more: false, open: {}, loading: false },
 };
 const MAX_LOG_LINES = 500;
 
@@ -143,17 +145,183 @@ function render() {
   view.replaceChildren();
 
   const isLog = state.view === 'log';
-  $('saveBtn').hidden = isLog;
+  const readOnly = !FILES[state.view]; // Log / Machines / Outbox: nothing to save
+  $('saveBtn').hidden = readOnly;
 
   if (state.view === 'point-map') renderPointMap(view);
   else if (state.view === 'timestamp-rules') renderTimestamp(view);
   else if (isLog) renderLog(view);
+  else if (state.view === 'machines') renderMachines(view);
+  else if (state.view === 'outbox') renderOutbox(view);
   else renderForm(view);
 
   $('note').textContent =
     isLog ? 'Newest at the bottom. Full history: logs\\gateway-<date>.log next to the exe (14 days).' :
+    state.view === 'machines' ? 'Counts since the gateway exe started (a restart from this page keeps them). Updates every 4 s.' :
+    state.view === 'outbox' ? 'Read-only. One file per day, kept 7 days after everything in it was delivered. Times shown in this PC\'s local time.' :
     FILES[state.view].restartToApply ? 'Applies after the gateway restarts.' :
     'Applies as soon as you save.';
+}
+
+// ---------- Machines: who is connected and how much they sent ----------
+
+function ago(iso) {
+  if (!iso) return '—';
+  const s = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+  return s < 60 ? `${s} s ago` : s < 3600 ? `${Math.floor(s / 60)} min ago` : `${Math.floor(s / 3600)} h ${Math.floor(s % 3600 / 60)} min ago`;
+}
+
+const localTime = iso => iso ? new Date(iso).toLocaleString() : '—';
+
+function table(headers, rows) {
+  return h('table', { class: 'data' },
+    h('thead', {}, h('tr', {}, ...headers.map(t => h('th', { textContent: t })))),
+    h('tbody', {}, ...rows));
+}
+
+function renderMachines(view) {
+  const data = state.machines;
+  if (!data) {
+    view.append(h('div', { class: 'empty', textContent: 'Loading…' }));
+    return;
+  }
+
+  const machines = data.machines.filter(m => matches(`${m.machineId} ${m.connection} ${m.status} ${m.dataSources.map(d => d.name).join(' ')}`));
+  const online = data.machines.filter(m => m.status !== 'disconnected').length;
+  const openConnections = data.connections.filter(c => c.open).length;
+  view.append(h('p', { class: 'section-note', textContent:
+    `${data.machines.length} machines (${online} connected) · ${openConnections} open connections` }));
+
+  view.append(machines.length ? table(
+    ['', 'machine', 'connection', 'last message', 'messages', 'to MES', 'to MQTT', 'per s', 'data sources'],
+    machines.map(m => h('tr', {},
+      h('td', {}, h('span', { class: `dot ${m.status}`, title: m.status })),
+      h('td', { class: 'strong', textContent: m.machineId }),
+      h('td', { textContent: m.status === 'disconnected' ? `${m.connection} (gone ${ago(m.disconnectedAt)})` : m.connection }),
+      h('td', { textContent: ago(m.lastMessage), title: localTime(m.lastMessage) }),
+      h('td', { class: 'num', textContent: m.total.toLocaleString() }),
+      h('td', { class: 'num', textContent: m.mes.toLocaleString() }),
+      h('td', { class: 'num', textContent: m.mqtt.toLocaleString() }),
+      h('td', { class: 'num', textContent: m.perSecond.toFixed(1) }),
+      h('td', { class: 'small', textContent: m.dataSources.map(d => `${d.name} ${d.count.toLocaleString()}`).join(' · ') || '—' })))
+  ) : h('div', { class: 'empty', textContent: data.machines.length ? 'No machine matches the search.' : 'No machine has sent anything yet.' }));
+
+  view.append(h('h3', { class: 'sub', textContent: 'Connections' }));
+  view.append(data.connections.length ? table(
+    ['', 'connection', 'since', 'lines', 'without machine_id', 'unreadable', 'last line', 'machines'],
+    data.connections.map(c => h('tr', {},
+      h('td', {}, h('span', { class: `dot ${c.open ? 'connected' : 'disconnected'}`, title: c.open ? 'open' : 'closed' })),
+      h('td', { class: 'strong', textContent: c.endpoint }),
+      h('td', { textContent: c.open ? localTime(c.connectedAt) : `closed ${ago(c.closedAt)}` }),
+      h('td', { class: 'num', textContent: c.lines.toLocaleString() }),
+      h('td', { class: c.rejected ? 'num bad' : 'num', textContent: c.rejected.toLocaleString() }),
+      h('td', { class: c.unreadable ? 'num bad' : 'num', textContent: c.unreadable.toLocaleString() }),
+      h('td', { textContent: ago(c.lastLine) }),
+      h('td', { class: 'small', textContent: c.machines.join(', ') || '—' })))
+  ) : h('div', { class: 'empty', textContent: 'No connection yet.' }));
+}
+
+async function pollMachines() {
+  try { state.machines = await request('/api/machines'); } catch { return; }
+  if (state.view !== 'machines') return;
+  const scroll = [window.scrollY, $('view').scrollTop]; // the refresh must not jump the page back up
+  render();
+  window.scrollTo(0, scroll[0]);
+  $('view').scrollTop = scroll[1];
+}
+
+// ---------- Outbox: what went (or waits to go) to MES, per day ----------
+
+async function renderOutbox(view) {
+  const o = state.outbox;
+  if (!o.days) {
+    view.append(h('div', { class: 'empty', textContent: 'Loading…' }));
+    try { o.days = await request('/api/outbox/days'); } catch (e) { o.days = []; toast(e.message, true); }
+    if (!o.day && o.days.length) o.day = o.days[0].day;
+    if (state.view !== 'outbox') return;
+    if (o.day) loadOutbox(false); // marks "loading" before the first render
+    render();
+    return;
+  }
+
+  const groups = [...new Set([...pointMapGroups(), 'UNIDENTIFIED'])];
+  const knownMachines = (state.machines?.machines ?? []).map(m => m.machineId);
+  const reload = () => loadOutbox(false);
+
+  const daySelect = select(o.days.map(d => [d.day, `${d.day}  (${d.rows.toLocaleString()} rows, ${d.waiting.toLocaleString()} waiting, ${d.megabytes} MB)`]),
+    o.day ?? '', v => { o.day = v; reload(); }, 'day');
+  const machineInput = h('input', { value: o.machine, placeholder: 'all machines', 'aria-label': 'machine',
+    onchange: e => { o.machine = e.target.value.trim(); reload(); } });
+  machineInput.setAttribute('list', 'outboxMachines'); // read-only as a property
+  const machineList = h('datalist', { id: 'outboxMachines' }, ...knownMachines.map(m => h('option', { value: m })));
+  const groupSelect = select([['', 'all groups'], ...groups.map(g => [g, g])], o.group, v => { o.group = v; reload(); }, 'group');
+  const sourceInput = h('input', { value: o.source, placeholder: 'all data sources', 'aria-label': 'data source',
+    onchange: e => { o.source = e.target.value.trim(); reload(); } });
+  const statusSelect = select([['', 'sent + waiting'], ['sent', 'sent to MES'], ['waiting', 'waiting']], o.status, v => { o.status = v; reload(); }, 'status');
+
+  view.append(h('div', { class: 'outbox-tools' }, daySelect, machineInput, machineList, groupSelect, sourceInput, statusSelect,
+    h('button', { type: 'button', textContent: 'refresh', onclick: () => { o.days = null; render(); } })));
+
+  if (!o.days.length) {
+    view.append(h('div', { class: 'empty', textContent: 'The outbox is empty.' }));
+    return;
+  }
+
+  const rows = o.rows.filter(r => matches(`${r.machineId} ${r.dataSource} ${r.group} ${r.preview}`));
+  view.append(rows.length ? table(
+    ['', 'created', 'machine', 'data source', 'group', 'MES', 'size', 'payload'],
+    rows.flatMap(r => {
+      const open = o.open[r.id];
+      const tr = h('tr', { class: 'clickable', title: 'Click to show the whole envelope', onclick: () => toggleRow(r.id) },
+        h('td', { textContent: open ? '▾' : '▸' }),
+        h('td', { class: 'nowrap', textContent: new Date(r.createdAt).toLocaleTimeString() }),
+        h('td', { class: 'strong', textContent: r.machineId ?? '—' }),
+        h('td', { textContent: r.dataSource ?? '—' }),
+        h('td', { textContent: r.group }),
+        h('td', { class: r.sent ? 'nowrap' : 'nowrap warn', textContent: r.sent ? `sent ${new Date(r.sentAt).toLocaleTimeString()}` : 'waiting' }),
+        h('td', { class: 'num', textContent: r.size >= 1024 ? `${(r.size / 1024).toFixed(1)} KB` : `${r.size} B` }),
+        h('td', { class: 'small preview', textContent: r.preview }));
+      return open ? [tr, h('tr', {}, h('td', { colSpan: 8 }, h('pre', { class: 'json', textContent: open })))] : [tr];
+    })
+  ) : h('div', { class: 'empty', textContent: o.loading ? 'Loading…' : 'No rows for these filters.' }));
+
+  if (o.more)
+    view.append(h('button', { type: 'button', class: 'more', textContent: 'load older rows', onclick: () => loadOutbox(true) }));
+}
+
+async function loadOutbox(more) {
+  const o = state.outbox;
+  if (!o.day) return;
+  o.loading = true;
+  const params = new URLSearchParams({ day: o.day, limit: '100' });
+  if (o.machine) params.set('machine', o.machine);
+  if (o.group) params.set('group', o.group);
+  if (o.source) params.set('source', o.source);
+  if (o.status) params.set('status', o.status);
+  if (more && o.rows.length) params.set('before', o.rows[o.rows.length - 1].id);
+
+  try {
+    const page = (await request(`/api/outbox?${params}`)).rows;
+    o.rows = more ? o.rows.concat(page) : page;
+    o.more = page.length === 100;
+    if (!more) o.open = {};
+  } catch (e) {
+    toast(e.message, true);
+  }
+  o.loading = false;
+  if (state.view === 'outbox') render();
+}
+
+async function toggleRow(id) {
+  const o = state.outbox;
+  if (o.open[id]) { delete o.open[id]; render(); return; }
+  try {
+    const envelope = await request(`/api/outbox/row?day=${encodeURIComponent(o.day)}&id=${id}`);
+    o.open[id] = JSON.stringify(envelope, null, 2);
+  } catch (e) {
+    toast(e.message, true);
+  }
+  render();
 }
 
 // Log: everything the gateway printed, problems in red.
@@ -686,5 +854,6 @@ window.addEventListener('beforeunload', e => {
   }
   pollStatus();
   pollLogs();
-  setInterval(() => { pollStatus(); pollLogs(); }, 4000);
+  pollMachines();
+  setInterval(() => { pollStatus(); pollLogs(); pollMachines(); }, 4000);
 })();
