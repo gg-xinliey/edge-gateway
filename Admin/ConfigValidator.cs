@@ -45,6 +45,9 @@ public static class ConfigValidator
                 return $"Tag '{entry.Tag}' has no data group.";
             if (!seen.Add(entry.Tag))
                 return $"Tag '{entry.Tag}' is listed twice. Tags must be unique (ignoring case).";
+            if (entry.Tag.Contains(EdgeGateway.Services.Normalizer.JoinMark)
+                && entry.Tag.Split(EdgeGateway.Services.Normalizer.JoinMark).Any(part => string.IsNullOrWhiteSpace(part)))
+                return $"Joined tag '{entry.Tag}' has an empty part. Write it like line_no+process_id.";
         }
 
         return null;

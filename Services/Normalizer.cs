@@ -16,15 +16,29 @@ public class Normalizer
     // Never sent to MES (MES has no such table); a tag mapped here counts as not mapped.
     public const string UnidentifiedGroup = "UNIDENTIFIED";
 
+    // A tag "line_no+process_id" is a joined field: the values of those tags,
+    // joined with "_" (001 + xxxx = "001_xxxx"). Made only when every part is
+    // in the message, so the field never gets half a value.
+    public const char JoinMark = '+';
+    public const string JoinSeparator = "_";
+    private readonly List<(PointMapEntry Point, string[] Parts)> _joins;
+    private readonly HashSet<string> _joinParts; // tags used in a joined field: known, not unmapped
+
     public Normalizer(List<PointMapEntry> pointMap, UnidentifiedTagTracker? unidentified = null)
     {
         _byTag = pointMap.ToDictionary(p => p.Tag, StringComparer.OrdinalIgnoreCase);
         _unidentified = unidentified;
+        _joins = pointMap
+            .Where(p => p.Tag.Contains(JoinMark) && !p.DataGroup.Equals(UnidentifiedGroup, StringComparison.OrdinalIgnoreCase))
+            .Select(p => (p, p.Tag.Split(JoinMark, StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)))
+            .ToList();
+        _joinParts = new HashSet<string>(_joins.SelectMany(j => j.Parts), StringComparer.OrdinalIgnoreCase);
     }
 
-    // Mapped to a real group, or set to ignore.
+    // Mapped to a real group, set to ignore, or part of a joined field.
     public bool IsMapped(string tag) =>
-        _byTag.TryGetValue(tag, out var point) && !point.DataGroup.Equals(UnidentifiedGroup, StringComparison.OrdinalIgnoreCase);
+        (_byTag.TryGetValue(tag, out var point) && !point.DataGroup.Equals(UnidentifiedGroup, StringComparison.OrdinalIgnoreCase))
+        || _joinParts.Contains(tag);
 
     // The tags of a message that the mapping doesn't know (topic_* helpers left
     // out). Each goes on the Unidentified list with its value (logged the first time).
@@ -72,6 +86,10 @@ public class Normalizer
                 bucketKey = point.DataGroup;
                 fieldName = point.FieldName;
             }
+            else if (_joinParts.Contains(tag))
+            {
+                continue; // only used in a joined field (below)
+            }
             else
             {
                 // Logged the first time only; the config page keeps the count.
@@ -85,6 +103,30 @@ public class Normalizer
                 buckets[bucketKey] = bucket = new Dictionary<string, object?>();
 
             bucket[fieldName] = value;
+        }
+
+        foreach (var (point, parts) in _joins)
+        {
+            var values = new List<string>(parts.Length);
+            foreach (var part in parts)
+            {
+                var found = rawTags.FirstOrDefault(t => t.Key.Equals(part, StringComparison.OrdinalIgnoreCase));
+                if (found.Key is null || found.Value is null)
+                    break;
+                values.Add(found.Value switch
+                {
+                    string s => s,
+                    double d => d.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    bool b => b ? "true" : "false",
+                    var other => JsonSerializer.Serialize(other)
+                });
+            }
+            if (values.Count < parts.Length)
+                continue; // a part is missing: the field keeps its last value
+
+            if (!buckets.TryGetValue(point.DataGroup, out var bucket))
+                buckets[point.DataGroup] = bucket = new Dictionary<string, object?>();
+            bucket[point.FieldName] = string.Join(JoinSeparator, values);
         }
 
         return buckets;

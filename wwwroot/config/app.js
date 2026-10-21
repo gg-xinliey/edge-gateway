@@ -356,7 +356,8 @@ function pointMapGroups() {
 }
 
 function unidentifiedList() {
-  const mapped = new Set(state.data['point-map'].map(row => (row.tag ?? '').toLowerCase()));
+  // A joined tag (line_no+process_id) maps each of its parts too.
+  const mapped = new Set(state.data['point-map'].flatMap(row => (row.tag ?? '').toLowerCase().split('+').map(t => t.trim())));
   return state.unidentified.filter(u => !mapped.has(u.tag.toLowerCase()));
 }
 
@@ -908,10 +909,10 @@ function renderGroupFields(view, group, withTitle) {
       }));
   }
 
-  // Extra fields: no MES column (MES keeps them in payload_json), or every field of a non-MES group.
+  // Extra fields: no MES column (never in the MES payload), or every field of a non-MES group.
   const extraGrid = h('div', { class: 'grid two' },
     h('div', { class: 'head', textContent: 'incoming tag' }),
-    h('div', { class: 'head', textContent: columns ? 'extra field (no MES column)' : 'fieldName' }),
+    h('div', { class: 'head', textContent: columns ? 'extra field (no MES column, NOT sent)' : 'fieldName' }),
     h('div'));
   let extras = 0;
   for (const row of state.data['point-map']) {
@@ -926,7 +927,7 @@ function renderGroupFields(view, group, withTitle) {
 
   if (extras || !searching) {
     if (columns)
-      section.append(h('p', { class: 'section-note extra-note', textContent: 'Extra fields for this tab only: sent to MES after the MES fields, kept in payload_json.' }));
+      section.append(h('p', { class: 'section-note extra-note', textContent: 'Extra fields for this tab only: NOT sent to MES (the payload has only the MES fields). Move a tag to a MES field above when it belongs there.' }));
     section.append(extraGrid);
   }
 

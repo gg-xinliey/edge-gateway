@@ -59,29 +59,23 @@ public class EnvelopeBuilder
     }
 
     // MES wants every column of the group's table present, null when the machine
-    // did not send it, in the table's order. Fields MES has no column for follow
-    // after them (MES keeps the whole payload in payload_json). A field that
-    // matches a column in another case gets the column's spelling.
+    // did not send it, in the table's order, and nothing else: extra fields (no
+    // MES column) and time fields without a column (record_timestamp ...) are not
+    // sent. A field that matches a column in another case gets the column's spelling.
+    // A group with no MES table in mes-schema.json is sent as it is.
     private static Dictionary<string, object?> Complete(Dictionary<string, object?> record, IReadOnlyList<string>? mesColumns)
     {
         if (mesColumns is null || mesColumns.Count == 0)
             return record;
 
-        var payload = new Dictionary<string, object?>(mesColumns.Count + record.Count);
-        var used = new HashSet<string>(StringComparer.Ordinal);
+        var payload = new Dictionary<string, object?>(mesColumns.Count);
         foreach (var column in mesColumns)
         {
             var name = record.ContainsKey(column)
                 ? column
                 : record.Keys.FirstOrDefault(k => k.Equals(column, StringComparison.OrdinalIgnoreCase));
             payload[column] = name is null ? null : record[name];
-            if (name is not null)
-                used.Add(name);
         }
-
-        foreach (var (name, value) in record)
-            if (!used.Contains(name) && !payload.ContainsKey(name))
-                payload[name] = value;
 
         return payload;
     }
