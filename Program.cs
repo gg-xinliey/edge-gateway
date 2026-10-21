@@ -25,9 +25,20 @@ var jsonOptions = new JsonSerializerOptions
 
 var unidentified = new UnidentifiedTagTracker();
 var configStore = new GatewayConfigStore("Config", jsonOptions, unidentified);
+// Machines with their own mapping (Config/machines/<machine_id>/); the rest use the shared one.
+var machines = new MachineRegistry(configStore, unidentified, jsonOptions);
+if (machines.Ids.Count > 0)
+    Console.WriteLine($"[config] machines with their own mapping: {string.Join(", ", machines.Ids)}");
 var traffic = new TrafficRegistry(); // per connection / machine counts for the Machines view
-var gateway = new GatewayHost(configStore, jsonOptions, traffic);
-var adminServer = new AdminWebServer(adminPort, "wwwroot", configStore, gateway, unidentified, log, jsonOptions, traffic);
+
+// message_ids of the last 10 min, kept over a clean restart (saved below on Ctrl+C).
+var messageIdsPath = Path.Combine(AppContext.BaseDirectory, "state", "message-ids.txt");
+var messageIds = MessageIdFilter.Load(messageIdsPath);
+if (messageIds.Count > 0)
+    Console.WriteLine($"[ingest] {messageIds.Count:N0} message_ids from the last {MessageIdFilter.Window.TotalMinutes:0} min loaded (duplicate check)");
+
+var gateway = new GatewayHost(machines, jsonOptions, traffic, messageIds);
+var adminServer = new AdminWebServer(adminPort, "wwwroot", machines, gateway, log, jsonOptions, traffic);
 
 Console.WriteLine("Edge gateway starting — Ctrl+C to stop");
 Console.WriteLine($"Configuration UI: http://localhost:{adminPort}/config/");
@@ -43,3 +54,9 @@ await Task.WhenAll(
     gateway.RunAsync(cts.Token),      // TCP in -> MES outbox / digital twin; restartable
     adminServer.RunAsync(cts.Token)   // config page; stays up across restarts
 );
+
+// Only reached on Ctrl+C (a closed window or a hard kill never gets here),
+// so the log shows whether the last stop was a clean one. ("stopped" would mark
+// the line as a problem in the log.)
+var savedIds = messageIds.Save(messageIdsPath);
+Console.WriteLine($"[gateway] shut down cleanly (Ctrl+C): held data written to the outbox, {savedIds:N0} message_ids saved");

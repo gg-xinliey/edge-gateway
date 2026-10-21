@@ -19,6 +19,7 @@ public sealed class AdminWebServer
     private readonly HttpListener _listener = new();
     private readonly string _wwwRoot;
     private readonly string _configRoot;
+    private readonly MachineRegistry _machines;
     private readonly GatewayConfigStore _configStore;
     private readonly GatewayHost _gateway;
     private readonly UnidentifiedTagTracker _unidentified;
@@ -38,7 +39,16 @@ public sealed class AdminWebServer
         ["point-map"] = "point-map.json",
         ["timestamp-rules"] = "timestamp-rules.json",
         ["mqtt-config"] = "mqtt-config.json",
-        ["machine-config"] = "machine-config.json"
+        ["machine-config"] = "machine-config.json",
+        ["mes-schema"] = "mes-schema.json" // the MES format: columns per data group, for every machine
+    };
+
+    // Only one of these exists, for all machines (no ?machine=).
+    private static readonly HashSet<string> SharedOnly = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "mqtt-config",
+        "machine-config",
+        "mes-schema"
     };
 
     // Read only when the gateway (re)starts; the other two are applied live on save.
@@ -51,9 +61,8 @@ public sealed class AdminWebServer
     public AdminWebServer(
         int port,
         string webRoot,
-        GatewayConfigStore configStore,
+        MachineRegistry machines,
         GatewayHost gateway,
-        UnidentifiedTagTracker unidentified,
         GatewayLog log,
         JsonSerializerOptions jsonOptions,
         TrafficRegistry? traffic = null)
@@ -64,11 +73,20 @@ public sealed class AdminWebServer
         _wwwRoot = Path.IsPathRooted(webRoot)
             ? Path.GetFullPath(webRoot)
             : Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, webRoot));
-        _configRoot = configStore.ConfigRoot; // same folder the runtime reloads from
-        _configStore = configStore;
+        _machines = machines;
+        _configStore = machines.Shared;
+        _configRoot = _configStore.ConfigRoot; // same folder the runtime reloads from
         _gateway = gateway;
-        _unidentified = unidentified;
+        _unidentified = machines.SharedUnidentified;
         _jsonOptions = jsonOptions;
+    }
+
+    // ?machine=<id> on PointMap / TimeStamp / Unidentified / Outbox calls: that
+    // machine's own mapping (or outbox folder). Empty = the shared one.
+    private static string? MachineParam(HttpListenerContext context)
+    {
+        var value = context.Request.QueryString["machine"];
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     }
 
     public async Task RunAsync(CancellationToken cancellationToken)
@@ -143,8 +161,10 @@ public sealed class AdminWebServer
                 startedAt = _gateway.StartedAt,
                 run = _gateway.RunNumber,
                 gatewayId = _gateway.Machine.GatewayId,
-                machineId = _gateway.Machine.MachineId,
                 tcpPort = _gateway.Machine.TcpPort,
+                held = _machines.Held.Count,         // machines sending without a tab (data held)
+                unmapped = _machines.Unmapped.Count, // machines whose data is held for tags not mapped yet
+                failed = FailedCount(),              // messages MES rejected as invalid, waiting for re-send / discard
                 adminPort = _port,
                 stats = _gateway.Stats.Latest // per-second rates over the last 10 s
             });
@@ -171,10 +191,80 @@ public sealed class AdminWebServer
             return;
         }
 
+        // Machines sending MES data without a tab: their data is held until registered.
+        if (HttpMethodsEqual(context, "GET") && path.Equals("/api/held", StringComparison.OrdinalIgnoreCase))
+        {
+            await WriteJsonAsync(context.Response, 200, _machines.Held.Snapshot());
+            return;
+        }
+
+        // Machines whose data is held for tags their mapping doesn't know yet.
+        if (HttpMethodsEqual(context, "GET") && path.Equals("/api/unmapped", StringComparison.OrdinalIgnoreCase))
+        {
+            await WriteJsonAsync(context.Response, 200, _machines.Unmapped.Snapshot());
+            return;
+        }
+
+        // Machines with their own mapping: list, add (copying a mapping), remove.
+        if (path.Equals("/api/machine-configs", StringComparison.OrdinalIgnoreCase))
+        {
+            if (HttpMethodsEqual(context, "GET"))
+            {
+                await WriteJsonAsync(context.Response, 200, _machines.List().Select(m => new { machineId = m.Id, readable = m.Readable, error = m.Error }));
+                return;
+            }
+
+            if (HttpMethodsEqual(context, "POST"))
+            {
+                using var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding ?? Encoding.UTF8);
+                using var body = JsonDocument.Parse(await reader.ReadToEndAsync());
+                string? Text(string name) => body.RootElement.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString()?.Trim() : null;
+
+                var id = Text("machineId") ?? "";
+                var heldOn = _machines.Held.ConnectionOf(id); // was it waiting (held)?
+                var problem = _machines.Create(id, Text("copyFrom"));
+                if (problem is not null)
+                {
+                    await WriteJsonAsync(context.Response, 400, new { error = problem });
+                    return;
+                }
+
+                // Its adapter has been keeping the held messages: close its
+                // connection so it reconnects and sends them again, now processed.
+                var reconnected = heldOn is not null && _gateway.Disconnect(heldOn);
+                await WriteJsonAsync(context.Response, 200, new { ok = true, wasHeld = heldOn is not null, reconnected });
+                return;
+            }
+
+            if (HttpMethodsEqual(context, "DELETE"))
+            {
+                var id = MachineParam(context);
+                if (id is not null && _machines.Remove(id))
+                    await WriteJsonAsync(context.Response, 200, new { ok = true });
+                else
+                    await WriteJsonAsync(context.Response, 404, new { error = "That machine has no own mapping." });
+                return;
+            }
+
+            await WriteJsonAsync(context.Response, 405, new { error = "Method not allowed" });
+            return;
+        }
+
         // Outbox view (read-only): days, one day's rows (filters + paging), one row in full.
+        // ?scope=<machine_id> = that machine's own outbox folder; empty = the shared one.
+        if (HttpMethodsEqual(context, "GET") && path.Equals("/api/outbox/scopes", StringComparison.OrdinalIgnoreCase))
+        {
+            await WriteJsonAsync(context.Response, 200, OutboxReader.Scopes());
+            return;
+        }
+
         if (HttpMethodsEqual(context, "GET") && path.Equals("/api/outbox/days", StringComparison.OrdinalIgnoreCase))
         {
-            await WriteJsonAsync(context.Response, 200, OutboxReader.Days());
+            var days = OutboxReader.Days(context.Request.QueryString["scope"]);
+            if (days is null)
+                await WriteJsonAsync(context.Response, 404, new { error = "No such outbox folder." });
+            else
+                await WriteJsonAsync(context.Response, 200, days);
             return;
         }
 
@@ -183,7 +273,7 @@ public sealed class AdminWebServer
             var q = context.Request.QueryString;
             var before = long.TryParse(q["before"], out var b) ? b : (long?)null;
             var limit = int.TryParse(q["limit"], out var l) ? l : 100;
-            var page = OutboxReader.Query(q["day"] ?? "", q["machine"], q["group"], q["source"], q["status"], before, limit);
+            var page = OutboxReader.Query(q["scope"], q["day"] ?? "", q["machine"], q["group"], q["source"], q["status"], before, limit);
             if (page is null)
                 await WriteJsonAsync(context.Response, 404, new { error = "No outbox file for that day (older than 7 days, or not a yyyy-MM-dd day)." });
             else
@@ -194,7 +284,7 @@ public sealed class AdminWebServer
         if (HttpMethodsEqual(context, "GET") && path.Equals("/api/outbox/row", StringComparison.OrdinalIgnoreCase))
         {
             var q = context.Request.QueryString;
-            var body = long.TryParse(q["id"], out var id) ? OutboxReader.Row(q["day"] ?? "", id) : null;
+            var body = long.TryParse(q["id"], out var id) ? OutboxReader.Row(q["scope"], q["day"] ?? "", id) : null;
             if (body is null)
             {
                 await WriteJsonAsync(context.Response, 404, new { error = "Row not found." });
@@ -203,6 +293,72 @@ public sealed class AdminWebServer
 
             using var envelope = JsonDocument.Parse(body);
             await WriteJsonAsync(context.Response, 200, envelope.RootElement);
+            return;
+        }
+
+        // Failed messages (MES rejected them as invalid), across all outboxes:
+        // GET lists them (?limit=), POST /resend and /discard act on
+        // {"rows":[{"scope","day","id"}]} or {"all":true}; discard needs a "reason".
+        if (HttpMethodsEqual(context, "GET") && path.Equals("/api/failed", StringComparison.OrdinalIgnoreCase))
+        {
+            var limit = int.TryParse(context.Request.QueryString["limit"], out var l) ? l : 200;
+            await WriteJsonAsync(context.Response, 200, OutboxReader.ListFailed(limit));
+            return;
+        }
+
+        if (path.Equals("/api/failed/resend", StringComparison.OrdinalIgnoreCase) || path.Equals("/api/failed/discard", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!HttpMethodsEqual(context, "POST"))
+            {
+                await WriteJsonAsync(context.Response, 405, new { error = "Method not allowed" });
+                return;
+            }
+
+            using var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding ?? Encoding.UTF8);
+            using var body = JsonDocument.Parse(await reader.ReadToEndAsync());
+            var root = body.RootElement;
+            var all = root.TryGetProperty("all", out var a) && a.ValueKind == JsonValueKind.True;
+            var rows = new List<OutboxReader.FailedRef>();
+            if (root.TryGetProperty("rows", out var list) && list.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var row in list.EnumerateArray())
+                {
+                    if (row.ValueKind == JsonValueKind.Object
+                        && row.TryGetProperty("day", out var day) && day.ValueKind == JsonValueKind.String
+                        && row.TryGetProperty("id", out var id) && id.TryGetInt64(out var rowId))
+                    {
+                        var scope = row.TryGetProperty("scope", out var s) && s.ValueKind == JsonValueKind.String ? s.GetString() : null;
+                        rows.Add(new OutboxReader.FailedRef(scope, day.GetString()!, rowId));
+                    }
+                }
+            }
+
+            if (!all && rows.Count == 0)
+            {
+                await WriteJsonAsync(context.Response, 400, new { error = "Nothing chosen: give rows or all." });
+                return;
+            }
+
+            var which = all ? "all failed messages" : $"{rows.Count} failed message(s)";
+            if (path.EndsWith("/resend", StringComparison.OrdinalIgnoreCase))
+            {
+                var count = OutboxReader.Resend(rows, all);
+                Console.WriteLine($"[failed] re-send asked for {which}: {count} put back in the send queue");
+                await WriteJsonAsync(context.Response, 200, new { ok = true, count });
+                return;
+            }
+
+            var reason = root.TryGetProperty("reason", out var r) && r.ValueKind == JsonValueKind.String ? r.GetString()?.Trim() : null;
+            if (string.IsNullOrEmpty(reason))
+            {
+                await WriteJsonAsync(context.Response, 400, new { error = "Discard needs a reason (it is logged and kept with the rows)." });
+                return;
+            }
+
+            var discarded = OutboxReader.Discard(rows, all, reason);
+            var ids = all ? "" : " (" + string.Join(", ", rows.Take(20).Select(x => $"{(string.IsNullOrEmpty(x.Scope) ? "shared" : x.Scope)}/{x.Day}#{x.Id}")) + (rows.Count > 20 ? ", ..." : "") + ")";
+            Console.WriteLine($"[failed] discarded {discarded} of {which}{ids}, reason: {reason}");
+            await WriteJsonAsync(context.Response, 200, new { ok = true, count = discarded });
             return;
         }
 
@@ -217,7 +373,12 @@ public sealed class AdminWebServer
 
         if (HttpMethodsEqual(context, "GET") && path.Equals("/api/unidentified", StringComparison.OrdinalIgnoreCase))
         {
-            await WriteJsonAsync(context.Response, 200, _unidentified.Snapshot());
+            var id = MachineParam(context);
+            var tracker = id is null ? _unidentified : _machines.UnidentifiedFor(id);
+            if (tracker is null)
+                await WriteJsonAsync(context.Response, 404, new { error = $"{id} has no own mapping." });
+            else
+                await WriteJsonAsync(context.Response, 200, tracker.Snapshot());
             return;
         }
 
@@ -268,7 +429,27 @@ public sealed class AdminWebServer
             return;
         }
 
-        var filePath = Path.Combine(_configRoot, fileName);
+        // ?machine=<id>: that machine's own PointMap / TimeStamp. MQTT and machine
+        // settings exist only once (shared).
+        var machineId = MachineParam(context);
+        var folder = _configRoot;
+        if (machineId is not null)
+        {
+            if (SharedOnly.Contains(key))
+            {
+                await WriteJsonAsync(context.Response, 400, new { error = $"{fileName} is shared by all machines." });
+                return;
+            }
+            var own = _machines.FolderFor(machineId);
+            if (own is null)
+            {
+                await WriteJsonAsync(context.Response, 404, new { error = $"{machineId} has no own mapping." });
+                return;
+            }
+            folder = own;
+        }
+
+        var filePath = Path.Combine(folder, fileName);
 
         if (HttpMethodsEqual(context, "GET"))
         {
@@ -314,9 +495,29 @@ public sealed class AdminWebServer
 
                 var restartToApply = RestartToApply.Contains(key);
 
-                // Point map and timestamp rules take effect right away.
+                // Point map and timestamp rules take effect right away (the machine's own, or the shared);
+                // the MES format right away for every machine.
+                var reconnected = 0;
                 if (!restartToApply)
-                    _configStore.Reload();
+                {
+                    if (key.Equals("mes-schema", StringComparison.OrdinalIgnoreCase))
+                        _machines.ReloadAll();
+                    else if (machineId is null)
+                        _configStore.Reload();
+                    else
+                        _machines.Reload(machineId);
+
+                    // Machines held for tags this mapping now knows (mapped or ignore):
+                    // close their connections so the adapters resend the held messages.
+                    if (key.Equals("point-map", StringComparison.OrdinalIgnoreCase)
+                        && (machineId is null ? _configStore : _machines.StoreFor(machineId)) is { } saved)
+                    {
+                        var normalizer = saved.Current.Normalizer;
+                        foreach (var connection in _machines.Unmapped.Resolve(machineId, normalizer.IsMapped))
+                            if (_gateway.Disconnect(connection))
+                                reconnected++;
+                    }
+                }
 
                 await WriteJsonAsync(context.Response, 200, new
                 {
@@ -324,7 +525,8 @@ public sealed class AdminWebServer
                     file = fileName,
                     reloaded = !restartToApply,
                     restartToApply,
-                    backup = $"Config/{fileName}.bak"
+                    reconnected, // connections closed so held messages are sent again
+                    backup = machineId is null ? $"Config/{fileName}.bak" : $"Config/{MachineRegistry.FolderName}/{machineId}/{fileName}.bak"
                 });
             }
             catch (JsonException ex)
@@ -421,6 +623,21 @@ public sealed class AdminWebServer
 
     private static bool HttpMethodsEqual(HttpListenerContext context, string method) =>
         string.Equals(context.Request.HttpMethod, method, StringComparison.OrdinalIgnoreCase);
+
+    // The page asks for the status every few seconds: count failed messages at
+    // most every 3 s (it opens every outbox file).
+    private long _failedCount;
+    private DateTime _failedCountAt = DateTime.MinValue;
+
+    private long FailedCount()
+    {
+        if (DateTime.UtcNow - _failedCountAt > TimeSpan.FromSeconds(3))
+        {
+            try { _failedCount = OutboxReader.CountFailed(); } catch { /* keep the last count */ }
+            _failedCountAt = DateTime.UtcNow;
+        }
+        return _failedCount;
+    }
 
     private static async Task WriteJsonAsync(HttpListenerResponse response, int statusCode, object payload)
     {

@@ -1,0 +1,11 @@
+{
+  "MACHINE_STATUS": [ "machine_status", "previous_status", "machine_mode", "status_start_time", "status_end_time", "communication_status" ],
+  "QUALITY": [ "test_item", "measurement_value", "lsl", "usl", "unit", "test_result", "defect_code", "test_program", "image_result" ],
+  "MAINTENANCE": [ "maintenance_work_order_no", "maintenance_type", "failure_code", "technician_code", "part_replaced" ],
+  "PROCESS": [ "parameter_name", "actual_value", "lsl", "usl", "engineering_unit", "result", "recipe_id", "recipe_revision" ],
+  "OPERATOR": [ "operator_id", "operator_name", "station_id", "operation_id", "certification_id", "login_time", "logout_time" ],
+  "MATERIAL": [ "material_part_number", "internal_lot_number", "supplier_name", "supplier_part_number", "supplier_lot_number", "date_code", "msl", "country_of_origin", "quantity_used" ],
+  "ALARM": [ "alarm_code", "alarm_description", "alarm_status", "alarm_start_time", "alarm_clear_time", "downtime_reason_code" ],
+  "PRODUCTION": [ "work_order_no", "product_part_number", "production_line", "station_id", "cycle_time", "good_quantity", "ng_quantity" ],
+  "TRACEABILITY": [ "product_serial_number", "pcb_serial_number", "process_id", "station_id", "fixture_id", "operator_id" ]
+}

@@ -4,7 +4,7 @@ using EdgeGateway.Models;
 
 namespace EdgeGateway.Services;
 
-// Sends MES data per data group on an interval instead of per message.
+// Turns MES messages into records, and paces them per data group.
 //
 // For each machine + data_source + data group it keeps the latest values (the
 // snapshot). Different data_sources never mix: the same group from two sources
@@ -12,108 +12,128 @@ namespace EdgeGateway.Services;
 //   * A message that changes nothing is ignored.
 //   * A message that changes something becomes one record: the full group
 //     snapshot after the change, time-stamped (TimeStamper) with the machine's
-//     own time. Records wait for the group's next tick.
-//   * Each tick (sendEveryMs from timestamp-rules.json, read live) every
-//     waiting record is written to the outbox, oldest first. So every change
-//     reaches MES, at most one interval late.
+//     own time. It goes into the outbox file RIGHT AWAY, so the machine can be
+//     answered ({"ack":...}) within milliseconds and nothing accepted is lost
+//     in a crash.
+//   * sendEveryMs (timestamp-rules.json, read live) only paces MES: each record
+//     gets a send_after time. The first change after a quiet interval may go at
+//     once; changes within the next sendEveryMs wait for that time and then all
+//     go, oldest first. So every change reaches MES, at most one interval late.
 //   * Nothing changes, nothing is sent: no periodic repeats. (A 60 s
 //     "full snapshot" used to repeat unchanged data with a new event_id and
 //     a new record_timestamp, which MES could count as new events.)
-//   * When the gateway stops or restarts, waiting records are written first.
+//   * The snapshot is saved with every record (outbox state column), and read
+//     back after a restart or crash: the first message afterwards is compared
+//     with the last values saved, so unchanged data is not sent to MES again,
+//     and an open span keeps its start time.
 public sealed class IntervalSender
 {
     public const int DefaultSendEveryMs = 1000;
-    private static readonly TimeSpan TickResolution = TimeSpan.FromMilliseconds(20);
 
     private readonly Outbox _outbox;
     private readonly EnvelopeBuilder _envelopes;
     private readonly Func<ConfigSnapshot> _config;
     // DataSource "" = the message had no data_source (the configured one is used).
     private readonly ConcurrentDictionary<(string Machine, string DataSource, string Group), GroupState> _states = new();
+    private readonly Lazy<Dictionary<string, SavedState>> _saved; // last values from the outbox, read on first use
 
     public IntervalSender(Outbox outbox, EnvelopeBuilder envelopes, Func<ConfigSnapshot> config)
     {
         _outbox = outbox;
         _envelopes = envelopes;
         _config = config;
+        _saved = new Lazy<Dictionary<string, SavedState>>(() =>
+        {
+            try { return outbox.LatestStates(); }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[outbox] last values not read back, the first change of each group is sent as new: {ex.Message}");
+                return new Dictionary<string, SavedState>();
+            }
+        });
     }
 
     // Called by the ingest workers for every MES-bound bucket of a message.
     // dataSource = the message's "data_source": part of the key, so each
     // source has its own snapshot, changes and envelopes.
-    public void Accept(string machineId, string dataGroup, Dictionary<string, object?> fields, DateTimeOffset? eventTime, string? dataSource = null)
+    // messageId: becomes the envelope's event_id (with the group).
+    // onSaved: runs once the record is on disk.
+    // Returns false when nothing changed (no record, onSaved never runs).
+    public bool Accept(string machineId, string dataGroup, Dictionary<string, object?> fields, DateTimeOffset? eventTime,
+        string? dataSource = null, string? messageId = null, Action? onSaved = null)
     {
         var config = _config();
         var source = dataSource?.Trim() ?? "";
-        var state = _states.GetOrAdd((machineId, source, dataGroup), _ => new GroupState());
+        var at = eventTime ?? DateTimeOffset.Now; // the record's time and the envelope's event_time
+        var state = _states.GetOrAdd((machineId, source, dataGroup), key => Restored(key, config));
         Dictionary<string, object?> record;
+        SavedState saved;
+        long sendAfter;
 
         lock (state)
         {
             if (!ApplyChanges(state.Snapshot, fields))
-                return; // same values as last time: nothing new for MES
+                return false; // same values as last time: nothing new for MES
 
             record = new Dictionary<string, object?>(state.Snapshot);
-            config.TimeStamper.Stamp(machineId, dataGroup, record, eventTime, source);
-
-            if (SendEveryMs(config, dataGroup) > 0)
-            {
-                state.Pending.Add(record);
-                return;
-            }
+            config.TimeStamper.Stamp(machineId, dataGroup, record, at, source);
+            sendAfter = SendAfter(state, SendEveryMs(config, dataGroup));
+            saved = Save(machineId, source, dataGroup, state.Snapshot, record, config);
         }
 
-        _outbox.Write(_envelopes.Build(machineId, dataGroup, record, source)); // sendEveryMs = 0: right away
+        // Lines of one machine come from one connection and one worker, in order,
+        // so its records still reach the outbox in the order they were made.
+        _outbox.Write(_envelopes.Build(machineId, dataGroup, record, source, at, MesColumns(config, dataGroup), messageId),
+            sendAfter, onSaved, saved);
+        return true;
     }
 
-    public async Task RunAsync(CancellationToken ct)
+    // A group seen for the first time since the start: carry on from the values
+    // saved in the outbox (and the span they had open), if there are any.
+    private GroupState Restored((string Machine, string DataSource, string Group) key, ConfigSnapshot config)
     {
-        try
-        {
-            while (!ct.IsCancellationRequested)
-            {
-                Flush(force: false);
-                await Task.Delay(TickResolution, ct);
-            }
-        }
-        finally
-        {
-            FlushAll(); // stopping: nothing waiting may be lost
-        }
+        var state = new GroupState();
+        if (!_saved.Value.TryGetValue(SavedState.KeyOf(key.Machine, key.DataSource, key.Group), out var saved))
+            return state;
+
+        foreach (var (name, value) in saved.Values)
+            state.Snapshot[name] = PayloadParser.ParseValue(value);
+
+        var rule = config.TimeStamper.RuleFor(key.Group);
+        if (rule is { Mode: TimestampMode.Span, TriggerField: { } trigger } && saved.SpanSince is { } since
+            && DateTimeOffset.TryParse(since, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal, out var sinceAt))
+            config.TimeStamper.Restore(key.Machine, key.Group, key.DataSource, state.Snapshot.GetValueOrDefault(trigger), sinceAt);
+
+        return state;
     }
 
-    // Writes every waiting record now (gateway stopping / restarting).
-    public void FlushAll() => Flush(force: true);
-
-    private void Flush(bool force)
+    private static SavedState Save(string machineId, string source, string dataGroup, Dictionary<string, object?> snapshot,
+        Dictionary<string, object?> record, ConfigSnapshot config)
     {
-        var config = _config();
-        var now = DateTimeOffset.UtcNow;
-
-        foreach (var ((machineId, dataSource, dataGroup), state) in _states)
-        {
-            List<Dictionary<string, object?>>? toSend = null;
-
-            lock (state)
-            {
-                if (!force && now < state.NextDue)
-                    continue;
-                state.NextDue = now + TimeSpan.FromMilliseconds(Math.Max(SendEveryMs(config, dataGroup), TickResolution.TotalMilliseconds));
-
-                if (state.Pending.Count > 0)
-                {
-                    toSend = state.Pending;
-                    state.Pending = new List<Dictionary<string, object?>>();
-                }
-            }
-
-            if (toSend is null)
-                continue;
-
-            foreach (var fields in toSend)
-                _outbox.Write(_envelopes.Build(machineId, dataGroup, fields, dataSource));
-        }
+        var rule = config.TimeStamper.RuleFor(dataGroup);
+        var since = rule is { Mode: TimestampMode.Span, StartField: { } start } ? record.GetValueOrDefault(start) as string : null;
+        return new SavedState(SavedState.KeyOf(machineId, source, dataGroup),
+            snapshot.ToDictionary(p => p.Key, p => JsonSerializer.SerializeToElement(p.Value)), since);
     }
+
+    // When MES may get this record (UTC ms): now, if the group's last send moment
+    // is more than sendEveryMs ago (that starts a new interval); otherwise the
+    // end of the current interval. sendEveryMs 0 = always now.
+    private static long SendAfter(GroupState state, int sendEveryMs)
+    {
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        if (sendEveryMs <= 0)
+            return now;
+        if (now >= state.NextDueMs)
+        {
+            state.NextDueMs = now + sendEveryMs;
+            return now;
+        }
+        return state.NextDueMs;
+    }
+
+    private static IReadOnlyList<string>? MesColumns(ConfigSnapshot config, string dataGroup) =>
+        config.MesColumns.TryGetValue(dataGroup, out var columns) ? columns : null;
 
     private static int SendEveryMs(ConfigSnapshot config, string dataGroup) =>
         config.TimestampRules.TryGetValue(dataGroup, out var rule) && rule.SendEveryMs is { } ms
@@ -149,6 +169,6 @@ public sealed class IntervalSender
     private sealed class GroupState
     {
         public Dictionary<string, object?> Snapshot = new();
-        public List<Dictionary<string, object?>> Pending = new();
-        public DateTimeOffset NextDue = DateTimeOffset.MinValue;    }
+        public long NextDueMs; // end of the current sendEveryMs interval (UTC ms)
+    }
 }

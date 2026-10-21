@@ -13,8 +13,16 @@ const UNID = '__unidentified';
 const NEW = '__new';
 const BLANK_ROWS = 3;
 
+// Top tabs: General (gateway-wide settings), Other machines (the shared
+// mapping), then one tab per machine with its own mapping.
+const GENERAL = '__general';
+const SHARED = '__shared';
+const GENERAL_VIEWS = new Set(['mqtt-config', 'machine-config', 'machines', 'failed', 'log']);
+
 const state = {
-  view: 'point-map',
+  tab: GENERAL,
+  lastView: { general: 'mqtt-config', machine: 'point-map' }, // reopened when coming back to that kind of tab
+  view: 'mqtt-config',
   data: {},                 // file key -> data as loaded / being edited
   numberKeys: {},           // file key -> keys that must stay numbers (form views)
   dirty: new Set(),         // file keys with unsaved edits
@@ -32,8 +40,33 @@ const state = {
   logsLoaded: false,        // no pop-ups for the backlog on first load
   errorsOnly: false,
   machines: null,           // /api/machines
-  outbox: { days: null, day: null, machine: '', group: '', source: '', status: '', rows: [], more: false, open: {}, loading: false },
+  outbox: { scope: '', scopes: null, days: null, day: null, machine: '', group: '', source: '', status: '', rows: [], more: false, open: {}, loading: false },
+  scope: '',                // PointMap / TimeStamp shown for: '' = shared, else a machine_id with its own mapping
+  machineConfigs: [],       // machines with their own mapping: [{ machineId, readable, error }]
+  mesSchema: {},            // the MES format: data group -> MES columns (Config/mes-schema.json, all machines)
+  mesDirty: false,          // MES format edited (saved together with PointMap)
+  held: [],                 // machines sending without a tab: their data is held (/api/held)
+  unmapped: [],             // machines whose data is held for tags their mapping doesn't know (/api/unmapped)
+  failedCount: 0,           // messages MES rejected as invalid, waiting for re-send / discard (status.failed)
+  failed: null,             // /api/failed: { total, rows } for the MES failures view
+  failedPicked: new Set(),  // "scope|day|id" ticked in the MES failures view
+  failedOpen: {},           // "scope|day|id" -> envelope JSON shown
 };
+const IGNORED = 'IGNORED';  // PointMap group for tags that are known but never sent
+
+// Held-for-unmapped-tags entries whose mapping is the tab shown ('' = Template).
+const unmappedFor = scope => state.unmapped.filter(u => (u.mapping ?? '') === scope);
+
+// unregisteredMachines in GatewayConfig: "hold" (default) or "shared".
+const holdPolicy = () => String(state.data['machine-config']?.unregisteredMachines ?? 'hold').trim().toLowerCase() !== 'shared';
+// The shared mapping's tab: only a template for new machine tabs while machines without a tab are held.
+const sharedLabel = () => (holdPolicy() ? 'Template' : 'Other machines');
+const MAPPING = new Set(['point-map', 'timestamp-rules']); // the files a machine can have its own of
+
+// "?machine=<id>" for the scoped files when a machine's own mapping is shown.
+function scopeQuery(key) {
+  return MAPPING.has(key) && state.scope ? `?machine=${encodeURIComponent(state.scope)}` : '';
+}
 const MAX_LOG_LINES = 500;
 
 // ---------- small helpers ----------
@@ -91,24 +124,231 @@ function markDirty(key) {
 // ---------- loading ----------
 
 async function loadAll() {
-  for (const key of Object.keys(FILES)) {
-    const data = await request(`/api/config/${key}`);
-    state.data[key] = data;
-    if (!Array.isArray(data))
-      state.numberKeys[key] = Object.entries(data).filter(([, v]) => typeof v === 'number').map(([k]) => k);
-  }
+  await loadMachineConfigs();
+  for (const key of Object.keys(FILES))
+    await loadFile(key);
+  await loadMesSchema();
   state.dirty.clear();
   await loadUnidentified();
 }
 
+async function loadMesSchema() {
+  try { state.mesSchema = await request('/api/config/mes-schema'); }
+  catch { state.mesSchema = {}; }
+  state.mesDirty = false;
+}
+
+async function loadFile(key) {
+  const data = await request(`/api/config/${key}${scopeQuery(key)}`);
+  state.data[key] = data;
+  if (!Array.isArray(data))
+    state.numberKeys[key] = Object.entries(data).filter(([, v]) => typeof v === 'number').map(([k]) => k);
+}
+
 async function loadUnidentified() {
-  try { state.unidentified = await request('/api/unidentified'); }
+  try { state.unidentified = await request(`/api/unidentified${scopeQuery('point-map')}`); }
   catch { state.unidentified = []; }
+}
+
+async function loadMachineConfigs() {
+  try { state.machineConfigs = await request('/api/machine-configs'); }
+  catch { state.machineConfigs = []; }
+  if (state.scope && !state.machineConfigs.some(m => m.machineId === state.scope)) {
+    // removed meanwhile (e.g. in another browser window)
+    state.scope = '';
+    if (state.tab !== GENERAL) state.tab = SHARED;
+  }
+  renderTabs();
+}
+
+// Loads the shared mapping (scope '') or one machine's own: PointMap, TimeStamp,
+// Unidentified. false = the user kept unsaved changes instead.
+async function loadScope(scope) {
+  const unsaved = [...MAPPING].filter(k => state.dirty.has(k));
+  if (unsaved.length && !confirm('Unsaved changes in ' + unsaved.join(' and ') + ' will be lost. Switch anyway?'))
+    return false;
+  state.scope = scope;
+  state.group = { 'point-map': null, 'timestamp-rules': null };
+  state.extraGroups = [];
+  state.unidEdits = {};
+  try {
+    for (const key of MAPPING) { await loadFile(key); state.dirty.delete(key); }
+    if (state.mesDirty) await loadMesSchema(); // unsaved MES format edits are dropped too
+    await loadUnidentified();
+  } catch (e) {
+    toast(`Could not load that mapping: ${e.message}`, true);
+  }
+  return true;
+}
+
+const isMachineTab = tab => tab !== GENERAL;
+const scopeOfTab = tab => (tab === SHARED || tab === GENERAL ? '' : tab);
+
+async function switchTab(tab) {
+  if (tab === state.tab) return;
+  if (isMachineTab(tab) && scopeOfTab(tab) !== state.scope && !(await loadScope(scopeOfTab(tab))))
+    return;
+  state.lastView[isMachineTab(state.tab) ? 'machine' : 'general'] = state.view;
+  state.tab = tab;
+  state.view = isMachineTab(tab) ? state.lastView.machine : state.lastView.general;
+  resetOutbox(); // the Outbox view shows this tab's own outbox
+  render();
+}
+
+// "+" tab: a machine gets its own mapping, copied from the tab shown (or the shared one).
+async function addMachine() {
+  const fromScope = isMachineTab(state.tab) ? state.scope : '';
+  const from = fromScope || `the ${sharedLabel()} mapping`;
+  const id = (prompt(`machine_id that gets its own tab and mapping (it starts as a copy of ${from}):`) ?? '').trim();
+  if (!id) return;
+  try {
+    await request('/api/machine-configs', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ machineId: id, copyFrom: fromScope || null }),
+    });
+  } catch (e) {
+    toast(`Not created: ${e.message}`, true);
+    return;
+  }
+  await loadMachineConfigs();
+  toast(`${id} has its own mapping now (copied from ${from}). Its data uses it from its next message.`);
+  await switchTab(id);
+}
+
+// "×" on a machine tab: back to the shared mapping.
+async function removeMachine(id) {
+  const after = holdPolicy() ? `its data is held until it gets a tab again` : `it goes back to the shared mapping (Other machines)`;
+  if (!confirm(`Close the ${id} tab? ${after}. Its own files are kept in Config/machines-removed and its outbox is still delivered.`)) return;
+  try {
+    await request(`/api/machine-configs?machine=${encodeURIComponent(id)}`, { method: 'DELETE' });
+  } catch (e) {
+    toast(`Not removed: ${e.message}`, true);
+    return;
+  }
+  if (state.scope === id) {
+    state.dirty.delete('point-map');
+    state.dirty.delete('timestamp-rules');
+  }
+  await loadMachineConfigs();
+  toast(holdPolicy() ? `${id}'s tab is closed: its data is held until it gets a tab again.` : `${id} uses the shared mapping again.`);
+  if (state.tab === id || state.scope === id) {
+    await loadScope('');
+    state.tab = SHARED;
+    resetOutbox();
+    render();
+  }
+}
+
+function renderTabs() {
+  const tab = (id, label, opts = {}) => {
+    const el = h('div', {
+      class: `tab${state.tab === id ? ' active' : ''}${opts.fixed ? ' fixed' : ''}${opts.extra ? ' ' + opts.extra : ''}`,
+      role: 'tab', tabIndex: 0, title: opts.title ?? label,
+      onclick: () => switchTab(id),
+      onkeydown: e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); switchTab(id); } },
+    }, h('span', { class: 'tab-name', textContent: label }));
+    el.setAttribute('aria-selected', String(state.tab === id));
+    if (opts.close)
+      el.append(h('button', {
+        type: 'button', class: 'tab-x', textContent: '×',
+        title: holdPolicy() ? `Close: ${label}'s data is held until it gets a tab again` : `Close: ${label} goes back to the shared mapping`,
+        'aria-label': `Close ${label}`, onclick: e => { e.stopPropagation(); removeMachine(id); },
+      }));
+    return el;
+  };
+
+  $('tabs').replaceChildren(...[
+    tab(GENERAL, 'General', { fixed: true, extra: 'general', title: 'Gateway-wide: MQTT, gateway settings, connected machines, log' }),
+    tab(SHARED, unmappedFor('').length ? `⚠ ${sharedLabel()}` : sharedLabel(), { fixed: true, extra: unmappedFor('').length ? 'broken' : '', title: holdPolicy() ? 'Template: what "+" copies into a new machine tab. Machines without a tab are held, not mapped with this.' : 'The shared mapping: every machine that has no own tab' }),
+    ...state.machineConfigs.map(m => {
+      const waiting = unmappedFor(m.machineId);
+      const alert = !m.readable || waiting.length > 0;
+      return tab(m.machineId, alert ? `⚠ ${m.machineId}` : m.machineId, {
+        close: true, extra: alert ? 'broken' : '',
+        title: !m.readable ? `${m.machineId}: its files can't be read (${m.error})`
+          : waiting.length ? `${m.machineId}: data held, tags not mapped yet: ${[...new Set(waiting.flatMap(u => u.tags))].join(', ')}`
+          : `${m.machineId}: its own mapping and outbox`,
+      });
+    }),
+    h('button', { type: 'button', class: 'tab-add', textContent: '+', title: 'Give a machine its own tab and mapping', 'aria-label': 'Add machine', onclick: addMachine }),
+    // Machines sending without a tab: their data waits (held) until someone registers them.
+    state.held.length ? h('button', {
+      type: 'button', class: 'tab-alert', textContent: `⚠ ${state.held.length} not registered`,
+      title: `Sending without a tab, data held: ${state.held.map(m => m.machineId).join(', ')}. Click to register.`,
+      onclick: () => switchView('machines'),
+    }) : null,
+    // Messages MES rejected as invalid: kept, not retried, until someone re-sends or discards them.
+    state.failedCount ? h('button', {
+      type: 'button', class: 'tab-alert', textContent: `⚠ ${state.failedCount.toLocaleString()} rejected by MES`,
+      title: 'MES said these messages are invalid. They are kept (not retried) until you re-send or discard them. Click to see why.',
+      onclick: () => switchView('failed'),
+    }) : null,
+  ].filter(Boolean));
+}
+
+// "register" on a held machine: it gets its own tab (copied from copyFrom) and
+// its adapter is reconnected so it sends the held data again.
+async function registerMachine(id, copyFrom) {
+  let result;
+  try {
+    result = await request('/api/machine-configs', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ machineId: id, copyFrom: copyFrom || null }),
+    });
+  } catch (e) {
+    toast(`Not registered: ${e.message}`, true);
+    return;
+  }
+  await loadMachineConfigs();
+  await loadHeld();
+  toast(result.reconnected
+    ? `${id} registered. Its adapter was reconnected and sends the held data again. Map the tags it sent under ⚠ Unidentified.`
+    : `${id} registered. Its held data arrives with its adapter's next resend. Map the tags it sent under ⚠ Unidentified.`);
+  await switchTab(id);
+  state.group['point-map'] = UNID; // the tags it sent, to map
+  switchView('point-map');
+}
+
+async function loadHeld() {
+  try { state.held = await request('/api/held'); } catch { state.held = []; }
+  renderTabs();
+}
+
+async function loadUnmapped() {
+  const before = JSON.stringify(state.unmapped);
+  try { state.unmapped = await request('/api/unmapped'); } catch { state.unmapped = []; }
+  if (JSON.stringify(state.unmapped) !== before) {
+    renderTabs();
+    renderScopeHint();
+  }
+}
+
+// Red bar on a mapping tab: its mapping can't be read, or messages are held
+// for tags it doesn't know yet.
+function renderScopeHint() {
+  const hint = $('scopeHint');
+  const machineTab = isMachineTab(state.tab);
+  const broken = machineTab && state.machineConfigs.find(m => m.machineId === state.scope && !m.readable);
+  const waiting = machineTab ? unmappedFor(state.scope) : [];
+  hint.replaceChildren();
+  hint.hidden = !broken && !waiting.length;
+  if (broken) {
+    hint.append(`${broken.machineId}'s files can't be read, so its lines are held until they are fixed: ${broken.error}`);
+    return;
+  }
+  if (!waiting.length) return;
+  const tags = [...new Set(waiting.flatMap(u => u.tags))];
+  const lines = waiting.reduce((n, u) => n + u.lines, 0);
+  hint.append(
+    `Held: ${lines.toLocaleString()} message(s) from ${waiting.map(u => u.machineId).join(', ')}, because this mapping doesn't know: ${tags.join(', ')}. ` +
+    'Map each one or set it to ignore, then save: the held messages are sent again. ',
+    h('button', { type: 'button', class: 'link', textContent: 'show them', onclick: () => { state.group['point-map'] = UNID; switchView('point-map'); } }));
 }
 
 function pointMapGroups() {
   const groups = [];
   const add = g => { if (g && !groups.includes(g)) groups.push(g); };
+  Object.keys(state.mesSchema ?? {}).forEach(add); // every MES table, even with nothing mapped yet
   state.data['point-map'].forEach(row => add(row.dataGroup));
   Object.keys(state.data['timestamp-rules'] ?? {}).forEach(add);
   state.extraGroups.forEach(add);
@@ -123,7 +363,10 @@ function unidentifiedList() {
 // ---------- rendering ----------
 
 function updateNav() {
+  const machineTab = isMachineTab(state.tab);
+  $('tabTitle').textContent = state.tab === GENERAL ? 'General' : state.tab === SHARED ? sharedLabel() : state.tab;
   document.querySelectorAll('.nav').forEach(button => {
+    button.hidden = (button.dataset.tab === 'machine') !== machineTab;
     button.classList.toggle('active', button.dataset.view === state.view);
     button.querySelector('.dirty')?.remove();
     if (state.dirty.has(button.dataset.view))
@@ -147,20 +390,26 @@ function render() {
   const isLog = state.view === 'log';
   const readOnly = !FILES[state.view]; // Log / Machines / Outbox: nothing to save
   $('saveBtn').hidden = readOnly;
+  renderTabs();
+  renderScopeHint();
 
   if (state.view === 'point-map') renderPointMap(view);
   else if (state.view === 'timestamp-rules') renderTimestamp(view);
   else if (isLog) renderLog(view);
   else if (state.view === 'machines') renderMachines(view);
   else if (state.view === 'outbox') renderOutbox(view);
+  else if (state.view === 'failed') renderFailed(view);
   else renderForm(view);
 
   $('note').textContent =
     isLog ? 'Newest at the bottom. Full history: logs\\gateway-<date>.log next to the exe (14 days).' :
+    state.view === 'failed' ? 'All machines. MES unreachable or slow is not a failure: those rows wait and are retried by themselves (2 s, growing to 60 s).' :
     state.view === 'machines' ? 'Counts since the gateway exe started (a restart from this page keeps them). Updates every 4 s.' :
     state.view === 'outbox' ? 'Read-only. One file per day, kept 7 days after everything in it was delivered. Times shown in this PC\'s local time.' :
-    FILES[state.view].restartToApply ? 'Applies after the gateway restarts.' :
-    'Applies as soon as you save.';
+    FILES[state.view].restartToApply ? 'Applies after the gateway restarts (shared by all machines).' :
+    state.scope ? `Applies as soon as you save. Only ${state.scope} uses this mapping. MES fields: the MES format, shared by all machines.` :
+    holdPolicy() ? 'Template: "+" copies this into a new machine tab. Machines without a tab are held, not mapped with this.' :
+    'Applies as soon as you save. Used by every machine that has no own mapping.';
 }
 
 // ---------- Machines: who is connected and how much they sent ----------
@@ -186,6 +435,30 @@ function renderMachines(view) {
     return;
   }
 
+  // First: machines sending without a tab. Their data is held (not processed, not
+  // answered) until someone registers them here.
+  if (state.held.length) {
+    view.append(h('h3', { class: 'sub held-title', textContent: `⚠ Not registered: ${state.held.length} machine(s) sending without a tab, data held` }));
+    view.append(h('p', { class: 'section-note', textContent:
+      'Their adapters keep the data. Register a machine: it gets its own tab copied from the mapping you pick, its adapter is reconnected and sends the held data again, and the tags it sent appear under ⚠ Unidentified to map.' }));
+    const sources = [['', sharedLabel()], ...state.machineConfigs.filter(c => c.readable).map(c => [c.machineId, c.machineId])];
+    view.append(table(
+      ['machine', 'connection', 'since', 'held lines', 'data sources', 'tags sent', 'register, copying the mapping of'],
+      state.held.map(m => {
+        const from = select(sources, guessCopyFrom(m.machineId), () => {}, 'copy mapping from');
+        return h('tr', {},
+          h('td', { class: 'strong', textContent: m.machineId }),
+          h('td', { textContent: m.connection }),
+          h('td', { textContent: ago(m.firstSeen), title: localTime(m.firstSeen) }),
+          h('td', { class: 'num warn', textContent: m.lines.toLocaleString() }),
+          h('td', { class: 'small', textContent: m.dataSources.join(', ') || '—' }),
+          h('td', { class: 'small', textContent: `${m.tags.length}: ${m.tags.slice(0, 8).join(', ')}${m.tags.length > 8 ? ' …' : ''}`, title: m.tags.join(', ') }),
+          h('td', { class: 'register-cell' }, from,
+            h('button', { type: 'button', class: 'primary', textContent: 'register', onclick: () => registerMachine(m.machineId, from.value) })));
+      })));
+    view.append(h('h3', { class: 'sub', textContent: 'All machines' }));
+  }
+
   const machines = data.machines.filter(m => matches(`${m.machineId} ${m.connection} ${m.status} ${m.dataSources.map(d => d.name).join(' ')}`));
   const online = data.machines.filter(m => m.status !== 'disconnected').length;
   const openConnections = data.connections.filter(c => c.open).length;
@@ -193,36 +466,57 @@ function renderMachines(view) {
     `${data.machines.length} machines (${online} connected) · ${openConnections} open connections` }));
 
   view.append(machines.length ? table(
-    ['', 'machine', 'connection', 'last message', 'messages', 'to MES', 'to MQTT', 'per s', 'data sources'],
+    ['', 'machine', 'mapping', 'connection', 'last message', 'new messages', 'to MES', 'to MQTT', 'repeats', 'held', 'per s', 'data sources'],
     machines.map(m => h('tr', {},
       h('td', {}, h('span', { class: `dot ${m.status}`, title: m.status })),
       h('td', { class: 'strong', textContent: m.machineId }),
+      h('td', { class: 'small' }, ownTabLink(m.machineId)),
       h('td', { textContent: m.status === 'disconnected' ? `${m.connection} (gone ${ago(m.disconnectedAt)})` : m.connection }),
       h('td', { textContent: ago(m.lastMessage), title: localTime(m.lastMessage) }),
-      h('td', { class: 'num', textContent: m.total.toLocaleString() }),
+      h('td', { class: 'num', textContent: m.total.toLocaleString(), title: 'Each message counted once, when it is accepted. Repeats and held tries are not counted; a held message counts when it goes through.' }),
       h('td', { class: 'num', textContent: m.mes.toLocaleString() }),
       h('td', { class: 'num', textContent: m.mqtt.toLocaleString() }),
+      h('td', { class: m.duplicates ? 'num warn' : 'num', textContent: m.duplicates.toLocaleString(), title: 'Lines ignored: message_id already received in the last 10 min' }),
+      h('td', { class: m.held ? 'num bad' : 'num', textContent: m.held.toLocaleString(), title: 'Messages waiting right now (no tab, or tags not mapped). They count as new messages once they go through.' }),
       h('td', { class: 'num', textContent: m.perSecond.toFixed(1) }),
       h('td', { class: 'small', textContent: m.dataSources.map(d => `${d.name} ${d.count.toLocaleString()}`).join(' · ') || '—' })))
   ) : h('div', { class: 'empty', textContent: data.machines.length ? 'No machine matches the search.' : 'No machine has sent anything yet.' }));
 
   view.append(h('h3', { class: 'sub', textContent: 'Connections' }));
   view.append(data.connections.length ? table(
-    ['', 'connection', 'since', 'lines', 'without machine_id', 'unreadable', 'last line', 'machines'],
+    ['', 'connection', 'since', 'lines', 'rejected', 'repeats', 'unreadable', 'last line', 'machines'],
     data.connections.map(c => h('tr', {},
       h('td', {}, h('span', { class: `dot ${c.open ? 'connected' : 'disconnected'}`, title: c.open ? 'open' : 'closed' })),
       h('td', { class: 'strong', textContent: c.endpoint }),
       h('td', { textContent: c.open ? localTime(c.connectedAt) : `closed ${ago(c.closedAt)}` }),
-      h('td', { class: 'num', textContent: c.lines.toLocaleString() }),
-      h('td', { class: c.rejected ? 'num bad' : 'num', textContent: c.rejected.toLocaleString() }),
+      h('td', { class: 'num', textContent: c.lines.toLocaleString(), title: 'Every line received on this connection, including repeats and resends of held messages' }),
+      h('td', { class: c.rejected ? 'num bad' : 'num', textContent: c.rejected.toLocaleString(), title: 'Lines without machine_id or message_id (not used)' }),
+      h('td', { class: c.duplicates ? 'num warn' : 'num', textContent: c.duplicates.toLocaleString(), title: 'Lines ignored: message_id already received in the last 10 min' }),
       h('td', { class: c.unreadable ? 'num bad' : 'num', textContent: c.unreadable.toLocaleString() }),
       h('td', { textContent: ago(c.lastLine) }),
       h('td', { class: 'small', textContent: c.machines.join(', ') || '—' })))
   ) : h('div', { class: 'empty', textContent: 'No connection yet.' }));
 }
 
+// "own tab" (opens it) for a machine with its own mapping; "held" when it
+// sends without one (and that is held); else "shared".
+function ownTabLink(machineId) {
+  const own = state.machineConfigs.find(c => c.machineId.toLowerCase() === machineId.toLowerCase());
+  if (own) return h('button', { type: 'button', class: 'link', textContent: 'own tab', onclick: () => switchTab(own.machineId) });
+  if (state.held.some(m => m.machineId.toLowerCase() === machineId.toLowerCase())) return h('span', { class: 'bad', textContent: 'held: no tab' });
+  return holdPolicy() ? 'no tab' : 'shared';
+}
+
+// A machine named like an existing tab (NXT103 next to NXT101) most likely
+// is the same model: suggest copying that tab. Else the template.
+function guessCopyFrom(machineId) {
+  const stem = machineId.replace(/\d+$/, '').toLowerCase();
+  return state.machineConfigs.find(c => c.readable && stem && c.machineId.replace(/\d+$/, '').toLowerCase() === stem)?.machineId ?? '';
+}
+
 async function pollMachines() {
   try { state.machines = await request('/api/machines'); } catch { return; }
+  if (state.view === 'machines') await loadMachineConfigs(); // for the mapping column
   if (state.view !== 'machines') return;
   const scroll = [window.scrollY, $('view').scrollTop]; // the refresh must not jump the page back up
   render();
@@ -236,19 +530,35 @@ async function renderOutbox(view) {
   const o = state.outbox;
   if (!o.days) {
     view.append(h('div', { class: 'empty', textContent: 'Loading…' }));
-    try { o.days = await request('/api/outbox/days'); } catch (e) { o.days = []; toast(e.message, true); }
-    if (!o.day && o.days.length) o.day = o.days[0].day;
+    if (state.tab === SHARED) {
+      // The shared outbox, plus outboxes of machines whose own tab was closed (still delivered).
+      const hasTab = s => state.machineConfigs.some(m => m.machineId.toLowerCase() === s.toLowerCase());
+      try { o.scopes = (await request('/api/outbox/scopes')).filter(s => !s || !hasTab(s)); } catch { o.scopes = ['']; }
+      if (!o.scopes.includes(o.scope)) o.scope = '';
+    } else {
+      o.scopes = null;
+      o.scope = state.scope; // this machine's own outbox
+    }
+    try { o.days = await request(`/api/outbox/days?scope=${encodeURIComponent(o.scope)}`); } catch (e) { o.days = []; toast(e.message, true); }
+    if (!o.days.some(d => d.day === o.day)) o.day = o.days[0]?.day ?? null;
+    o.rows = [];
     if (state.view !== 'outbox') return;
     if (o.day) loadOutbox(false); // marks "loading" before the first render
     render();
     return;
   }
 
+  // Other machines tab only: the shared outbox or a closed machine tab's leftover outbox.
+  const scopeSelect = o.scopes && o.scopes.length > 1
+    ? select(o.scopes.map(s => [s, s ? `${s} (tab closed, outbox still delivered)` : 'Shared outbox']),
+        o.scope, v => { o.scope = v; o.days = null; render(); }, 'outbox')
+    : null;
+
   const groups = [...new Set([...pointMapGroups(), 'UNIDENTIFIED'])];
   const knownMachines = (state.machines?.machines ?? []).map(m => m.machineId);
   const reload = () => loadOutbox(false);
 
-  const daySelect = select(o.days.map(d => [d.day, `${d.day}  (${d.rows.toLocaleString()} rows, ${d.waiting.toLocaleString()} waiting, ${d.megabytes} MB)`]),
+  const daySelect = select(o.days.map(d => [d.day, `${d.day}  (${d.rows.toLocaleString()} rows, ${d.waiting.toLocaleString()} waiting${d.failed ? `, ${d.failed.toLocaleString()} rejected` : ''}, ${d.megabytes} MB)`]),
     o.day ?? '', v => { o.day = v; reload(); }, 'day');
   const machineInput = h('input', { value: o.machine, placeholder: 'all machines', 'aria-label': 'machine',
     onchange: e => { o.machine = e.target.value.trim(); reload(); } });
@@ -257,9 +567,10 @@ async function renderOutbox(view) {
   const groupSelect = select([['', 'all groups'], ...groups.map(g => [g, g])], o.group, v => { o.group = v; reload(); }, 'group');
   const sourceInput = h('input', { value: o.source, placeholder: 'all data sources', 'aria-label': 'data source',
     onchange: e => { o.source = e.target.value.trim(); reload(); } });
-  const statusSelect = select([['', 'sent + waiting'], ['sent', 'sent to MES'], ['waiting', 'waiting']], o.status, v => { o.status = v; reload(); }, 'status');
+  const statusSelect = select([['', 'all'], ['sent', 'sent to MES'], ['waiting', 'waiting'], ['failed', 'rejected by MES'], ['discarded', 'discarded']],
+    o.status, v => { o.status = v; reload(); }, 'status');
 
-  view.append(h('div', { class: 'outbox-tools' }, daySelect, machineInput, machineList, groupSelect, sourceInput, statusSelect,
+  view.append(h('div', { class: 'outbox-tools' }, scopeSelect, daySelect, machineInput, machineList, groupSelect, sourceInput, statusSelect,
     h('button', { type: 'button', textContent: 'refresh', onclick: () => { o.days = null; render(); } })));
 
   if (!o.days.length) {
@@ -278,7 +589,10 @@ async function renderOutbox(view) {
         h('td', { class: 'strong', textContent: r.machineId ?? '—' }),
         h('td', { textContent: r.dataSource ?? '—' }),
         h('td', { textContent: r.group }),
-        h('td', { class: r.sent ? 'nowrap' : 'nowrap warn', textContent: r.sent ? `sent ${new Date(r.sentAt).toLocaleTimeString()}` : 'waiting' }),
+        r.sent ? h('td', { class: 'nowrap', textContent: `sent ${new Date(r.sentAt).toLocaleTimeString()}` })
+          : r.discardedAt ? h('td', { class: 'nowrap', textContent: 'discarded', title: `Discarded ${localTime(r.discardedAt)}: ${r.discardReason}\nMES said: ${r.error ?? ''}` })
+          : r.failedAt ? h('td', { class: 'nowrap bad', textContent: 'rejected', title: `MES said: ${r.error}\nRe-send or discard it under General → MES failures.` })
+          : h('td', { class: 'nowrap warn', textContent: 'waiting' }),
         h('td', { class: 'num', textContent: r.size >= 1024 ? `${(r.size / 1024).toFixed(1)} KB` : `${r.size} B` }),
         h('td', { class: 'small preview', textContent: r.preview }));
       return open ? [tr, h('tr', {}, h('td', { colSpan: 8 }, h('pre', { class: 'json', textContent: open })))] : [tr];
@@ -289,11 +603,17 @@ async function renderOutbox(view) {
     view.append(h('button', { type: 'button', class: 'more', textContent: 'load older rows', onclick: () => loadOutbox(true) }));
 }
 
+// The Outbox view loads again for the tab now shown.
+function resetOutbox() {
+  const o = state.outbox;
+  o.days = null; o.day = null; o.rows = []; o.open = {}; o.more = false;
+}
+
 async function loadOutbox(more) {
   const o = state.outbox;
   if (!o.day) return;
   o.loading = true;
-  const params = new URLSearchParams({ day: o.day, limit: '100' });
+  const params = new URLSearchParams({ scope: o.scope, day: o.day, limit: '100' });
   if (o.machine) params.set('machine', o.machine);
   if (o.group) params.set('group', o.group);
   if (o.source) params.set('source', o.source);
@@ -316,12 +636,125 @@ async function toggleRow(id) {
   const o = state.outbox;
   if (o.open[id]) { delete o.open[id]; render(); return; }
   try {
-    const envelope = await request(`/api/outbox/row?day=${encodeURIComponent(o.day)}&id=${id}`);
+    const envelope = await request(`/api/outbox/row?scope=${encodeURIComponent(o.scope)}&day=${encodeURIComponent(o.day)}&id=${id}`);
     o.open[id] = JSON.stringify(envelope, null, 2);
   } catch (e) {
     toast(e.message, true);
   }
   render();
+}
+
+// ---------- MES failures: messages MES rejected as invalid ----------
+
+const failedKey = r => `${r.scope}|${r.day}|${r.id}`;
+
+function renderFailed(view) {
+  const f = state.failed;
+  if (!f) {
+    view.append(h('div', { class: 'empty', textContent: 'Loading…' }));
+    loadFailed();
+    return;
+  }
+
+  view.append(h('p', { class: 'section-note', textContent:
+    'MES answered these messages with "invalid" (a 4xx), so they are not retried. They stay in the outbox with MES\'s answer. ' +
+    'Fix the cause (mapping, MES format, or on the MES side), then re-send. Discard only with a reason: it is logged and kept with the rows.' }));
+
+  const picked = f.rows.filter(r => state.failedPicked.has(failedKey(r)));
+  const refs = rows => rows.map(r => ({ scope: r.scope, day: r.day, id: r.id }));
+  view.append(h('div', { class: 'outbox-tools' },
+    h('button', { type: 'button', class: 'primary', textContent: picked.length ? `re-send ${picked.length} ticked` : 're-send all',
+      disabled: !f.total, onclick: () => failedAction('resend', picked.length ? refs(picked) : null) }),
+    h('button', { type: 'button', textContent: picked.length ? `discard ${picked.length} ticked…` : 'discard all…',
+      disabled: !f.total, onclick: () => failedAction('discard', picked.length ? refs(picked) : null) }),
+    h('button', { type: 'button', textContent: 'refresh', onclick: () => loadFailed() })));
+
+  if (!f.total) {
+    view.append(h('div', { class: 'empty', textContent: 'Nothing rejected by MES.' }));
+    return;
+  }
+
+  const rows = f.rows.filter(r => matches(`${r.machineId} ${r.dataSource} ${r.group} ${r.error} ${r.eventId}`));
+  const all = h('input', { type: 'checkbox', 'aria-label': 'tick all',
+    checked: rows.length > 0 && rows.every(r => state.failedPicked.has(failedKey(r))),
+    onchange: e => { rows.forEach(r => e.target.checked ? state.failedPicked.add(failedKey(r)) : state.failedPicked.delete(failedKey(r))); render(); } });
+
+  view.append(h('p', { class: 'section-note', textContent: f.total > f.rows.length
+    ? `${f.total.toLocaleString()} rejected, oldest ${f.rows.length} shown.` : `${f.total.toLocaleString()} rejected.` }));
+  view.append(h('table', { class: 'data' },
+    h('thead', {}, h('tr', {}, h('th', {}, all), ...['', 'machine', 'group', 'data source', 'event time', 'rejected', 'MES said', ''].map(t => h('th', { textContent: t })))),
+    h('tbody', {}, ...rows.flatMap(r => {
+      const key = failedKey(r);
+      const open = state.failedOpen[key];
+      const tick = h('input', { type: 'checkbox', checked: state.failedPicked.has(key), 'aria-label': 'tick',
+        onclick: e => e.stopPropagation(),
+        onchange: e => { e.target.checked ? state.failedPicked.add(key) : state.failedPicked.delete(key); render(); } });
+      const tr = h('tr', { class: 'clickable', title: 'Click to show the whole envelope', onclick: () => toggleFailed(r) },
+        h('td', {}, tick),
+        h('td', { textContent: open ? '▾' : '▸' }),
+        h('td', { class: 'strong', textContent: r.machineId ?? '—' }),
+        h('td', { textContent: r.group }),
+        h('td', { textContent: r.dataSource ?? '—' }),
+        h('td', { class: 'nowrap', textContent: r.eventTime ? localTime(r.eventTime) : '—' }),
+        h('td', { class: 'nowrap', textContent: ago(r.failedAt), title: localTime(r.failedAt) }),
+        h('td', { class: 'small bad error-text', textContent: r.error }),
+        h('td', { class: 'nowrap' },
+          h('button', { type: 'button', class: 'link', textContent: 're-send', onclick: e => { e.stopPropagation(); failedAction('resend', refs([r])); } }),
+          ' · ',
+          h('button', { type: 'button', class: 'link', textContent: 'discard', onclick: e => { e.stopPropagation(); failedAction('discard', refs([r])); } })));
+      return open ? [tr, h('tr', {}, h('td', { colSpan: 9 }, h('pre', { class: 'json', textContent: open })))] : [tr];
+    }))));
+}
+
+async function loadFailed() {
+  try { state.failed = await request('/api/failed?limit=500'); }
+  catch (e) { state.failed = { total: 0, rows: [] }; toast(e.message, true); }
+  const present = new Set(state.failed.rows.map(failedKey));
+  for (const key of [...state.failedPicked]) if (!present.has(key)) state.failedPicked.delete(key);
+  state.failedCount = state.failed.total;
+  if (state.view === 'failed') {
+    const scroll = window.scrollY;
+    render();
+    window.scrollTo(0, scroll);
+  } else renderTabs();
+}
+
+async function toggleFailed(r) {
+  const key = failedKey(r);
+  if (state.failedOpen[key]) { delete state.failedOpen[key]; render(); return; }
+  try {
+    const envelope = await request(`/api/outbox/row?scope=${encodeURIComponent(r.scope)}&day=${encodeURIComponent(r.day)}&id=${r.id}`);
+    state.failedOpen[key] = JSON.stringify(envelope, null, 2);
+  } catch (e) {
+    toast(e.message, true);
+  }
+  render();
+}
+
+// rows null = all failed messages.
+async function failedAction(action, rows) {
+  const which = rows ? `${rows.length} message(s)` : `all ${state.failed?.total ?? state.failedCount} rejected message(s)`;
+  let reason = null;
+  if (action === 'discard') {
+    reason = (prompt(`Discard ${which}? They are never sent to MES.\nReason (required, it is logged):`) ?? '').trim();
+    if (!reason) { toast('Not discarded: a reason is needed.', true); return; }
+  } else if (!rows && !confirm(`Re-send ${which} to MES?`)) {
+    return;
+  }
+
+  try {
+    const result = await request(`/api/failed/${action}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(rows ? { rows, reason } : { all: true, reason }),
+    });
+    toast(action === 'resend'
+      ? `${result.count} message(s) back in the send queue. If MES rejects them again they come back here.`
+      : `${result.count} message(s) discarded. Reason logged.`);
+  } catch (e) {
+    toast(`Not done: ${e.message}`, true);
+  }
+  state.failedPicked.clear();
+  await loadFailed();
 }
 
 // Log: everything the gateway printed, problems in red.
@@ -413,28 +846,120 @@ function renderPointMap(view) {
 
   const all = group === ALL;
   const searching = state.search.trim() !== '';
-  const grid = h('div', { class: all ? 'grid three' : 'grid two' });
-  if (all) grid.append(h('div', { class: 'head', textContent: 'group' }));
-  grid.append(
-    h('div', { class: 'head', textContent: 'incoming tag' }),
-    h('div', { class: 'head', textContent: 'fieldName' }),
-    h('div'));
-
   let shown = 0;
-  for (const row of state.data['point-map']) {
-    if (!all && row.dataGroup !== group) continue;
-    if (!matches(`${row.tag} ${row.fieldName} ${row.dataGroup}`)) continue;
-    appendPointRow(grid, row, all, group);
-    shown++;
-  }
-
-  if (!all && !searching)
-    for (let i = 0; i < BLANK_ROWS; i++) appendPointRow(grid, null, false, group);
-
-  view.append(grid);
+  for (const g of all ? groups : [group])
+    shown += renderGroupFields(view, g, all);
 
   if (!shown && searching)
-    view.append(h('div', { class: 'empty', textContent: all ? 'No rows match the search.' : `No rows in ${group} match. Try "All groups".` }));
+    view.append(h('div', { class: 'empty', textContent: all ? 'Nothing matches the search.' : `Nothing in ${group} matches. Try "All groups".` }));
+}
+
+// The MES columns of a data group (the MES format, Config/mes-schema.json), or null for a group that is no MES table (MOTION, IO, ...).
+const mesColumns = group => state.mesSchema?.[group] ?? null;
+
+// Fields the group's TimeStamp rule fills (they need no incoming tag).
+function ruleFilled(group) {
+  const rule = state.data['timestamp-rules']?.[group];
+  if (!rule) return new Set(['record_timestamp']);
+  if (rule.mode === 'Span')
+    return new Set([rule.startField, rule.endField, rule.previousField || (rule.triggerField && `previous_${rule.triggerField}`)].filter(Boolean));
+  return new Set([rule.timestampField || 'record_timestamp']);
+}
+
+// One group: its MES fields (every MES column, just fill in the incoming tag),
+// then extra fields (tag + own field name). Returns how many rows are shown.
+function renderGroupFields(view, group, withTitle) {
+  const columns = mesColumns(group);
+  const searching = state.search.trim() !== '';
+  const section = h('div', { class: 'field-section' });
+  if (withTitle) section.append(h('h3', { class: 'sub', textContent: group }));
+  let shown = 0;
+
+  if (columns) {
+    const filled = ruleFilled(group);
+    const grid = h('div', { class: 'grid mes' },
+      h('div', { class: 'head', textContent: 'MES field' }),
+      h('div', { class: 'head', textContent: 'incoming tag (several: comma-separated)' }),
+      h('div'));
+    for (const column of columns) {
+      const tags = state.data['point-map'].filter(r => r.dataGroup === group && r.fieldName === column).map(r => r.tag);
+      if (!matches(`${column} ${tags.join(' ')} ${group}`)) continue;
+      shown++;
+      const byRule = filled.has(column);
+      grid.append(
+        h('div', { class: 'field-label', title: byRule ? 'The TimeStamp rule fills this field; a tag is optional.' : `MES column ${column}` },
+          column, byRule ? h('span', { class: 'field-note', textContent: 'set by TimeStamp rule' }) : null),
+        h('input', {
+          value: tags.join(', '), 'aria-label': `incoming tag for ${column}`,
+          placeholder: byRule ? 'optional' : 'no tag: sent as null',
+          // on change (leaving the box), so typing a comma doesn't redraw the list
+          onchange: e => setFieldTags(group, column, e.target.value),
+        }),
+        h('button', {
+          class: 'row-x', type: 'button', textContent: '×', title: `Remove ${column} from the MES format (all machines)`,
+          onclick: () => removeMesField(group, column),
+        }));
+    }
+    if (shown || !searching) section.append(grid);
+    if (!searching)
+      section.append(h('button', {
+        type: 'button', class: 'link add-field', textContent: '+ MES field',
+        title: `Add a column to the MES format of ${group} (all machines)`, onclick: () => addMesField(group),
+      }));
+  }
+
+  // Extra fields: no MES column (MES keeps them in payload_json), or every field of a non-MES group.
+  const extraGrid = h('div', { class: 'grid two' },
+    h('div', { class: 'head', textContent: 'incoming tag' }),
+    h('div', { class: 'head', textContent: columns ? 'extra field (no MES column)' : 'fieldName' }),
+    h('div'));
+  let extras = 0;
+  for (const row of state.data['point-map']) {
+    if (row.dataGroup !== group || (columns ?? []).includes(row.fieldName)) continue;
+    if (!matches(`${row.tag} ${row.fieldName} ${row.dataGroup}`)) continue;
+    appendPointRow(extraGrid, row, false, group);
+    extras++;
+  }
+  if (!searching)
+    for (let i = 0; i < (columns ? 1 : BLANK_ROWS); i++) appendPointRow(extraGrid, null, false, group);
+  shown += extras;
+
+  if (extras || !searching) {
+    if (columns)
+      section.append(h('p', { class: 'section-note extra-note', textContent: 'Extra fields for this tab only: sent to MES after the MES fields, kept in payload_json.' }));
+    section.append(extraGrid);
+  }
+
+  if (shown || !searching) view.append(section);
+  return shown;
+}
+
+// The tags typed for one MES field (comma-separated) replace its rows.
+function setFieldTags(group, column, text) {
+  const tags = [...new Set(text.split(',').map(t => t.trim()).filter(Boolean))];
+  state.data['point-map'] = state.data['point-map'].filter(r => !(r.dataGroup === group && r.fieldName === column));
+  for (const tag of tags) state.data['point-map'].push({ tag, dataGroup: group, fieldName: column });
+  markDirty('point-map');
+}
+
+// The MES format is shared by every machine: changing it is saved with PointMap.
+function addMesField(group) {
+  const name = (prompt(`New MES column for ${group} (as named in the MES database). Every machine sends it from now on (null when no tag):`) ?? '').trim();
+  if (!name) return;
+  if (!/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(name)) { toast('A MES column name uses letters, digits and _ only.', true); return; }
+  if (state.mesSchema[group].some(c => c.toLowerCase() === name.toLowerCase())) { toast(`${group} already has ${name}.`, true); return; }
+  state.mesSchema[group].push(name);
+  state.mesDirty = true;
+  markDirty('point-map');
+  render();
+}
+
+function removeMesField(group, column) {
+  if (!confirm(`Remove ${column} from the MES format of ${group}? Every machine stops sending it as a MES column (tags mapped to it here become extra fields). It takes effect when you save.`)) return;
+  state.mesSchema[group] = state.mesSchema[group].filter(c => c !== column);
+  state.mesDirty = true;
+  markDirty('point-map');
+  render();
 }
 
 // row = null draws a blank row; typing in it adds a real row to the group.
@@ -487,22 +1012,26 @@ function renderUnidentified(view, unid, groups) {
   }
 
   const grid = h('div', { class: 'grid unid' },
-    ...['incoming tag', 'last value', 'group', 'fieldName'].map(text => h('div', { class: 'head', textContent: text })));
+    ...['incoming tag', 'last value', 'group', 'field (MES column or extra)'].map(text => h('div', { class: 'head', textContent: text })));
 
   for (const u of list) {
     const edit = state.unidEdits[u.tag] ??= { dataGroup: '', fieldName: '' };
+    const field = h('input', {
+      value: edit.fieldName, placeholder: u.tag.toLowerCase(), 'aria-label': 'fieldName',
+      oninput: e => { edit.fieldName = e.target.value; markDirty('point-map'); },
+    });
+    field.setAttribute('list', `mes-${edit.dataGroup}`); // suggests the group's MES columns
     grid.append(
       h('input', { value: u.tag, readOnly: true, 'aria-label': 'incoming tag' }),
       h('div', { class: 'value-cell', textContent: `${u.lastValue}   ×${u.count}`, title: `last seen ${new Date(u.lastSeen).toLocaleString()}` }),
-      select([['', '— pick —'], ...groups.map(g => [g, g])], edit.dataGroup,
-        v => { edit.dataGroup = v; markDirty('point-map'); }, 'group'),
-      h('input', {
-        value: edit.fieldName, placeholder: u.tag.toLowerCase(), 'aria-label': 'fieldName',
-        oninput: e => { edit.fieldName = e.target.value; markDirty('point-map'); },
-      }));
+      select([['', '— pick —'], [IGNORED, 'ignore (never sent)'], ...groups.filter(g => g !== IGNORED && g !== 'UNIDENTIFIED').map(g => [g, g])], edit.dataGroup,
+        v => { edit.dataGroup = v; field.setAttribute('list', `mes-${v}`); markDirty('point-map'); }, 'group'),
+      field);
   }
 
-  view.append(grid);
+  view.append(grid,
+    ...Object.entries(state.mesSchema ?? {}).map(([g, columns]) =>
+      h('datalist', { id: `mes-${g}` }, ...columns.map(c => h('option', { value: c })))));
 }
 
 // TimeStamp: one rule per data group.
@@ -538,12 +1067,13 @@ function renderTimestamp(view) {
     select([['SinglePoint', 'SinglePoint'], ['Span', 'Span']], rule.mode,
       v => { rule.mode = v; markDirty('timestamp-rules'); render(); }, 'mode'));
 
-  for (const key of span ? ['triggerField', 'startField', 'endField'] : ['timestampField']) {
+  for (const key of span ? ['triggerField', 'startField', 'endField', 'previousField'] : ['timestampField']) {
     form.append(
       h('div', { class: 'label', textContent: key }),
       h('input', {
         value: rule[key] ?? '', 'aria-label': key,
-        placeholder: key === 'timestampField' ? 'record_timestamp' : '',
+        placeholder: key === 'timestampField' ? 'record_timestamp'
+          : key === 'previousField' ? `previous_${rule.triggerField || '<triggerField>'} (default)` : '',
         oninput: e => { rule[key] = e.target.value; markDirty('timestamp-rules'); },
       }));
   }
@@ -564,7 +1094,7 @@ function renderTimestamp(view) {
   view.append(form, h('p', {
     class: 'section-note',
     textContent: (span
-      ? 'Span: when triggerField changes value, the running span is closed (endField) and a new one starts (startField).'
+      ? 'Span: when triggerField changes value, the running span is closed (endField) and a new one starts (startField); the old value goes to previousField.'
       : 'SinglePoint: timestampField is set to the time of each change (the machine\'s timestamp when sent).') +
       ' sendEveryMs: every change is sent to MES at the next tick, per machine; no change, nothing sent.',
   }), h('button', {
@@ -613,7 +1143,17 @@ function renderForm(view) {
 
 // ---------- actions ----------
 
+// A view of the other kind of tab (e.g. the error badge opens Log) switches tab too.
 function switchView(view) {
+  if (GENERAL_VIEWS.has(view) && state.tab !== GENERAL) {
+    state.lastView.machine = state.view;
+    state.tab = GENERAL;
+  } else if (!GENERAL_VIEWS.has(view) && state.tab === GENERAL) {
+    state.lastView.general = state.view;
+    state.tab = state.scope ? state.scope : SHARED;
+    resetOutbox();
+  }
+  if (view === 'failed') state.failed = null; // load fresh
   state.view = view;
   render();
 }
@@ -675,7 +1215,7 @@ function buildBody(key) {
     for (const [group, rule] of Object.entries(data)) {
       rule.mode ??= 'SinglePoint';
       const fields = rule.mode === 'Span' ? ['triggerField', 'startField', 'endField'] : ['timestampField'];
-      const keep = ['mode', ...fields, 'sendEveryMs'];
+      const keep = ['mode', ...fields, ...(rule.mode === 'Span' ? ['previousField'] : []), 'sendEveryMs'];
       for (const k of Object.keys(rule)) if (!keep.includes(k)) delete rule[k];
       for (const k of keep) if (typeof rule[k] === 'string') rule[k] = rule[k].trim();
 
@@ -685,6 +1225,7 @@ function buildBody(key) {
       if (rule.mode === 'Span' && fields.some(k => !rule[k]))
         throw new Error(`${group}: Span needs triggerField, startField and endField.`);
       if (rule.mode !== 'Span' && !rule.timestampField) delete rule.timestampField; // falls back to record_timestamp
+      if (rule.mode === 'Span' && !rule.previousField) delete rule.previousField;   // falls back to previous_<triggerField>
     }
     return data;
   }
@@ -708,9 +1249,22 @@ async function save() {
   try { body = buildBody(key); }
   catch (e) { toast(e.message, true); return; }
 
+  // The MES format (shared by all machines) was edited on PointMap: save it first.
+  if (key === 'point-map' && state.mesDirty) {
+    try {
+      await request('/api/config/mes-schema', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(state.mesSchema),
+      });
+      state.mesDirty = false;
+    } catch (e) {
+      toast(`MES format not saved: ${e.message}`, true);
+      return;
+    }
+  }
+
   let result;
   try {
-    result = await request(`/api/config/${key}`, {
+    result = await request(`/api/config/${key}${scopeQuery(key)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -728,6 +1282,10 @@ async function save() {
     await loadUnidentified();
   }
   render();
+  if (result.reconnected > 0) {
+    toast(`Every held tag is mapped now: ${result.reconnected} connection(s) closed, the held messages are being sent again.`);
+    await loadUnmapped();
+  }
   askRestart(result.restartToApply);
 }
 
@@ -796,18 +1354,35 @@ function showStatus(status) {
   const rate = v => v < 10 ? v.toFixed(1) : n(v); // 1 message in 10 s shows as 0.1, not 0
   $('gwStats').textContent = s && s.at
     ? `in ${rate(s.inPerSec)}/s · MQTT ${rate(s.mqttPerSec)}/s · MES ${rate(s.mesDeliveredPerSec)}/s · backlog ${s.backlog < 0 ? '?' : n(s.backlog)}` +
-      (s.rejectedPerSec > 0 ? ` · ${rate(s.rejectedPerSec)}/s without machine_id` : '') +
+      (s.rejectedPerSec > 0 ? ` · ${rate(s.rejectedPerSec)}/s rejected` : '') +
+      (s.duplicatePerSec > 0 ? ` · ${rate(s.duplicatePerSec)}/s repeats ignored` : '') +
       (s.mqttLostPerSec > 0 ? ` · MQTT lost ${rate(s.mqttLostPerSec)}/s` : '')
     : '';
 }
 
 async function pollStatus() {
+  let status;
   try {
-    showStatus(await request('/api/status'));
+    status = await request('/api/status');
+    showStatus(status);
   } catch {
     $('gwStatus').className = 'gw-status error';
     $('gwText').textContent = 'Cannot reach the gateway.';
     return;
+  }
+
+  // Machines sending without a tab, or with tags not mapped yet (data held): keep the alerts current.
+  if (status.held > 0 || state.held.length) await loadHeld();
+  if (status.unmapped > 0 || state.unmapped.length) await loadUnmapped();
+
+  // Messages MES rejected as invalid: alert when new ones arrive.
+  const failed = status.failed ?? 0;
+  if (failed !== state.failedCount) {
+    if (failed > state.failedCount)
+      toast(`MES rejected ${(failed - state.failedCount).toLocaleString()} message(s) as invalid. See General → MES failures.`, true);
+    state.failedCount = failed;
+    if (state.view === 'failed') await loadFailed();
+    else renderTabs();
   }
 
   // Keep the Unidentified count fresh without redrawing what the user is typing in.

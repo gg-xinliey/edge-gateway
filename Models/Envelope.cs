@@ -12,7 +12,8 @@ public class Envelope
     public string data_source { get; set; } = "";
     public string protocol { get; set; } = "";
     public string data_group { get; set; } = "";
-    public string publish_timestamp { get; set; } = "";
+    public string event_time { get; set; } = "";        // when it happened on the machine (UTC)
+    public string publish_timestamp { get; set; } = ""; // when the gateway built this envelope (UTC)
     public string data_quality_status { get; set; } = "VALID";
     public string schema_version { get; set; } = "1.0";
     public Dictionary<string, object?> payload { get; set; } = new();

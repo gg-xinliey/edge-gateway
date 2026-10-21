@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Receive and Send</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&family=Noto+Serif:ital@0;1&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --color-paper:   #f5f5f5;
+      --color-ink:     #2d3142;
+      --color-muted:   #4f5d75;
+      --color-accent:  #eb6c36;
+      --color-link:    #2e5aa8;
+      --font-sans:     'Geist', system-ui, sans-serif;
+      --font-serif:    'Instrument Serif', 'Noto Serif', serif;
+      --font-mono:     'Geist Mono', ui-monospace, monospace;
+    }
+    body { font-family: var(--font-sans); background: var(--color-paper); color: var(--color-ink); padding: 3rem 2rem; }
+    .frame { max-width: 1200px; margin: 0 auto; }
+    .eyebrow { font-family: var(--font-mono); font-size: 0.66rem; font-weight: 500; letter-spacing: 0.18em; text-transform: uppercase; color: var(--color-muted); margin-bottom: 0.5rem; }
+    h1 { font-family: var(--font-serif); font-size: clamp(1.5rem, 2.4vw + 0.75rem, 2rem); font-weight: 400; letter-spacing: -0.02em; line-height: 1.15; margin-bottom: 1.5rem; }
+    .diagram { overflow-x: auto; }
+    svg { width: 100%; min-width: 900px; display: block; }
+    .cards { display: grid; grid-template-columns: 1.1fr 1fr 0.9fr; gap: 1rem; margin-top: 1.5rem; }
+    .card { background: #ffffff; border: 1px solid rgba(45,49,66,0.12); border-radius: 6px; padding: 1.25rem; }
+    .card .eyebrow { margin-bottom: 0.4rem; }
+    .card-header { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.6rem; }
+    .card-header h3 { font-size: 0.95rem; font-weight: 600; }
+    .card-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+    .card-dot.coral { background: var(--color-accent); }
+    .card-dot.muted { background: var(--color-muted); }
+    .card-dot.link { background: var(--color-link); }
+    .card ul { list-style: none; font-size: 0.85rem; line-height: 1.55; color: var(--color-muted); }
+    .card li { padding-left: 0.9rem; position: relative; }
+    .card li::before { content: '–'; position: absolute; left: 0; }
+    .card code { font-family: var(--font-mono); font-size: 0.78rem; color: var(--color-ink); }
+    footer { margin-top: 1.5rem; padding-top: 0.75rem; border-top: 1px solid rgba(45,49,66,0.10); font-family: var(--font-mono); font-size: 0.66rem; color: var(--color-muted); }
+    @media (max-width: 760px) { .cards { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">Sequence · Edge Gateway (RES API – TCP)</p>
+    <h1>How we receive data, answer the adapter, and send to MES</h1>
+
+    <div class="diagram">
+    <svg viewBox="0 0 1280 880" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="receive-and-send-title receive-and-send-desc">
+      <title id="receive-and-send-title">How we receive data, answer the adapter, and send to MES</title>
+      <desc id="receive-and-send-desc">Sequence diagram showing the adapter sending lines to the gateway: IO and motion lines are relayed to the MQTT broker without a reply, MES lines are checked, saved to the outbox and only then acknowledged to the adapter, and the outbox rows are posted to MES, marked sent on a 2xx answer, otherwise retried or moved to failed messages.</desc>
+      <defs>
+        <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
+        <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/></marker>
+        <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2e5aa8"/></marker>
+        <marker id="arrow-open" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polyline points="0 0, 8 3, 0 6" fill="none" stroke="#4f5d75" stroke-width="1.2"/></marker>
+      </defs>
+
+      <rect width="100%" height="100%" fill="#f5f5f5"/>
+
+      <!-- ============ Lifelines ============ -->
+      <line x1="140" y1="112" x2="140" y2="792" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+      <line x1="420" y1="112" x2="420" y2="792" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+      <line x1="700" y1="112" x2="700" y2="792" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+      <line x1="960" y1="112" x2="960" y2="792" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+      <line x1="1180" y1="112" x2="1180" y2="792" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+
+      <!-- ============ ALT frame (MES answer) ============ -->
+      <rect x="364" y="552" width="620" height="224" rx="4" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
+      <rect x="364" y="552" width="40" height="16" rx="2" fill="#f5f5f5" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
+      <text x="384" y="564" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.12em">ALT</text>
+      <text x="448" y="564" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.04em">[MES answers 2xx]</text>
+      <line x1="372" y1="664" x2="976" y2="664" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="4,3"/>
+      <text x="436" y="680" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.04em">[else: 5xx · timeout · 4xx]</text>
+
+      <!-- ============ Activation bars ============ -->
+      <rect x="416" y="272" width="8" height="200" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+      <rect x="696" y="384" width="8" height="40" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+      <rect x="416" y="520" width="8" height="240" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+      <rect x="956" y="528" width="8" height="184" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+      <rect x="696" y="632" width="8" height="16" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+      <rect x="696" y="744" width="8" height="16" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+
+      <!-- ============ Messages (drawn before actor boxes) ============ -->
+      <!-- 1 IO / motion line -->
+      <line x1="140" y1="168" x2="416" y2="168" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <!-- 2 relay to broker, fire-and-forget -->
+      <line x1="424" y1="208" x2="1176" y2="208" stroke="#4f5d75" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#arrow-open)"/>
+      <!-- 3 MES data line -->
+      <line x1="140" y1="272" x2="416" y2="272" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <!-- 4 self: check + map -->
+      <path d="M 424 312 H 464 Q 472 312 472 320 V 336 Q 472 344 464 344 H 428" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <!-- 5 save -->
+      <line x1="424" y1="384" x2="696" y2="384" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <!-- 6 committed (return) -->
+      <line x1="696" y1="424" x2="424" y2="424" stroke="#4f5d75" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
+      <!-- 7 ack (headline) -->
+      <line x1="416" y1="464" x2="144" y2="464" stroke="#eb6c36" stroke-width="1.4" marker-end="url(#arrow-accent)"/>
+      <!-- 8 POST envelope -->
+      <line x1="424" y1="528" x2="956" y2="528" stroke="#2e5aa8" stroke-width="1.2" marker-end="url(#arrow-link)"/>
+      <!-- 9 2xx (headline success) -->
+      <line x1="956" y1="600" x2="424" y2="600" stroke="#eb6c36" stroke-width="1.4" marker-end="url(#arrow-accent)"/>
+      <!-- 10 mark sent -->
+      <line x1="424" y1="640" x2="696" y2="640" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <!-- 11 not 2xx (return) -->
+      <line x1="956" y1="712" x2="424" y2="712" stroke="#4f5d75" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
+      <!-- 12 retry later / failed -->
+      <line x1="424" y1="752" x2="696" y2="752" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+
+      <!-- ============ Message labels (mask, 8px gap above the line) ============ -->
+      <rect x="236" y="148" width="88" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="280" y="157" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">IO/MOTION LINE</text>
+
+      <rect x="512" y="188" width="96" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="560" y="197" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">RELAY, NO ACK</text>
+
+      <rect x="236" y="252" width="88" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="280" y="261" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">MES DATA LINE</text>
+
+      <rect x="482" y="322" width="80" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="486" y="331" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">CHECK + MAP</text>
+
+      <rect x="520" y="364" width="80" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="560" y="373" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">SAVE TO DISK</text>
+
+      <rect x="524" y="404" width="72" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="560" y="413" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">COMMITTED</text>
+
+      <rect x="232" y="444" width="96" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="280" y="453" fill="#eb6c36" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">{"ack":id}</text>
+
+      <rect x="516" y="508" width="88" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="560" y="517" fill="#2e5aa8" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">POST ENVELOPE</text>
+
+      <rect x="806" y="580" width="48" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="830" y="589" fill="#eb6c36" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">2XX</text>
+
+      <rect x="524" y="620" width="72" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="560" y="629" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">MARK SENT</text>
+
+      <rect x="798" y="692" width="64" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="830" y="701" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">NOT 2XX</text>
+
+      <rect x="508" y="732" width="104" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="560" y="741" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">RETRY / FAILED</text>
+
+      <!-- Resend timing for the else branch (right of the outbox bar, inside the frame) -->
+      <text x="716" y="744" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.04em">retry wait 2 → 4 → 8 → 16 → 32 → 60 s</text>
+      <text x="716" y="756" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.04em">then every 60 s · back to 2 s after a 2xx</text>
+      <text x="716" y="768" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.04em">4xx: no auto resend, re-send on page</text>
+
+      <!-- ============ Actors ============ -->
+      <!-- Adapter (input) -->
+      <rect x="60" y="56" width="160" height="56" rx="6" fill="#f5f5f5"/>
+      <rect x="60" y="56" width="160" height="56" rx="6" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+      <text x="140" y="82" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Machine adapter</text>
+      <text x="140" y="96" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">keeps line until ack</text>
+
+      <!-- Gateway -->
+      <rect x="340" y="56" width="160" height="56" rx="6" fill="#f5f5f5"/>
+      <rect x="340" y="56" width="160" height="56" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="420" y="82" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Edge Gateway</text>
+      <text x="420" y="96" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">TCP :9000</text>
+
+      <!-- Outbox (store, focal) -->
+      <rect x="620" y="56" width="160" height="56" rx="6" fill="#f5f5f5"/>
+      <rect x="620" y="56" width="160" height="56" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+      <text x="700" y="82" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Outbox</text>
+      <text x="700" y="96" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">SQLite · per machine</text>
+
+      <!-- MES (external) -->
+      <rect x="880" y="56" width="160" height="56" rx="6" fill="#f5f5f5"/>
+      <rect x="880" y="56" width="160" height="56" rx="6" fill="rgba(45,49,66,0.03)" stroke="rgba(45,49,66,0.30)" stroke-width="1"/>
+      <text x="960" y="82" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">MES API</text>
+      <text x="960" y="96" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">/machine-events</text>
+
+      <!-- MQTT broker (external) -->
+      <rect x="1100" y="56" width="160" height="56" rx="6" fill="#f5f5f5"/>
+      <rect x="1100" y="56" width="160" height="56" rx="6" fill="rgba(45,49,66,0.03)" stroke="rgba(45,49,66,0.30)" stroke-width="1"/>
+      <text x="1180" y="82" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">MQTT broker</text>
+      <text x="1180" y="96" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">:1883 · live only</text>
+
+      <!-- ============ Legend (bottom strip) ============ -->
+      <line x1="40" y1="816" x2="1240" y2="816" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+      <text x="40" y="832" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em">LEGEND</text>
+
+      <line x1="40" y1="852" x2="68" y2="852" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <text x="76" y="855" fill="#4f5d75" font-size="8.5" font-family="'Geist', sans-serif">Call</text>
+
+      <line x1="200" y1="852" x2="228" y2="852" stroke="#4f5d75" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#arrow)"/>
+      <text x="236" y="855" fill="#4f5d75" font-size="8.5" font-family="'Geist', sans-serif">Answer</text>
+
+      <line x1="360" y1="852" x2="388" y2="852" stroke="#4f5d75" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#arrow-open)"/>
+      <text x="396" y="855" fill="#4f5d75" font-size="8.5" font-family="'Geist', sans-serif">Fire and forget (no reply)</text>
+
+      <line x1="560" y1="852" x2="588" y2="852" stroke="#2e5aa8" stroke-width="1.2" marker-end="url(#arrow-link)"/>
+      <text x="596" y="855" fill="#4f5d75" font-size="8.5" font-family="'Geist', sans-serif">HTTP to MES</text>
+
+      <line x1="720" y1="852" x2="748" y2="852" stroke="#eb6c36" stroke-width="1.4" marker-end="url(#arrow-accent)"/>
+      <text x="756" y="855" fill="#4f5d75" font-size="8.5" font-family="'Geist', sans-serif">The two acks that count</text>
+
+      <rect x="920" y="846" width="8" height="12" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+      <text x="936" y="855" fill="#4f5d75" font-size="8.5" font-family="'Geist', sans-serif">Busy (activation)</text>
+    </svg>
+    </div>
+
+    <div class="cards">
+      <div class="card">
+        <p class="eyebrow">Adapter gets back</p>
+        <div class="card-header"><span class="card-dot coral"></span><h3>Answers on the same connection</h3></div>
+        <ul>
+          <li><code>{"ack":id}</code> once the line is on disk (ms)</li>
+          <li>Same <code>message_id</code> again (10 min): <code>ack</code> again, nothing new to MES</li>
+          <li>No <code>machine_id</code>: <code>{"nack":id,"reason":"no machine_id"}</code></li>
+          <li>Unchanged values: still <code>ack</code>, no record</li>
+        </ul>
+      </div>
+      <div class="card">
+        <p class="eyebrow">No reply</p>
+        <div class="card-header"><span class="card-dot muted"></span><h3>Adapter keeps the line</h3></div>
+        <ul>
+          <li>Machine has no tab: held until registered</li>
+          <li>Tag not mapped: held until mapped or ignored</li>
+          <li>No <code>message_id</code>, or broken JSON</li>
+          <li>IO / motion lines: never answered</li>
+          <li>Resend: after it reconnects (its own interval). Held machines are disconnected once fixed, so they resend at once</li>
+        </ul>
+      </div>
+      <div class="card">
+        <p class="eyebrow">MES answer</p>
+        <div class="card-header"><span class="card-dot link"></span><h3>What happens to the row</h3></div>
+        <ul>
+          <li><code>2xx</code>: sent</li>
+          <li><code>5xx</code>, timeout 15 s, 401/403/429: retry, wait 2 → 4 → 8 → 16 → 32 → 60 s, then every 60 s, no limit</li>
+          <li>Back to 2 s as soon as MES takes a row, so the backlog starts within 60 s of MES coming back</li>
+          <li>Other <code>4xx</code>: failed messages, no auto resend; re-send or discard on the page</li>
+        </ul>
+      </div>
+    </div>
+
+    <footer>Edge Gateway · TCP 192.168.250.78:9000 · outbox\&lt;machine_id&gt;\outbox-yyyy-MM-dd.db · real MES API not confirmed yet</footer>
+  </div>
+</body>
+</html>

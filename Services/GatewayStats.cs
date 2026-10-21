@@ -6,16 +6,17 @@ namespace EdgeGateway.Services;
 // restart from the page does not reset the totals.
 public sealed class GatewayStats
 {
-    private long _received, _rejected, _mqttPublished, _mqttLost, _mesQueued, _mesDelivered;
+    private long _received, _rejected, _duplicates, _mqttPublished, _mqttLost, _mesQueued, _mesDelivered;
 
     public void Received() => Interlocked.Increment(ref _received);
-    public void Rejected() => Interlocked.Increment(ref _rejected);
+    public void Rejected() => Interlocked.Increment(ref _rejected);     // no machine_id / no message_id
+    public void Duplicate() => Interlocked.Increment(ref _duplicates);  // message_id seen in the last 10 min
     public void MqttPublished() => Interlocked.Increment(ref _mqttPublished);
     public void MqttLost(long count = 1) => Interlocked.Add(ref _mqttLost, count);
     public void MesQueued() => Interlocked.Increment(ref _mesQueued);
     public void MesDelivered(long count) => Interlocked.Add(ref _mesDelivered, count);
 
-    public StatsRates Latest { get; private set; } = new(0, 0, 0, 0, 0, 0, 0, null);
+    public StatsRates Latest { get; private set; } = new(0, 0, 0, 0, 0, 0, 0, 0, null);
 
     private long _lastSample = System.Diagnostics.Stopwatch.GetTimestamp();
 
@@ -31,7 +32,7 @@ public sealed class GatewayStats
         double Take(ref long counter) => Interlocked.Exchange(ref counter, 0) / seconds;
 
         Latest = new StatsRates(
-            Take(ref _received), Take(ref _rejected),
+            Take(ref _received), Take(ref _rejected), Take(ref _duplicates),
             Take(ref _mqttPublished), Take(ref _mqttLost),
             Take(ref _mesQueued), Take(ref _mesDelivered),
             backlog, DateTimeOffset.Now);
@@ -41,7 +42,7 @@ public sealed class GatewayStats
 
 // Per-second rates over the last period, plus the outbox rows not yet delivered.
 public sealed record StatsRates(
-    double InPerSec, double RejectedPerSec,
+    double InPerSec, double RejectedPerSec, double DuplicatePerSec,
     double MqttPerSec, double MqttLostPerSec,
     double MesQueuedPerSec, double MesDeliveredPerSec,
     long Backlog, DateTimeOffset? At);

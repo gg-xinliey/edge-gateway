@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Config Page Architecture</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&family=Noto+Serif:ital@0;1&family=Noto+Sans+KR:wght@400;500;600&family=Noto+Serif+KR:wght@400&family=Noto+Sans+TC:wght@400;500;600&family=Noto+Serif+TC:wght@400&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --color-paper:   #f5f5f5;   /* white-smoke */
+      --color-ink:     #2d3142;   /* jet-black */
+      --color-muted:   #4f5d75;   /* blue-slate */
+      --color-accent:  #eb6c36;   /* atomic-tangerine */
+      --font-sans:     'Geist', system-ui, sans-serif;
+      --font-serif:    'Instrument Serif', 'Noto Serif', 'Noto Serif KR', serif;
+      --font-mono:     'Geist Mono', ui-monospace, monospace;
+    }
+
+    body {
+      font-family: var(--font-sans);
+      background: var(--color-paper);
+      color: var(--color-ink);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 3rem 2rem;
+    }
+
+    .frame { max-width: 1200px; width: 100%; }
+
+    .eyebrow {
+      font-family: var(--font-mono);
+      font-size: 0.66rem;
+      font-weight: 500;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--color-muted);
+      margin-bottom: 0.5rem;
+    }
+
+    h1 {
+      font-family: var(--font-serif);
+      font-size: clamp(1.5rem, 2.4vw + 0.75rem, 2rem);
+      font-weight: 400;
+      letter-spacing: -0.02em;
+      line-height: 1.15;
+      color: var(--color-ink);
+      margin-bottom: 1.5rem;
+    }
+
+    svg { width: 100%; min-width: 900px; display: block; }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">Architecture · Edge Gateway (RES API – TCP)</p>
+    <h1>How the config page links to the gateway</h1>
+
+    <svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="config-page-architecture-title config-page-architecture-desc">
+      <title id="config-page-architecture-title">How the config page links to the gateway</title>
+      <desc id="config-page-architecture-desc">Architecture diagram showing the browser config page calling the admin web server, which checks and saves the shared and per-machine config files, registers machine tabs, restarts the gateway or reconnects held adapters, reads its live state, and reads the outbox files and re-sends or discards failed messages.</desc>
+      <defs>
+        <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
+        <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/></marker>
+        <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2e5aa8"/></marker>
+      </defs>
+
+      <rect width="100%" height="100%" fill="#f5f5f5"/>
+
+      <!-- ============ Arrows (drawn first, behind nodes) ============ -->
+      <!-- 1. Config page -> Admin web server (HTTP) -->
+      <line x1="200" y1="360" x2="280" y2="360" stroke="#2e5aa8" stroke-width="1.2" marker-end="url(#arrow-link)"/>
+      <!-- 2. Admin -> Check before save (up) -->
+      <line x1="340" y1="332" x2="340" y2="188" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <!-- 3. Check before save -> Config files -->
+      <line x1="480" y1="160" x2="600" y2="160" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <!-- 4. Config files -> Gateway (reload; right then down, r=8) -->
+      <path d="M 800 160 H 1052 Q 1060 160 1060 168 V 332" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <!-- 5. Admin -> Gateway (restart; up, right, down, r=8) -->
+      <path d="M 440 332 V 268 Q 440 260 448 260 H 972 Q 980 260 980 268 V 332" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <!-- 6. Gateway -> Live state -->
+      <line x1="920" y1="360" x2="800" y2="360" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <!-- 7. Live state -> Admin -->
+      <line x1="600" y1="360" x2="480" y2="360" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <!-- 8. Gateway -> Outbox files (down, then left, r=8) -->
+      <path d="M 1020 396 V 552 Q 1020 560 1012 560 H 800" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <!-- 9. Admin -> Outbox files (down, then right, r=8): read rows, re-send / discard failed -->
+      <path d="M 380 388 V 552 Q 380 560 388 560 H 600" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+
+      <!-- ============ Arrow labels (mask 8px from the line) ============ -->
+      <rect x="224" y="340" width="32" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="240" y="349" fill="#2e5aa8" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">HTTP</text>
+
+      <rect x="350" y="254" width="84" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="392" y="263" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">SAVE / ADD TAB</text>
+
+      <rect x="506" y="140" width="68" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="540" y="149" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">WRITE + .BAK</text>
+
+      <rect x="906" y="140" width="40" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="926" y="149" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">RELOAD</text>
+
+      <rect x="678" y="240" width="44" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="700" y="249" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">CONTROL</text>
+
+      <rect x="838" y="340" width="44" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="860" y="349" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">UPDATES</text>
+
+      <rect x="526" y="340" width="28" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="540" y="349" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">READ</text>
+
+      <rect x="894" y="540" width="32" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="910" y="549" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">ROWS</text>
+
+      <rect x="452" y="540" width="84" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="494" y="549" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">READ + RE-SEND</text>
+
+      <!-- ============ Nodes ============ -->
+      <!-- Input: Config page (browser) -->
+      <rect x="40" y="332" width="160" height="56" rx="6" fill="#f5f5f5"/>
+      <rect x="40" y="332" width="160" height="56" rx="6" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+      <text x="120" y="358" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Config page</text>
+      <text x="120" y="372" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">browser · tabs · polls 4 s</text>
+
+      <!-- Focal: Admin web server -->
+      <rect x="280" y="332" width="200" height="56" rx="6" fill="#f5f5f5"/>
+      <rect x="280" y="332" width="200" height="56" rx="6" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
+      <text x="380" y="358" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Admin web server</text>
+      <text x="380" y="372" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">localhost:5100 · /api/*</text>
+
+      <!-- Step: Check before save -->
+      <rect x="280" y="132" width="200" height="56" rx="6" fill="#f5f5f5"/>
+      <rect x="280" y="132" width="200" height="56" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="380" y="158" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Check before save</text>
+      <text x="380" y="172" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">loads it like the gateway</text>
+
+      <!-- Store: Config files (disk) -->
+      <rect x="600" y="132" width="200" height="56" rx="6" fill="#f5f5f5"/>
+      <rect x="600" y="132" width="200" height="56" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+      <text x="700" y="158" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Config files</text>
+      <text x="700" y="172" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">Config/ · machines/&lt;id&gt;/</text>
+
+      <!-- Store: Live state (memory) -->
+      <rect x="600" y="332" width="200" height="56" rx="6" fill="#f5f5f5"/>
+      <rect x="600" y="332" width="200" height="56" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+      <text x="700" y="358" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Live state (memory)</text>
+      <text x="700" y="372" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">status · held · failed · log</text>
+
+      <!-- Store: Outbox files (disk) -->
+      <rect x="600" y="532" width="200" height="56" rx="6" fill="#f5f5f5"/>
+      <rect x="600" y="532" width="200" height="56" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+      <text x="700" y="558" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Outbox files</text>
+      <text x="700" y="572" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">outbox/&lt;id&gt;/ · day files</text>
+
+      <!-- Backend: Gateway -->
+      <rect x="920" y="332" width="200" height="64" rx="6" fill="#f5f5f5"/>
+      <rect x="920" y="332" width="200" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="1020" y="358" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Gateway</text>
+      <text x="1020" y="372" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">TCP in · MQTT · MES out</text>
+      <text x="1020" y="385" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">restart · reconnect held</text>
+
+      <!-- ============ Callouts (margin, drawn last) ============ -->
+      <text x="44" y="84" fill="#2d3142" font-size="14" font-style="italic" font-family="'Instrument Serif', serif">a bad file is refused with a message; nothing is written</text>
+      <path d="M 220 92 Q 280 104 299 129" fill="none" stroke="rgba(45,49,66,0.40)" stroke-width="1" stroke-dasharray="4,3"/>
+      <circle cx="300" cy="132" r="2" fill="#2d3142"/>
+
+      <text x="1236" y="84" fill="#2d3142" font-size="14" font-style="italic" font-family="'Instrument Serif', serif" text-anchor="end">PointMap, TimeStamp, MES format apply on save; MQTT + Gateway after a restart</text>
+      <path d="M 1168 92 Q 1172 240 1102 329" fill="none" stroke="rgba(45,49,66,0.40)" stroke-width="1" stroke-dasharray="4,3"/>
+      <circle cx="1100" cy="332" r="2" fill="#2d3142"/>
+
+      <!-- ============ Legend (bottom strip) ============ -->
+      <line x1="40" y1="628" x2="1240" y2="628" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+      <text x="40" y="644" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.18em">LEGEND</text>
+
+      <rect x="40" y="660" width="24" height="12" rx="2" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+      <text x="72" y="670" fill="#4f5d75" font-size="8.5" font-family="'Geist', sans-serif">User side (browser)</text>
+
+      <rect x="220" y="660" width="24" height="12" rx="2" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="252" y="670" fill="#4f5d75" font-size="8.5" font-family="'Geist', sans-serif">Part of the gateway exe</text>
+
+      <rect x="420" y="660" width="24" height="12" rx="2" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
+      <text x="452" y="670" fill="#4f5d75" font-size="8.5" font-family="'Geist', sans-serif">The link (focal)</text>
+
+      <rect x="580" y="660" width="24" height="12" rx="2" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+      <text x="612" y="670" fill="#4f5d75" font-size="8.5" font-family="'Geist', sans-serif">Data (memory or disk)</text>
+
+      <line x1="760" y1="666" x2="788" y2="666" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <text x="796" y="670" fill="#4f5d75" font-size="8.5" font-family="'Geist', sans-serif">Inside the exe</text>
+
+      <line x1="920" y1="666" x2="948" y2="666" stroke="#2e5aa8" stroke-width="1.2" marker-end="url(#arrow-link)"/>
+      <text x="956" y="670" fill="#4f5d75" font-size="8.5" font-family="'Geist', sans-serif">HTTP call from the browser</text>
+    </svg>
+  </div>
+</body>
+</html>

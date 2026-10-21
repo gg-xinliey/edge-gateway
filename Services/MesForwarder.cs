@@ -6,7 +6,7 @@ using EdgeGateway.Models;
 namespace EdgeGateway.Services;
 
 // At-least-once delivery to MES. Retries anything the outbox still
-// has marked unsent, forever.
+// has marked unsent, until MES takes it or rejects it as invalid.
 //
 // Built for many machines:
 //   * Each pass reads up to `ChunkSize` unsent envelopes (oldest first) and
@@ -14,14 +14,26 @@ namespace EdgeGateway.Services;
 //     time, but each machine's envelopes strictly in order. A machine stops
 //     at its first failure, so a later envelope never overtakes an earlier one.
 //   * While there is a backlog it goes straight to the next pass; when idle
-//     it checks again after `IdleDelay`. After a pass where MES accepted
-//     nothing, it waits `RetryDelay` so a down MES is not hammered.
+//     it checks again after `IdleDelay`.
+//   * MES unreachable, timing out (15 s), 5xx, 401/403/407, 408 or 429: the rows
+//     stay and are retried, with a growing delay (2 s, 4 s, 8 s ... 60 s max) so a
+//     down MES is not hammered; back to 2 s after MES takes something again.
+//   * MES rejects a row as invalid (any other 4xx): it is moved to failed
+//     messages with MES's answer (not retried, nothing lost), the page alerts,
+//     and the machine's next rows go on. Re-send it after a fix, or discard it
+//     with a reason, on the config page.
 public class MesForwarder
 {
     private const int ChunkSize = 2_000;
     private const int Parallel = 16;
     private static readonly TimeSpan IdleDelay = TimeSpan.FromMilliseconds(250);
-    private static readonly TimeSpan RetryDelay = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan FirstRetryDelay = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan MaxRetryDelay = TimeSpan.FromSeconds(60);
+    private const int MaxErrorText = 1_000;
+
+    private enum SendResult { Delivered, Retry, Rejected }
+
+    private TimeSpan _retryDelay = FirstRetryDelay;
 
     // Outbox housekeeping: hourly, remove day files past the keep window that are fully delivered.
     private static readonly TimeSpan MaintenanceInterval = TimeSpan.FromHours(1);
@@ -38,13 +50,18 @@ public class MesForwarder
     private long _triesWhileDown;
 
     private readonly GatewayStats? _stats;
+    private readonly string _tag;       // "[forwarder]" or "[forwarder NXT101]"
+    private readonly string _outboxTag; // "[outbox]" or "[outbox NXT101]"
 
-    public MesForwarder(HttpClient http, string mesUrl, Outbox outbox, GatewayStats? stats = null)
+    // label: the machine_id of the machine's own pipeline; null for the shared one.
+    public MesForwarder(HttpClient http, string mesUrl, Outbox outbox, GatewayStats? stats = null, string? label = null)
     {
         _http = http;
         _endpoint = new Uri(mesUrl);
         _outbox = outbox;
         _stats = stats;
+        _tag = label is null ? "[forwarder]" : $"[forwarder {label}]";
+        _outboxTag = label is null ? "[outbox]" : $"[outbox {label}]";
     }
 
     public async Task RunAsync(CancellationToken ct)
@@ -53,6 +70,8 @@ public class MesForwarder
         {
             var chunk = _outbox.ReadUnsent(ChunkSize);
             var delivered = new ConcurrentBag<OutboxKey>();
+            var rejected = new ConcurrentBag<(OutboxKey Key, string Error)>();
+            var retrying = 0;
 
             if (chunk.Count > 0)
             {
@@ -64,9 +83,16 @@ public class MesForwarder
                     {
                         foreach (var (key, envelope) in rows)
                         {
-                            if (!await SendAsync(envelope, token))
+                            var (result, error) = await SendAsync(envelope, token);
+                            if (result == SendResult.Retry)
+                            {
+                                Interlocked.Increment(ref retrying);
                                 break; // keep this machine's order: retry from here next pass
-                            delivered.Add(key);
+                            }
+                            if (result == SendResult.Rejected)
+                                rejected.Add((key, error!)); // set aside, the machine goes on
+                            else
+                                delivered.Add(key);
                         }
                     });
 
@@ -76,6 +102,9 @@ public class MesForwarder
                     _stats?.MesDelivered(delivered.Count);
                     ReportRecovery(delivered.Count);
                 }
+
+                if (!rejected.IsEmpty)
+                    _outbox.MarkFailed(rejected);
             }
 
             if (DateTimeOffset.UtcNow >= _nextMaintenance)
@@ -85,15 +114,29 @@ public class MesForwarder
             }
 
             if (chunk.Count == 0)
+            {
                 await Task.Delay(IdleDelay, ct);           // nothing to send
-            else if (delivered.IsEmpty)
-                await Task.Delay(RetryDelay, ct);          // MES took nothing: don't hammer it
-            // else: backlog, go again right away
+            }
+            else if (retrying > 0 && delivered.IsEmpty && rejected.IsEmpty)
+            {
+                // MES took nothing: wait, and longer each time it keeps failing.
+                await Task.Delay(_retryDelay, ct);
+                _retryDelay = TimeSpan.FromTicks(Math.Min(_retryDelay.Ticks * 2, MaxRetryDelay.Ticks));
+            }
+            else
+            {
+                _retryDelay = FirstRetryDelay;             // MES answered: back to the short delay
+                if (retrying > 0)
+                    await Task.Delay(FirstRetryDelay, ct); // some machines still failing: don't spin on them
+                // else: backlog, go again right away
+            }
         }
     }
 
-    // true = MES accepted it (200 or 207).
-    private async Task<bool> SendAsync(Envelope envelope, CancellationToken ct)
+    // Delivered = MES accepted it (2xx). Rejected = MES says it is invalid
+    // (a 4xx other than auth / timeout / too many requests): error holds MES's answer.
+    // Retry = anything else (unreachable, timeout, 5xx, ...).
+    private async Task<(SendResult Result, string? Error)> SendAsync(Envelope envelope, CancellationToken ct)
     {
         try
         {
@@ -104,10 +147,22 @@ public class MesForwarder
                 ct);
 
             if (response.IsSuccessStatusCode)
-                return true;
+                return (SendResult.Delivered, null);
 
-            _problems.Write($"status{(int)response.StatusCode}",
-                $"[forwarder] MES returned {(int)response.StatusCode} for {envelope.event_id} ({envelope.machine_id}/{envelope.data_group}) — will retry");
+            var status = (int)response.StatusCode;
+            if (status is >= 400 and < 500 and not (401 or 403 or 407 or 408 or 429))
+            {
+                var body = await response.Content.ReadAsStringAsync(ct);
+                if (body.Length > MaxErrorText)
+                    body = body[..MaxErrorText] + "…";
+                var error = $"MES {status} {response.ReasonPhrase}: {body}".Trim();
+                Console.WriteLine($"{_tag} MES rejected {envelope.event_id} ({envelope.machine_id}/{envelope.data_group}) as invalid, " +
+                                  $"moved to failed messages: {error}");
+                return (SendResult.Rejected, error);
+            }
+
+            _problems.Write($"status{status}",
+                $"{_tag} MES returned {status} for {envelope.event_id} ({envelope.machine_id}/{envelope.data_group}) — will retry in {_retryDelay.TotalSeconds:0} s or more");
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -115,13 +170,13 @@ public class MesForwarder
         }
         catch (Exception ex)
         {
-            _problems.Write("send", $"[forwarder] send failed for {envelope.event_id}: {ex.Message} — will retry");
+            _problems.Write("send", $"{_tag} send failed for {envelope.event_id}: {ex.Message} — will retry in {_retryDelay.TotalSeconds:0} s or more");
         }
 
         // Remember when the trouble started, for the "reachable again" line.
         Interlocked.CompareExchange(ref _downSinceTicks, DateTimeOffset.UtcNow.UtcTicks, 0);
         Interlocked.Increment(ref _triesWhileDown);
-        return false;
+        return (SendResult.Retry, null);
     }
 
     // First delivery after a period of failed sends: one line saying it is over.
@@ -141,7 +196,7 @@ public class MesForwarder
         try { left = _outbox.CountUnsent(); } catch { left = -1; }
 
         // Worded without the log's problem words: this is the good news.
-        Console.WriteLine($"[forwarder] MES reachable again after {seconds:0} s ({tries} tries) — " +
+        Console.WriteLine($"{_tag} MES reachable again after {seconds:0} s ({tries} tries) — " +
                           $"{deliveredNow:N0} waiting rows delivered" +
                           (left > 0 ? $", {left:N0} still to go" : ""));
     }
@@ -152,15 +207,15 @@ public class MesForwarder
         {
             var removed = _outbox.PurgeOldFiles();
             if (removed > 0)
-                Console.WriteLine($"[outbox] removed {removed} day file(s) past the keep window, all rows delivered");
+                Console.WriteLine($"{_outboxTag} removed {removed} day file(s) past the keep window, all rows delivered");
 
             var unsent = _outbox.CountUnsent();
             if (unsent > BacklogWarning)
-                Console.WriteLine($"[outbox] warning: {unsent} rows still not delivered to MES — check the MES connection");
+                Console.WriteLine($"{_outboxTag} warning: {unsent} rows still not delivered to MES — check the MES connection");
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[outbox] maintenance failed: {ex.Message}");
+            Console.WriteLine($"{_outboxTag} maintenance failed: {ex.Message}");
         }
     }
 }

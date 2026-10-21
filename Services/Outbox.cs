@@ -21,6 +21,12 @@ namespace EdgeGateway.Services;
 //     rows are delivered, then removed the same way.
 // Unsent rows are never deleted. Up to one batch (~tens of ms) sits in memory
 // before it is on disk; a graceful stop or restart writes it first.
+//
+// Machines are answered ({"ack":...}) only once their rows are committed:
+// Write() takes an onSaved callback, run right after the batch's commit. The
+// commit waits for the disk (synchronous = FULL), so an ack survives even a
+// power cut. Each row also has send_after (UTC ms): MES gets it no earlier
+// than that (the group's sendEveryMs), while it is safe on disk right away.
 public sealed class Outbox : IAsyncDisposable
 {
     private const int MaxBatch = 5_000;
@@ -29,8 +35,10 @@ public sealed class Outbox : IAsyncDisposable
 
     private readonly string _dir;
     private readonly TimeSpan _keepSentFor;
-    private readonly Channel<Envelope> _queue = Channel.CreateBounded<Envelope>(
+    private readonly Channel<Item> _queue = Channel.CreateBounded<Item>(
         new BoundedChannelOptions(QueueCapacity) { SingleReader = true, FullMode = BoundedChannelFullMode.Wait });
+
+    private readonly record struct Item(Envelope Envelope, long SendAfterMs, Action? OnSaved, SavedState? State);
     private readonly Task _writer;
 
     private readonly object _filesSync = new();
@@ -45,20 +53,34 @@ public sealed class Outbox : IAsyncDisposable
         _dir = Path.GetFullPath(directory);
         Directory.CreateDirectory(_dir);
         _keepSentFor = TimeSpan.FromDays(keepSentDays);
+
+        // Bring every existing file up to the current columns now, so the
+        // config page (which opens them read-only) can always read failed_at etc.
+        foreach (var file in AllFiles())
+        {
+            try { OpenFile(file).Dispose(); }
+            catch (Exception ex) { Console.WriteLine($"[outbox] could not open {file}: {ex.Message}"); }
+        }
+
         _writer = Task.Run(WriterLoopAsync);
     }
 
     // Envelopes waiting in memory for the writer.
     public int Queued => _queue.Reader.Count;
 
-    public void Write(Envelope envelope)
+    // sendAfterMs: UTC unix ms before which MES must not get it (0 = right away).
+    // onSaved: runs once the row is committed to disk (never, if it can't be).
+    // state: the group's last values after this record (IntervalSender), saved
+    // with the row so a restart carries on from them (see LatestStates).
+    public void Write(Envelope envelope, long sendAfterMs = 0, Action? onSaved = null, SavedState? state = null)
     {
         _stats?.MesQueued();
-        if (_queue.Writer.TryWrite(envelope))
+        var item = new Item(envelope, sendAfterMs, onSaved, state);
+        if (_queue.Writer.TryWrite(item))
             return;
 
         // Queue full (disk can't keep up): wait for room instead of losing data.
-        _queue.Writer.WriteAsync(envelope).AsTask().GetAwaiter().GetResult();
+        _queue.Writer.WriteAsync(item).AsTask().GetAwaiter().GetResult();
     }
 
     // ---- writer ----
@@ -66,7 +88,7 @@ public sealed class Outbox : IAsyncDisposable
     private async Task WriterLoopAsync()
     {
         var reader = _queue.Reader;
-        var batch = new List<Envelope>(MaxBatch);
+        var batch = new List<Item>(MaxBatch);
         SqliteConnection? conn = null;
         var connFile = "";
         var lastErrorLog = DateTime.MinValue;
@@ -75,8 +97,8 @@ public sealed class Outbox : IAsyncDisposable
         {
             while (await reader.WaitToReadAsync())
             {
-                while (batch.Count < MaxBatch && reader.TryRead(out var envelope))
-                    batch.Add(envelope);
+                while (batch.Count < MaxBatch && reader.TryRead(out var item))
+                    batch.Add(item);
 
                 // Retry until stored: a full disk or a locked file must not lose envelopes.
                 while (true)
@@ -88,9 +110,9 @@ public sealed class Outbox : IAsyncDisposable
                         {
                             conn?.Dispose(); // closing yesterday's file also folds its WAL back in
                             conn = OpenFile(file);
-                            using var fast = conn.CreateCommand();
-                            fast.CommandText = "PRAGMA synchronous = NORMAL;"; // WAL: no disk flush per commit
-                            fast.ExecuteNonQuery();
+                            using var durable = conn.CreateCommand();
+                            durable.CommandText = "PRAGMA synchronous = FULL;"; // commit = on disk: machines are answered after it
+                            durable.ExecuteNonQuery();
                             connFile = file;
                         }
 
@@ -110,6 +132,13 @@ public sealed class Outbox : IAsyncDisposable
                     }
                 }
 
+                // Committed: now the senders may be told.
+                foreach (var item in batch)
+                {
+                    try { item.OnSaved?.Invoke(); }
+                    catch (Exception ex) { Console.WriteLine($"[outbox] reply after save failed: {ex.Message}"); }
+                }
+
                 batch.Clear();
             }
         }
@@ -119,27 +148,36 @@ public sealed class Outbox : IAsyncDisposable
         }
     }
 
-    private static void InsertBatch(SqliteConnection conn, List<Envelope> batch)
+    // INSERT OR IGNORE: event_id comes from the message_id, so a message sent
+    // again after a gateway crash (its first reply never came) gives the same
+    // event_id and is not stored twice in the same day file.
+    private static void InsertBatch(SqliteConnection conn, List<Item> batch)
     {
         using var tx = conn.BeginTransaction();
         using var cmd = conn.CreateCommand();
         cmd.Transaction = tx;
         cmd.CommandText = @"
-            INSERT INTO outbox (event_id, data_group, body, sent, created_at)
-            VALUES ($event_id, $data_group, $body, 0, $created_at);";
+            INSERT OR IGNORE INTO outbox (event_id, data_group, body, sent, created_at, send_after, state_key, state)
+            VALUES ($event_id, $data_group, $body, 0, $created_at, $send_after, $state_key, $state);";
         var eventId = cmd.Parameters.Add("$event_id", SqliteType.Text);
         var dataGroup = cmd.Parameters.Add("$data_group", SqliteType.Text);
         var body = cmd.Parameters.Add("$body", SqliteType.Text);
         var createdAt = cmd.Parameters.Add("$created_at", SqliteType.Text);
+        var sendAfter = cmd.Parameters.Add("$send_after", SqliteType.Integer);
+        var stateKey = cmd.Parameters.Add("$state_key", SqliteType.Text);
+        var state = cmd.Parameters.Add("$state", SqliteType.Text);
         cmd.Prepare();
 
         var now = Now();
-        foreach (var envelope in batch)
+        foreach (var item in batch)
         {
-            eventId.Value = envelope.event_id;
-            dataGroup.Value = envelope.data_group;
-            body.Value = JsonSerializer.Serialize(envelope, EnvelopeJson.Options);
+            eventId.Value = item.Envelope.event_id;
+            dataGroup.Value = item.Envelope.data_group;
+            body.Value = JsonSerializer.Serialize(item.Envelope, EnvelopeJson.Options);
             createdAt.Value = now;
+            sendAfter.Value = item.SendAfterMs;
+            stateKey.Value = (object?)item.State?.Key ?? DBNull.Value;
+            state.Value = item.State is null ? DBNull.Value : JsonSerializer.Serialize(item.State);
             cmd.ExecuteNonQuery();
         }
 
@@ -149,14 +187,18 @@ public sealed class Outbox : IAsyncDisposable
     // ---- reading / acknowledging (MES forwarder) ----
 
     // Oldest first across all day files, so a long MES outage drains in order.
+    // Only rows whose send_after has come (a group's sendEveryMs); within one
+    // machine + group that keeps the order, across groups the faster group goes first.
     public List<(OutboxKey Key, Envelope Envelope)> ReadUnsent(int limit = 100)
     {
         var results = new List<(OutboxKey, Envelope)>();
+        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         foreach (var file in PendingFiles())
         {
             using var conn = OpenFile(file);
             using var cmd = conn.CreateCommand();
-            cmd.CommandText = "SELECT id, body FROM outbox WHERE sent = 0 ORDER BY id LIMIT $limit;";
+            cmd.CommandText = "SELECT id, body FROM outbox WHERE sent = 0 AND failed_at IS NULL AND discarded_at IS NULL AND send_after <= $now ORDER BY id LIMIT $limit;";
+            cmd.Parameters.AddWithValue("$now", nowMs);
             cmd.Parameters.AddWithValue("$limit", limit - results.Count);
 
             var found = 0;
@@ -171,13 +213,50 @@ public sealed class Outbox : IAsyncDisposable
                 }
             }
 
-            if (found == 0)
+            // Nothing due is not "all delivered": rows may still wait for send_after.
+            if (found == 0 && !HasUnsent(conn))
                 MarkDeliveredIfPast(file);
             if (results.Count >= limit)
                 break;
         }
 
         return results;
+    }
+
+    private static bool HasUnsent(SqliteConnection conn)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT EXISTS (SELECT 1 FROM outbox WHERE sent = 0 AND discarded_at IS NULL);";
+        return (long)cmd.ExecuteScalar()! == 1;
+    }
+
+    // MES rejected these rows as invalid: they leave the send queue (so the
+    // machine's next rows go on) and wait in failed messages with MES's error,
+    // until someone re-sends them (after a fix) or discards them with a reason.
+    public void MarkFailed(IEnumerable<(OutboxKey Key, string Error)> rows)
+    {
+        var now = Now();
+        foreach (var group in rows.GroupBy(r => r.Key.File))
+        {
+            using var conn = OpenFile(group.Key);
+            using var tx = conn.BeginTransaction();
+            using var cmd = conn.CreateCommand();
+            cmd.Transaction = tx;
+            cmd.CommandText = "UPDATE outbox SET failed_at = $at, error = $error WHERE id = $id;";
+            var at = cmd.Parameters.Add("$at", SqliteType.Text);
+            var error = cmd.Parameters.Add("$error", SqliteType.Text);
+            var id = cmd.Parameters.Add("$id", SqliteType.Integer);
+            cmd.Prepare();
+
+            at.Value = now;
+            foreach (var (key, message) in group)
+            {
+                error.Value = message;
+                id.Value = key.Id;
+                cmd.ExecuteNonQuery();
+            }
+            tx.Commit();
+        }
     }
 
     public void MarkSent(OutboxKey key) => MarkSent(new[] { key });
@@ -208,6 +287,38 @@ public sealed class Outbox : IAsyncDisposable
         }
     }
 
+    // The newest saved state per machine + data_source + group, over all files
+    // (newest file first). Read once when the gateway starts, so it carries on
+    // from the last values instead of sending unchanged data again as "new".
+    public Dictionary<string, SavedState> LatestStates()
+    {
+        var states = new Dictionary<string, SavedState>(StringComparer.Ordinal);
+        foreach (var file in Enumerable.Reverse(AllFiles()))
+        {
+            try
+            {
+                using var conn = OpenFile(file);
+                using var cmd = conn.CreateCommand();
+                cmd.CommandText = "SELECT state_key, state FROM outbox WHERE id IN (SELECT MAX(id) FROM outbox WHERE state_key IS NOT NULL GROUP BY state_key);";
+                using var reader = cmd.ExecuteReader();
+                while (reader.Read())
+                {
+                    var key = reader.GetString(0);
+                    if (states.ContainsKey(key) || reader.IsDBNull(1))
+                        continue; // a newer file already had it
+                    var state = JsonSerializer.Deserialize<SavedState>(reader.GetString(1));
+                    if (state is not null)
+                        states[key] = state;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[outbox] could not read last values from {file}: {ex.Message}");
+            }
+        }
+        return states;
+    }
+
     public long CountUnsent()
     {
         long total = 0;
@@ -215,9 +326,9 @@ public sealed class Outbox : IAsyncDisposable
         {
             using var conn = OpenFile(file);
             using var cmd = conn.CreateCommand();
-            cmd.CommandText = "SELECT COUNT(*) FROM outbox WHERE sent = 0;";
+            cmd.CommandText = "SELECT COUNT(*) FROM outbox WHERE sent = 0 AND failed_at IS NULL AND discarded_at IS NULL;";
             var count = (long)cmd.ExecuteScalar()!;
-            if (count == 0)
+            if (count == 0 && !HasUnsent(conn)) // failed rows can still be re-sent: not done
                 MarkDeliveredIfPast(file);
             total += count;
         }
@@ -242,7 +353,8 @@ public sealed class Outbox : IAsyncDisposable
                 if (DataDate(file, conn) >= cutoff)
                     continue;
 
-                cmd.CommandText = "SELECT COUNT(*) FROM outbox WHERE sent = 0;";
+                // Undelivered rows, failed ones included, keep the file; only discarded rows don't.
+                cmd.CommandText = "SELECT COUNT(*) FROM outbox WHERE sent = 0 AND discarded_at IS NULL;";
                 if ((long)cmd.ExecuteScalar()! > 0)
                     continue; // still has undelivered rows: never delete
                 SqliteConnection.ClearPool(conn); // pooled connections keep the file open
@@ -334,9 +446,34 @@ public sealed class Outbox : IAsyncDisposable
                     body        TEXT NOT NULL,
                     sent        INTEGER NOT NULL DEFAULT 0,
                     created_at  TEXT NOT NULL,
-                    sent_at     TEXT
+                    sent_at     TEXT,
+                    send_after  INTEGER NOT NULL DEFAULT 0,
+                    failed_at   TEXT,
+                    error       TEXT,
+                    discarded_at TEXT,
+                    discard_reason TEXT,
+                    state_key   TEXT,
+                    state       TEXT
                 );
                 CREATE INDEX IF NOT EXISTS ix_outbox_unsent ON outbox (id) WHERE sent = 0;";
+            cmd.ExecuteNonQuery();
+
+            // Files from before these columns existed: add them.
+            //   send_after: 0 = send right away
+            //   failed_at / error: MES rejected the row as invalid (failed messages, not retried)
+            //   discarded_at / discard_reason: someone gave a failed row up, with a reason
+            //   state_key / state: the group's last values after this row (restart carries on from them)
+            foreach (var (column, type) in new[] { ("send_after", "INTEGER NOT NULL DEFAULT 0"), ("failed_at", "TEXT"), ("error", "TEXT"),
+                                                   ("discarded_at", "TEXT"), ("discard_reason", "TEXT"), ("state_key", "TEXT"), ("state", "TEXT") })
+            {
+                cmd.CommandText = $"SELECT COUNT(*) FROM pragma_table_info('outbox') WHERE name = '{column}';";
+                if ((long)cmd.ExecuteScalar()! == 0)
+                {
+                    cmd.CommandText = $"ALTER TABLE outbox ADD COLUMN {column} {type};";
+                    cmd.ExecuteNonQuery();
+                }
+            }
+            cmd.CommandText = "CREATE INDEX IF NOT EXISTS ix_outbox_failed ON outbox (id) WHERE failed_at IS NOT NULL AND discarded_at IS NULL;";
             cmd.ExecuteNonQuery();
         }
 
@@ -348,3 +485,10 @@ public sealed class Outbox : IAsyncDisposable
 
 // Where an outbox row lives: its day file and its id inside that file.
 public readonly record struct OutboxKey(string File, long Id);
+
+// A group's last values (before time-stamping) after a record, and the start
+// of its open span (Span groups). Key: machine, data_source ("" = none sent), group.
+public sealed record SavedState(string Key, Dictionary<string, JsonElement> Values, string? SpanSince)
+{
+    public static string KeyOf(string machineId, string dataSource, string dataGroup) => $"{machineId}\n{dataSource}\n{dataGroup}";
+}

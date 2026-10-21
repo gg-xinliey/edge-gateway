@@ -11,10 +11,35 @@ public class Normalizer
     private readonly Dictionary<string, PointMapEntry> _byTag;
     private readonly UnidentifiedTagTracker? _unidentified;
 
+    // Tags mapped to this group are known but never sent (PointMap: "ignore").
+    public const string IgnoredGroup = "IGNORED";
+    // Never sent to MES (MES has no such table); a tag mapped here counts as not mapped.
+    public const string UnidentifiedGroup = "UNIDENTIFIED";
+
     public Normalizer(List<PointMapEntry> pointMap, UnidentifiedTagTracker? unidentified = null)
     {
         _byTag = pointMap.ToDictionary(p => p.Tag, StringComparer.OrdinalIgnoreCase);
         _unidentified = unidentified;
+    }
+
+    // Mapped to a real group, or set to ignore.
+    public bool IsMapped(string tag) =>
+        _byTag.TryGetValue(tag, out var point) && !point.DataGroup.Equals(UnidentifiedGroup, StringComparison.OrdinalIgnoreCase);
+
+    // The tags of a message that the mapping doesn't know (topic_* helpers left
+    // out). Each goes on the Unidentified list with its value (logged the first time).
+    public List<string> Unmapped(Dictionary<string, object?> rawTags)
+    {
+        var unmapped = new List<string>();
+        foreach (var (tag, value) in rawTags)
+        {
+            if (tag.StartsWith("topic_", StringComparison.Ordinal) || IsMapped(tag))
+                continue;
+            unmapped.Add(tag);
+            if (_unidentified?.Record(tag, value) ?? true)
+                Console.WriteLine($"[normaliser] unmapped tag '{tag}' — map it or set it to ignore on the config page (PointMap > Unidentified)");
+        }
+        return unmapped;
     }
 
     public Dictionary<string, Dictionary<string, object?>> Sort(Dictionary<string, object?> rawTags)

@@ -75,6 +75,18 @@ public sealed class MqttRelay : IAsyncDisposable
         }
     }
 
+    // true = TryRelay would take this line (a "topic" ending in IO/... or
+    // motion/...), without doing anything. Such lines get no reply: live data,
+    // not saved to disk.
+    public static bool IsTwinLine(JsonElement root)
+    {
+        if (root.ValueKind != JsonValueKind.Object ||
+            !root.TryGetProperty("topic", out var topicEl) || topicEl.ValueKind != JsonValueKind.String)
+            return false;
+        NormaliseTopic(topicEl.GetString() ?? "", out var isTwin);
+        return isTwin;
+    }
+
     // Same, for a line the gateway already parsed (each line is parsed once).
     public bool TryRelay(JsonElement root)
     {

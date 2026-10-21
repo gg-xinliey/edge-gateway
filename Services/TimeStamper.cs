@@ -48,13 +48,21 @@ public class TimeStamper
                 if (Equals(prev.value, newValue))
                     return prev; // still inside the same span — keep its original start time
 
-                fields["previous_" + rule.TriggerField] = prev.value;
+                fields[string.IsNullOrWhiteSpace(rule.PreviousField) ? "previous_" + rule.TriggerField : rule.PreviousField] = prev.value;
                 fields[rule.EndField!] = FormatIso(now); // closes the span that just ended
                 return (newValue, now);
             });
 
         fields[rule.StartField!] = FormatIso(state.since);
     }
+
+    // After a restart: the span that was open (its trigger value and start), read
+    // back from the outbox, so the next change closes it with the right start
+    // time and previous value. Does nothing if the span is already known.
+    public void Restore(string machineId, string dataGroup, string dataSource, object? value, DateTimeOffset since) =>
+        _lastState.TryAdd($"{machineId}:{dataSource}:{dataGroup}", (value, since));
+
+    public TimestampRule? RuleFor(string dataGroup) => _rules.GetValueOrDefault(dataGroup);
 
     // Every MES time (record/start/end times, publish_timestamp) in UTC with Z,
     // e.g. 2026-10-16T08:25:28.086Z: one zone for all machines and sources.

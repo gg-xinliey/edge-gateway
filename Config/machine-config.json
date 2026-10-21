@@ -1,6 +1,5 @@
 {
   "gatewayId": "TEST",
-  "machineId": "ASSY-L01-FCT-01",
   "listenAddress": "192.168.250.78",
   "tcpPort": 9000,
   "dataSource": "TCP-BRIDGE-01",

@@ -4,6 +4,7 @@
     "triggerField": "machine_status",
     "startField": "status_start_time",
     "endField": "status_end_time",
+    "previousField": "previous_status",
     "sendEveryMs": 100
   },
   "PRODUCTION": {

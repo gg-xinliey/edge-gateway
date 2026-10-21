@@ -1,4 +1,4 @@
-[
+﻿[
   {
     "tag": "MACHINE_STATUS",
     "dataGroup": "MACHINE_STATUS",
@@ -9,7 +9,6 @@
     "dataGroup": "MACHINE_STATUS",
     "fieldName": "machine_mode"
   },
-
   {
     "tag": "CYCLE_ACTIVE",
     "dataGroup": "PRODUCTION",
@@ -18,7 +17,7 @@
   {
     "tag": "WORK_ORDER",
     "dataGroup": "PRODUCTION",
-    "fieldName": "work_order"
+    "fieldName": "work_order_no"
   },
   {
     "tag": "GOOD_QTY",
@@ -30,7 +29,6 @@
     "dataGroup": "PRODUCTION",
     "fieldName": "ng_quantity"
   },
-
   {
     "tag": "TORQUE_1",
     "dataGroup": "PROCESS",
@@ -41,19 +39,16 @@
     "dataGroup": "PROCESS",
     "fieldName": "recipe_id"
   },
-
   {
     "tag": "TEST_RESULT",
     "dataGroup": "QUALITY",
     "fieldName": "test_result"
   },
-
   {
     "tag": "IMAGE_RESULT",
     "dataGroup": "QUALITY",
     "fieldName": "image_result"
   },
-
   {
     "tag": "ALARM_STATUS",
     "dataGroup": "ALARM",
@@ -64,13 +59,6 @@
     "dataGroup": "ALARM",
     "fieldName": "alarm_code"
   },
-
-
-
-
-
-
-
   {
     "tag": "machine_id",
     "dataGroup": "MOTION",
@@ -111,19 +99,159 @@
     "dataGroup": "IO",
     "fieldName": "totalbits"
   },
-
   {
     "tag": "value",
     "dataGroup": "IO",
     "fieldName": "value"
   },
-
-
-
-
   {
     "tag": "unknown",
     "dataGroup": "UNIDENTIFIED",
     "fieldName": ""
+  },
+  {
+    "tag": "login_time",
+    "dataGroup": "OPERATOR",
+    "fieldName": "login_time"
+  },
+  {
+    "tag": "operator_name",
+    "dataGroup": "OPERATOR",
+    "fieldName": "operator_name"
+  },
+  {
+    "tag": "operator_id",
+    "dataGroup": "OPERATOR",
+    "fieldName": "operator_id"
+  },
+  {
+    "tag": "station_id",
+    "dataGroup": "PRODUCTION",
+    "fieldName": "station_id"
+  },
+  {
+    "tag": "cycle_time",
+    "dataGroup": "PRODUCTION",
+    "fieldName": "cycle_time"
+  },
+  {
+    "tag": "work_order_no",
+    "dataGroup": "PRODUCTION",
+    "fieldName": "work_order_no"
+  },
+  {
+    "tag": "revision",
+    "dataGroup": "TRACEABILITY",
+    "fieldName": "revision"
+  },
+  {
+    "tag": "side",
+    "dataGroup": "TRACEABILITY",
+    "fieldName": "side"
+  },
+  {
+    "tag": "setup_name",
+    "dataGroup": "TRACEABILITY",
+    "fieldName": "setup_name"
+  },
+  {
+    "tag": "model_name",
+    "dataGroup": "TRACEABILITY",
+    "fieldName": "model_name"
+  },
+  {
+    "tag": "job_name",
+    "dataGroup": "TRACEABILITY",
+    "fieldName": "job_name"
+  },
+  {
+    "tag": "product_sn",
+    "dataGroup": "TRACEABILITY",
+    "fieldName": "product_serial_number"
+  },
+  {
+    "tag": "program",
+    "dataGroup": "TRACEABILITY",
+    "fieldName": "process_id"
+  },
+  {
+    "tag": "product_mode",
+    "dataGroup": "TRACEABILITY",
+    "fieldName": "product_mode"
+  },
+  {
+    "tag": "lane_no",
+    "dataGroup": "TRACEABILITY",
+    "fieldName": "lane_no"
+  },
+  {
+    "tag": "module_no",
+    "dataGroup": "TRACEABILITY",
+    "fieldName": "station_id"
+  },
+  {
+    "tag": "sequence_id",
+    "dataGroup": "TRACEABILITY",
+    "fieldName": "sequence_id"
+  },
+  {
+    "tag": "line_name",
+    "dataGroup": "TRACEABILITY",
+    "fieldName": "line_name"
+  },
+  {
+    "tag": "event_time",
+    "dataGroup": "TRACEABILITY",
+    "fieldName": "event_time"
+  },
+  {
+    "tag": "event_name",
+    "dataGroup": "TRACEABILITY",
+    "fieldName": "event_name"
+  },
+  {
+    "tag": "current_status_code",
+    "dataGroup": "MACHINE_STATUS",
+    "fieldName": "machine_status"
+  },
+  {
+    "tag": "previous_status_code",
+    "dataGroup": "MACHINE_STATUS",
+    "fieldName": "previous_status"
+  },
+  {
+    "tag": "critical_msl_remaining_time",
+    "dataGroup": "TRACEABILITY",
+    "fieldName": "critical_msl_remaining_time"
+  },
+  {
+    "tag": "block_skip_count",
+    "dataGroup": "TRACEABILITY",
+    "fieldName": "block_skip_count"
+  },
+  {
+    "tag": "block_count",
+    "dataGroup": "TRACEABILITY",
+    "fieldName": "block_count"
+  },
+  {
+    "tag": "components",
+    "dataGroup": "TRACEABILITY",
+    "fieldName": "components"
+  },
+  {
+    "tag": "component_count",
+    "dataGroup": "TRACEABILITY",
+    "fieldName": "component_count"
+  },
+  {
+    "tag": "panel_status",
+    "dataGroup": "TRACEABILITY",
+    "fieldName": "panel_status"
+  },
+  {
+    "tag": "sub_alarm_code",
+    "dataGroup": "ALARM",
+    "fieldName": "sub_alarm_code"
   }
 ]

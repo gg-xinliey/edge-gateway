@@ -10,24 +10,34 @@ namespace EdgeGateway.Services;
 public sealed class GatewayConfigStore
 {
     private readonly string _configRoot;
+    private readonly string _mesSchemaRoot;
     private readonly JsonSerializerOptions _jsonOptions;
     private readonly UnidentifiedTagTracker? _unidentified;
     private readonly object _sync = new();
     private ConfigSnapshot _current;
 
-    public GatewayConfigStore(string configRoot, JsonSerializerOptions jsonOptions, UnidentifiedTagTracker? unidentified = null)
+    // configRoot: the shared Config folder, or one machine's own Config/machines/<id>
+    // (point-map.json + timestamp-rules.json). mesSchemaRoot: where mes-schema.json
+    // lives (always the shared Config folder). label: for log lines, e.g. "NXT101".
+    public GatewayConfigStore(string configRoot, JsonSerializerOptions jsonOptions, UnidentifiedTagTracker? unidentified = null,
+        string? mesSchemaRoot = null, string? label = null)
     {
         _configRoot = Path.IsPathRooted(configRoot)
             ? Path.GetFullPath(configRoot)
             : Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, configRoot));
+        _mesSchemaRoot = mesSchemaRoot is null ? _configRoot : Path.GetFullPath(mesSchemaRoot);
         _jsonOptions = jsonOptions;
         _unidentified = unidentified;
+        Label = label;
         _current = LoadSnapshot();
     }
 
-    // The one Config folder everything reads and the config page writes,
-    // next to the exe (not the working directory).
+    // The Config folder this store reads and the config page writes, next to
+    // the exe (not the working directory).
     public string ConfigRoot => _configRoot;
+
+    // null = the shared config; else the machine_id this mapping belongs to.
+    public string? Label { get; }
 
     public ConfigSnapshot Current
     {
@@ -45,7 +55,7 @@ public sealed class GatewayConfigStore
             _current = next;
 
         _unidentified?.Forget(next.PointMap.Select(p => p.Tag));
-        Console.WriteLine("[config] runtime configuration reloaded");
+        Console.WriteLine(Label is null ? "[config] runtime configuration reloaded" : $"[config] {Label}: own mapping reloaded");
     }
 
     private ConfigSnapshot LoadSnapshot()
@@ -65,7 +75,25 @@ public sealed class GatewayConfigStore
             pointMap,
             timestampRules,
             new Normalizer(pointMap, _unidentified),
-            new TimeStamper(timestampRules));
+            new TimeStamper(timestampRules),
+            LoadMesColumns());
+    }
+
+    // Config/mes-schema.json: per data group, the columns of its MES table (from
+    // the MES data dictionary). Every one of them goes into the payload, null
+    // when not sent. Missing file = payloads go out as they are.
+    private IReadOnlyDictionary<string, IReadOnlyList<string>> LoadMesColumns()
+    {
+        var path = Path.Combine(_mesSchemaRoot, "mes-schema.json");
+        if (!File.Exists(path))
+        {
+            Console.WriteLine("[config] Config/mes-schema.json not found — MES payloads are not completed with null columns");
+            return new Dictionary<string, IReadOnlyList<string>>();
+        }
+
+        var groups = JsonSerializer.Deserialize<Dictionary<string, List<string>>>(File.ReadAllText(path), _jsonOptions)
+            ?? throw new InvalidOperationException("Config/mes-schema.json did not contain a valid object.");
+        return groups.ToDictionary(g => g.Key, g => (IReadOnlyList<string>)g.Value, StringComparer.OrdinalIgnoreCase);
     }
 }
 
@@ -73,4 +101,5 @@ public sealed record ConfigSnapshot(
     IReadOnlyList<PointMapEntry> PointMap,
     IReadOnlyDictionary<string, TimestampRule> TimestampRules,
     Normalizer Normalizer,
-    TimeStamper TimeStamper);
+    TimeStamper TimeStamper,
+    IReadOnlyDictionary<string, IReadOnlyList<string>> MesColumns);

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text.Json;
 using EdgeGateway.Models;
@@ -17,18 +18,23 @@ public sealed class GatewayHost
     // How long a restart waits for the old run's parts to wind down.
     private static readonly TimeSpan StopTimeout = TimeSpan.FromSeconds(5);
 
-    private readonly GatewayConfigStore _configStore;
+    private readonly MachineRegistry _machines;           // shared config + machines with their own mapping
+    private readonly GatewayConfigStore _configStore;     // the shared one (also machine-config / mqtt-config)
     private readonly JsonSerializerOptions _jsonOptions;
     private readonly object _sync = new();
     private CancellationTokenSource? _currentRun;
 
     private readonly TrafficRegistry? _traffic;
+    private readonly MessageIdFilter _messageIds;
 
-    public GatewayHost(GatewayConfigStore configStore, JsonSerializerOptions jsonOptions, TrafficRegistry? traffic = null)
+    public GatewayHost(MachineRegistry machines, JsonSerializerOptions jsonOptions, TrafficRegistry? traffic = null,
+        MessageIdFilter? messageIds = null)
     {
-        _configStore = configStore;
+        _machines = machines;
+        _configStore = machines.Shared;
         _jsonOptions = jsonOptions;
         _traffic = traffic;
+        _messageIds = messageIds ?? new MessageIdFilter();
     }
 
     // starting | running | restarting | error
@@ -37,6 +43,12 @@ public sealed class GatewayHost
     public DateTimeOffset? StartedAt { get; private set; }
     public int RunNumber { get; private set; }
     public MachineConfig Machine { get; private set; } = new();
+
+    private TcpIngestServer? _tcp; // the current run's
+
+    // Closes one machine connection (ip:port) so its adapter reconnects and
+    // resends what got no reply (e.g. right after a held machine was registered).
+    public bool Disconnect(string endpoint) => _tcp?.Disconnect(endpoint) ?? false;
 
     // Throughput; sampled every StatsEvery into a [stats] line and /api/status.
     public GatewayStats Stats { get; } = new();
@@ -93,37 +105,105 @@ public sealed class GatewayHost
         var mqttJson = await File.ReadAllTextAsync(Path.Combine(_configStore.ConfigRoot, "mqtt-config.json"), runToken);
         var mqttOptions = JsonSerializer.Deserialize<MqttOptions>(mqttJson, _jsonOptions)!;
         var relayConfig = JsonSerializer.Deserialize<MqttConnectionConfig>(mqttJson, _jsonOptions)!;
-        _configStore.Reload(); // point-map.json + timestamp-rules.json
+        _machines.ReloadAll(); // point-map.json + timestamp-rules.json, shared and every machine's own
 
         var envelopeBuilder = new EnvelopeBuilder(machine.GatewayId, machine.DataSource, machine.ProtocolLabel);
-        // Next to the exe (not the working directory: a Windows service starts in System32).
-        // Disposed last, so envelopes still queued in memory are written before the run ends.
-        await using var outbox = new Outbox(Path.Combine(AppContext.BaseDirectory, "outbox"), machine.OutboxKeepSentDays, Stats);
 
         var mqttPublisher = new MqttPublisherService(mqttOptions);
-        var twinForwarder = new TwinForwarder(mqttPublisher, mqttOptions, machine.MachineId);
+        var twinForwarder = new TwinForwarder(mqttPublisher, mqttOptions, machine.GatewayId); // its keepalive: the gateway's own
         await using var mqttRelay = new MqttRelay(relayConfig, Stats);
 
         // 16 parallel sends; a hung MES must not hold a slot for the default 100 s.
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
-        var mesForwarder = new MesForwarder(http, machine.MesUrl, outbox, Stats);
 
-        // MES data goes out per data group on its interval (sendEveryMs, read live).
-        var intervalSender = new IntervalSender(outbox, envelopeBuilder, () => _configStore.Current);
+        // Own token for the parts, so one failing part can stop the others
+        // without looking like a Restart().
+        using var parts = CancellationTokenSource.CreateLinkedTokenSource(runToken);
+
+        // MES paths: the shared one (outbox/) and one per machine with its own
+        // mapping (outbox/<machine_id>/). Each: outbox file right away, then to MES
+        // per data group on its interval (sendEveryMs, read live). Outbox folders
+        // are next to the exe (not the working directory: a service starts in System32).
+        var outboxRoot = Path.Combine(AppContext.BaseDirectory, "outbox");
+        var pipelines = new ConcurrentDictionary<string, Lazy<MesPipeline>>(StringComparer.OrdinalIgnoreCase);
+        var pipelineFailed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        MesPipeline NewPipeline(string? machineId)
+        {
+            var pipeline = new MesPipeline(machineId, machineId is null ? outboxRoot : Path.Combine(outboxRoot, machineId),
+                machine.OutboxKeepSentDays, http, machine.MesUrl, envelopeBuilder, Stats, parts.Token);
+            // A MES sender that dies stops this run (as the shared one always did), so it is seen.
+            _ = pipeline.Running.ContinueWith(t => pipelineFailed.TrySetException(t.Exception!.InnerExceptions),
+                TaskContinuationOptions.OnlyOnFaulted);
+            return pipeline;
+        }
+
+        MesPipeline? shared = null; // created in the try below, before any line arrives
+        MesPipeline OwnPipeline(string machineId) =>
+            pipelines.GetOrAdd(machineId, id => new Lazy<MesPipeline>(() => NewPipeline(id))).Value;
+
+        List<MesPipeline> CreatedPipelines()
+        {
+            var created = pipelines.Values.Where(p => p.IsValueCreated).Select(p => p.Value).ToList();
+            if (shared is not null)
+                created.Insert(0, shared);
+            return created;
+        }
+
+        // Replies to the machines on their own connections: {"ack":id} once a
+        // MES message is on disk, {"nack":id,"reason":...} when it never will be.
+        var replies = new ReplyHub();
+        var acks = new AckTracker(replies);
 
         var rejected = new ThrottledLog(TimeSpan.FromSeconds(60));
 
         // One line from one machine, parsed once: IO/motion lines go to MQTT,
-        // everything else to MES. "machine_id", "data_source" and "timestamp"
-        // describe the message; they are not data tags.
+        // everything else to MES. "message_id", "machine_id", "data_source" and
+        // "timestamp" describe the message; they are not data tags.
         void OnMessage(string raw, string sender)
         {
             Stats.Received();
+            AckTracker.Ticket? ticket = null; // MES lines with a message_id: answered once on disk
+            try
+            {
+                Handle(raw, sender, ref ticket);
+            }
+            catch
+            {
+                // Not (fully) handled: no reply, and the id is forgotten so the
+                // adapter's resend is processed again.
+                if (ticket is not null)
+                {
+                    _messageIds.Forget(ticket.MessageId);
+                    ticket.Drop();
+                }
+                throw;
+            }
+        }
+
+        void Handle(string raw, string sender, ref AckTracker.Ticket? ticket)
+        {
             Dictionary<string, object?> rawTags;
+            string? messageId;
             var text = raw.AsSpan().TrimStart();
             if (text.Length > 0 && text[0] == '{')
             {
                 using var doc = JsonDocument.Parse(raw);
+                var twin = MqttRelay.IsTwinLine(doc.RootElement); // IO/motion: live data, never answered
+
+                // First of all: the same message_id within 10 min = the same line again.
+                messageId = TopLevelString(doc.RootElement, "message_id");
+                if (messageId is not null)
+                {
+                    if (!_messageIds.TryAccept(messageId))
+                    {
+                        Duplicate(sender, TopLevelString(doc.RootElement, "machine_id") ?? MachineFromTopic(doc.RootElement), messageId, reply: !twin);
+                        return;
+                    }
+                    if (!twin)
+                        ticket = acks.Begin(messageId, sender); // at once, so a copy arriving now waits for this one
+                }
+
                 if (mqttRelay.TryRelay(doc.RootElement))
                 {
                     _traffic?.Message(MachineFromTopic(doc.RootElement), sender, "MQTT", null);
@@ -134,7 +214,19 @@ public sealed class GatewayHost
             else
             {
                 rawTags = PayloadParser.ParseCsv(raw);
+                messageId = PeekString(rawTags, "message_id");
+                if (messageId is not null)
+                {
+                    if (!_messageIds.TryAccept(messageId))
+                    {
+                        Duplicate(sender, PeekString(rawTags, "machine_id"), messageId, reply: true);
+                        return;
+                    }
+                    ticket = acks.Begin(messageId, sender);
+                }
             }
+
+            TakeString(rawTags, "message_id"); // checked above; not a data tag
 
             // Shared server: data must never be filed under the wrong machine, so
             // a line that doesn't say which machine it is from is rejected.
@@ -142,15 +234,48 @@ public sealed class GatewayHost
                 ?? (rawTags.TryGetValue("topic_machine_id", out var m) ? m as string : null);
             if (string.IsNullOrWhiteSpace(machineId))
             {
-                Stats.Rejected();
-                _traffic?.Rejected(sender);
-                rejected.Write($"no-machine|{sender}", $"[ingest] line from {sender} rejected: no \"machine_id\"");
+                Reject(sender, ticket, "no machine_id", "no-machine_id");
                 return;
+            }
+
+            // Without a message_id a resent line could not be told apart: required.
+            // (Nothing to put in a reply either, so it gets none.)
+            if (ticket is null)
+            {
+                Reject(sender, null, "no message_id", "no-message_id");
+                return;
+            }
+
+            // The machine's own mapping (Config/machines/<machine_id>/) and its own
+            // MES path, if it has one. Never the shared mapping for a machine that
+            // has its own: same field names may mean something else there.
+            // No tab: held (default) until someone registers it, or the shared
+            // mapping when GatewayConfig unregisteredMachines = "shared".
+            GatewayConfigStore store;
+            MesPipeline pipeline;
+            if (_machines.TryGetOwn(machineId, out var own, out _))
+            {
+                if (own is null)
+                {
+                    Hold(sender, ticket, machineId, rawTags, "has an own mapping that can't be read");
+                    return;
+                }
+                store = own;
+                pipeline = OwnPipeline(machineId);
+            }
+            else if (machine.HoldUnregistered)
+            {
+                Hold(sender, ticket, machineId, rawTags, "is not registered (no tab)");
+                return;
+            }
+            else
+            {
+                store = _configStore;
+                pipeline = shared!;
             }
 
             // Which source system sent it; the configured dataSource if none.
             var dataSource = TakeString(rawTags, "data_source");
-            _traffic?.Message(machineId, sender, "MES", dataSource);
 
             // When it happened on the machine; arrival time if it sent none.
             // No zone in the text: timestampsWithoutZone (UTC by default).
@@ -161,38 +286,131 @@ public sealed class GatewayHost
                     ? at
                     : null;
 
-            var config = _configStore.Current;
+            // A tag the mapping doesn't know: the whole message is held (MES
+            // accepts no UNIDENTIFIED group, and a message is never sent half).
+            var config = store.Current;
+            var unmapped = config.Normalizer.Unmapped(rawTags);
+            if (unmapped.Count > 0)
+            {
+                HoldUnmapped(sender, ticket, machineId, store.Label, unmapped, dataSource);
+                return;
+            }
+            _traffic?.Message(machineId, sender, "MES", dataSource, messageId);
+
+            var interval = pipeline.SenderFor(store);
             var qualifier = rawTags.TryGetValue("topic_qualifier", out var q) ? q?.ToString() : null;
             var buckets = config.Normalizer.Sort(rawTags);
 
             foreach (var (dataGroup, fields) in buckets)
             {
+                // "ignore" tags are known but never sent.
+                if (dataGroup.Equals(Normalizer.IgnoredGroup, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
                 if (TwinRouter.IsTwinOnly(dataGroup))
                 {
                     _ = twinForwarder.PublishRecordAsync(machineId, dataGroup, qualifier, fields);
                     continue;
                 }
 
-                intervalSender.Accept(machineId, dataGroup, fields, eventTime, dataSource);
+                // One part per row; a group with nothing new needs no saving.
+                ticket.AddPart();
+                if (!interval.Accept(machineId, dataGroup, fields, eventTime, dataSource, messageId, ticket.PartDone))
+                    ticket.PartDone();
             }
+
+            ticket.Release(); // answered now if nothing needed saving, else once the last row is on disk
         }
 
-        var tcpServer = new TcpIngestServer(System.Net.IPAddress.Parse(machine.ListenAddress), machine.TcpPort, OnMessage, _traffic);
+        var held = new ThrottledLog(TimeSpan.FromSeconds(60));
 
-        // Own token for the parts, so one failing part can stop the others
-        // without looking like a Restart().
-        using var parts = CancellationTokenSource.CreateLinkedTokenSource(runToken);
-        var tasks = new[]
+        // Not processed and not answered: the adapter keeps the message and sends
+        // it again (after a reconnect) once the machine has a working tab. The id
+        // is forgotten so that resend is processed, not taken as a repeat. The
+        // config page lists the machine with the tags it sent; the log line
+        // (once a minute per machine, with a count) pops up there.
+        void Hold(string sender, AckTracker.Ticket ticket, string machineId, Dictionary<string, object?> tags, string why)
         {
-            tcpServer.RunAsync(parts.Token),       // task on fetching from machine
-            intervalSender.RunAsync(parts.Token),  // task on releasing MES data per group interval
-            mesForwarder.RunAsync(parts.Token),    // task on sending to mes
-            twinForwarder.RunAsync(parts.Token),   // task on publishing to the digital twin
-            ReportStatsAsync(outbox, parts.Token)  // one [stats] line every 10 s
-        };
+            _messageIds.Forget(ticket.MessageId);
+            ticket.Drop();
 
+            var dataSource = PeekString(tags, "data_source");
+            var dataTags = tags.Where(t => !t.Key.Equals("data_source", StringComparison.OrdinalIgnoreCase)
+                                        && !t.Key.Equals("timestamp", StringComparison.OrdinalIgnoreCase))
+                               .ToDictionary(t => t.Key, t => t.Value);
+            _machines.Held.Hold(machineId, sender, dataSource, dataTags);
+            _traffic?.Held(machineId, sender, ticket.MessageId);
+            held.Write($"held|{machineId}",
+                $"[ingest] {machineId} {why}: its data cannot be used until it has a tab on the config page (held: not processed, not answered, the adapter keeps it)");
+        }
+
+        var heldUnmapped = new ThrottledLog(TimeSpan.FromSeconds(60));
+
+        // Like Hold, but the machine is registered: its mapping lacks tags it sent.
+        // Released (connection closed, adapter resends) once every one of them is
+        // mapped or set to ignore on its tab.
+        void HoldUnmapped(string sender, AckTracker.Ticket ticket, string machineId, string? mapping, List<string> tags, string? dataSource)
+        {
+            _messageIds.Forget(ticket.MessageId);
+            ticket.Drop();
+            _machines.Unmapped.Hold(machineId, mapping, sender, tags);
+            _traffic?.Held(machineId, sender, ticket.MessageId);
+            heldUnmapped.Write($"unmapped|{machineId}",
+                $"[ingest] {machineId} sent tags its mapping doesn't know ({string.Join(", ", tags)}): its data cannot be used until they are mapped or set to ignore on the {mapping ?? "Template"} tab (held, not answered, the adapter keeps it)");
+        }
+
+        var duplicates = new ThrottledLog(TimeSpan.FromSeconds(60));
+
+        // reply: MES lines are answered like the first copy (its first reply may
+        // have been lost); IO/motion lines never are.
+        void Duplicate(string sender, string? machineId, string messageId, bool reply)
+        {
+            Stats.Duplicate();
+            _traffic?.Duplicate(sender, machineId);
+            duplicates.Write($"dup|{sender}", $"[ingest] line from {sender} ignored: message_id {messageId} already received");
+            if (reply)
+                acks.Repeat(messageId, sender);
+        }
+
+        // Answered with {"nack":id,"reason":reason}; the id is forgotten again, so
+        // the corrected line can be sent with the same message_id.
+        void Reject(string sender, AckTracker.Ticket? ticket, string reason, string logKey)
+        {
+            if (ticket is not null)
+            {
+                _messageIds.Forget(ticket.MessageId);
+                ticket.Reject(reason);
+            }
+            Stats.Rejected();
+            _traffic?.Rejected(sender);
+            rejected.Write($"{logKey}|{sender}", $"[ingest] line from {sender} rejected: {reason}");
+        }
+
+        var tcpServer = new TcpIngestServer(System.Net.IPAddress.Parse(machine.ListenAddress), machine.TcpPort, OnMessage, _traffic, replies);
+        _tcp = tcpServer;
+
+        var tasks = Array.Empty<Task>();
         try
         {
+            // MES paths started now: the shared one, every machine with its own
+            // mapping, and every machine outbox folder (its rows still go to MES,
+            // even if the mapping was removed). Others start when needed.
+            shared = NewPipeline(null);
+            foreach (var id in _machines.Ids)
+                OwnPipeline(id);
+            if (Directory.Exists(outboxRoot))
+                foreach (var folder in Directory.GetDirectories(outboxRoot))
+                    if (MachineRegistry.IsValidId(Path.GetFileName(folder)))
+                        OwnPipeline(Path.GetFileName(folder));
+
+            tasks = new[]
+            {
+                tcpServer.RunAsync(parts.Token),       // task on fetching from machine
+                pipelineFailed.Task,                   // a MES sender failed (they run in their pipelines)
+                twinForwarder.RunAsync(parts.Token),   // task on publishing to the digital twin
+                ReportStatsAsync(() => CreatedPipelines().Sum(p => p.Outbox.CountUnsent()), parts.Token) // one [stats] line every 10 s
+            };
+
             // The TCP listener binds before its first await, so a busy port shows up right here.
             if (!tasks[0].IsFaulted)
             {
@@ -208,8 +426,15 @@ public sealed class GatewayHost
         finally
         {
             parts.Cancel();
+            pipelineFailed.TrySetResult(); // stopping is not a failure
             await Task.WhenAny(Task.WhenAll(tasks), Task.Delay(StopTimeout));
-            intervalSender.FlushAll(); // lines the TCP workers drained after the sender stopped
+
+            // The TCP workers are done: every record is in an outbox queue. Stop the
+            // MES senders, then each outbox writes what it still holds.
+            var created = CreatedPipelines();
+            await Task.WhenAny(Task.WhenAll(created.Select(p => p.Running)), Task.Delay(StopTimeout));
+            foreach (var pipeline in created)
+                await pipeline.DisposeAsync();
 
             try { await mqttPublisher.DisconnectAsync(); }
             catch { /* shutting this run down anyway */ }
@@ -218,14 +443,15 @@ public sealed class GatewayHost
 
     // Instead of a line per message: one summary every StatsEvery, only when
     // something is moving. (Avoids the words the log treats as problems.)
-    private async Task ReportStatsAsync(Outbox outbox, CancellationToken ct)
+    // countUnsent: rows not yet delivered, all outboxes together.
+    private async Task ReportStatsAsync(Func<long> countUnsent, CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
         {
             await Task.Delay(StatsEvery, ct);
 
             long backlog;
-            try { backlog = outbox.CountUnsent(); }
+            try { backlog = countUnsent(); }
             catch { backlog = -1; } // outbox busy: report the rest anyway
 
             var r = Stats.Sample(backlog);
@@ -234,7 +460,8 @@ public sealed class GatewayHost
 
             Console.WriteLine(
                 $"[stats] in {Rate(r.InPerSec)}/s" +
-                (r.RejectedPerSec > 0 ? $" ({Rate(r.RejectedPerSec)}/s without machine_id)" : "") +
+                (r.RejectedPerSec > 0 ? $" ({Rate(r.RejectedPerSec)}/s without machine_id or message_id)" : "") +
+                (r.DuplicatePerSec > 0 ? $" ({Rate(r.DuplicatePerSec)}/s repeated message_id, ignored)" : "") +
                 $" · mqtt {Rate(r.MqttPerSec)}/s" +
                 (r.MqttLostPerSec > 0 ? $" ({Rate(r.MqttLostPerSec)}/s lost)" : "") +
                 $" · mes queued {Rate(r.MesQueuedPerSec)}/s, delivered {Rate(r.MesDeliveredPerSec)}/s" +
@@ -254,6 +481,35 @@ public sealed class GatewayHost
             return "(no topic)";
         var segments = (t.GetString() ?? "").Split('/', StringSplitOptions.RemoveEmptyEntries);
         return segments.Length >= 3 ? segments[^3] : segments.Length > 0 ? segments[0] : "(no topic)";
+    }
+
+    // A top-level property (any case) of a JSON line as text: a string, or a
+    // number as written. Empty or missing = null.
+    private static string? TopLevelString(JsonElement root, string key)
+    {
+        if (root.ValueKind != JsonValueKind.Object)
+            return null;
+        foreach (var p in root.EnumerateObject())
+        {
+            if (!p.Name.Equals(key, StringComparison.OrdinalIgnoreCase))
+                continue;
+            var value = p.Value.ValueKind switch
+            {
+                JsonValueKind.String => p.Value.GetString(),
+                JsonValueKind.Number => p.Value.GetRawText(),
+                _ => null
+            };
+            return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+        }
+        return null;
+    }
+
+    // Like TakeString, but leaves the tag in place. Empty = null.
+    private static string? PeekString(Dictionary<string, object?> tags, string key)
+    {
+        var name = tags.Keys.FirstOrDefault(k => k.Equals(key, StringComparison.OrdinalIgnoreCase));
+        var value = name is null ? null : Convert.ToString(tags[name], CultureInfo.InvariantCulture);
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     }
 
     // Removes key (any case) from the tags and returns its value as text.

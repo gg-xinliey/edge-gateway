@@ -8,41 +8,51 @@
   <link rel="stylesheet" href="/config/app.css" />
 </head>
 <body>
-  <div class="window">
-    <aside class="side">
-      <h1>ConfigFile</h1>
-      <button class="nav active" data-view="point-map">PointMap</button>
-      <button class="nav" data-view="timestamp-rules">TimeStamp</button>
-      <button class="nav" data-view="mqtt-config">MQTTConfig</button>
-      <button class="nav" data-view="machine-config">MachineConfig</button>
-      <button class="nav nav-small" data-view="machines">Machines</button>
-      <button class="nav nav-small" data-view="outbox">Outbox</button>
-      <button class="nav nav-small" data-view="log">Log</button>
-      <div class="gw-status" id="gwStatus">
-        <span class="dot"></span><span id="gwText">checking gateway…</span>
-        <span id="gwStats" class="gw-stats"></span>
-        <button id="errBadge" class="err-badge" type="button" hidden></button>
-      </div>
-    </aside>
+  <div class="shell">
+    <!-- General | Other machines (shared mapping) | one tab per machine with its own mapping | + -->
+    <div class="tabs" id="tabs" role="tablist" aria-label="General settings and machines"></div>
 
-    <main class="panel">
-      <div class="searchbar">
-        <input id="search" type="search" aria-label="Search" />
-        <button id="searchBtn" type="button">Search</button>
-      </div>
+    <div class="window">
+      <aside class="side">
+        <h1 id="tabTitle">General</h1>
+        <!-- General tab -->
+        <button class="nav active" data-view="mqtt-config" data-tab="general">MQTTConfig</button>
+        <button class="nav" data-view="machine-config" data-tab="general">GatewayConfig</button>
+        <button class="nav nav-small" data-view="machines" data-tab="general">Machines</button>
+        <button class="nav nav-small" data-view="failed" data-tab="general">MES failures</button>
+        <button class="nav nav-small" data-view="log" data-tab="general">Log</button>
+        <!-- Machine tabs (and Other machines) -->
+        <button class="nav" data-view="point-map" data-tab="machine" hidden>PointMap</button>
+        <button class="nav" data-view="timestamp-rules" data-tab="machine" hidden>TimeStamp</button>
+        <button class="nav nav-small" data-view="outbox" data-tab="machine" hidden>Outbox</button>
+        <div class="gw-status" id="gwStatus">
+          <span class="dot"></span><span id="gwText">checking gateway…</span>
+          <span id="gwStats" class="gw-stats"></span>
+          <button id="errBadge" class="err-badge" type="button" hidden></button>
+        </div>
+      </aside>
 
-      <div class="picker-row" id="pickerRow">
-        <select id="picker" aria-label="Data group"></select>
-        <span class="hint" id="pickerHint"></span>
-      </div>
+      <main class="panel">
+        <div class="searchbar">
+          <input id="search" type="search" aria-label="Search" />
+          <button id="searchBtn" type="button">Search</button>
+        </div>
 
-      <div id="view" class="view"></div>
+        <p class="scope-hint" id="scopeHint" hidden></p>
 
-      <div class="footer">
-        <span class="note" id="note"></span>
-        <button id="saveBtn" class="save" type="button">save</button>
-      </div>
-    </main>
+        <div class="picker-row" id="pickerRow">
+          <select id="picker" aria-label="Data group"></select>
+          <span class="hint" id="pickerHint"></span>
+        </div>
+
+        <div id="view" class="view"></div>
+
+        <div class="footer">
+          <span class="note" id="note"></span>
+          <button id="saveBtn" class="save" type="button">save</button>
+        </div>
+      </main>
+    </div>
   </div>
 
   <dialog id="restartDialog">

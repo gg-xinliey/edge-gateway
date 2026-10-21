@@ -21,6 +21,7 @@ public static class ConfigValidator
                     JsonSerializer.Deserialize<MqttConnectionConfig>(json, jsonOptions),
                     JsonSerializer.Deserialize<MqttOptions>(json, jsonOptions)),
                 "machine-config" => Machine(JsonSerializer.Deserialize<MachineConfig>(json, jsonOptions), adminPort),
+                "mes-schema" => MesSchema(JsonSerializer.Deserialize<Dictionary<string, List<string>>>(json, jsonOptions)),
                 _ => $"Unknown configuration file '{key}'."
             };
         }
@@ -44,6 +45,34 @@ public static class ConfigValidator
                 return $"Tag '{entry.Tag}' has no data group.";
             if (!seen.Add(entry.Tag))
                 return $"Tag '{entry.Tag}' is listed twice. Tags must be unique (ignoring case).";
+        }
+
+        return null;
+    }
+
+    // The MES format: data group -> its MES table's column names (sent in this order).
+    private static readonly System.Text.RegularExpressions.Regex ColumnName = new(@"^[A-Za-z_][A-Za-z0-9_]{0,63}$");
+
+    private static string? MesSchema(Dictionary<string, List<string>>? groups)
+    {
+        if (groups is null)
+            return "The MES format must be an object of data groups.";
+
+        foreach (var (group, columns) in groups)
+        {
+            if (string.IsNullOrWhiteSpace(group))
+                return "A data group has no name.";
+            if (columns is null)
+                return $"{group}: the column list is empty.";
+
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var column in columns)
+            {
+                if (column is null || !ColumnName.IsMatch(column))
+                    return $"{group}: '{column}' is not a valid MES column name (letters, digits and _).";
+                if (!seen.Add(column))
+                    return $"{group}: column '{column}' is listed twice.";
+            }
         }
 
         return null;
@@ -102,8 +131,8 @@ public static class ConfigValidator
             return "Machine config must be an object.";
         if (string.IsNullOrWhiteSpace(machine.GatewayId))
             return "gatewayId is empty.";
-        if (string.IsNullOrWhiteSpace(machine.MachineId))
-            return "machineId is empty.";
+        if (machine.UnregisteredMachines.Trim().ToLowerInvariant() is not ("hold" or "shared"))
+            return "unregisteredMachines must be hold or shared.";
         if (!System.Net.IPAddress.TryParse(machine.ListenAddress, out var listen))
             return "listenAddress must be an IP address, e.g. 0.0.0.0 (all) or 192.168.250.78.";
         if (!listen.Equals(System.Net.IPAddress.Any) && !System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces()

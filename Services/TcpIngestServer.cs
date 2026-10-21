@@ -14,6 +14,9 @@ namespace EdgeGateway.Services;
 // slow processing never stops the gateway from reading the socket. Workers
 // ("lanes", one per CPU core, max 8) process the lines. Each connection is
 // tied to one lane, so lines from one machine are handled in the order sent.
+//
+// Replies ({"ack":...} once a message is on disk) go back on the same
+// connection through ReplyHub; each connection has its own reply writer.
 public class TcpIngestServer
 {
     private const int LaneCapacity = 20_000; // per lane; when full the reader waits (back-pressure to the machine)
@@ -22,16 +25,33 @@ public class TcpIngestServer
     private readonly int _port;
     private readonly Action<string, string> _onMessage; // (line, sender = "ip:port" of the connection)
     private readonly TrafficRegistry? _traffic;
+    private readonly ReplyHub? _replies;
     private readonly Channel<(string Line, string Sender)>[] _lanes;
     private readonly ThrottledLog _problems = new(TimeSpan.FromSeconds(60));
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, TcpClient> _clients = new();
     private int _nextLane;
 
-    public TcpIngestServer(IPAddress address, int port, Action<string, string> onMessage, TrafficRegistry? traffic = null)
+    // Closes one machine connection (ip:port). Its adapter reconnects and sends
+    // every message it got no reply for again (used after registering a held machine).
+    public bool Disconnect(string endpoint)
+    {
+        if (!_clients.TryGetValue(endpoint, out var client))
+            return false;
+        _closing[endpoint] = 0;
+        client.Close();
+        return true;
+    }
+
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _closing = new();
+
+    public TcpIngestServer(IPAddress address, int port, Action<string, string> onMessage, TrafficRegistry? traffic = null,
+        ReplyHub? replies = null)
     {
         _address = address;
         _port = port;
         _onMessage = onMessage;
         _traffic = traffic;
+        _replies = replies;
         _lanes = Enumerable.Range(0, Math.Clamp(Environment.ProcessorCount, 1, 8))
             .Select(_ => Channel.CreateBounded<(string, string)>(
                 new BoundedChannelOptions(LaneCapacity) { SingleReader = true, FullMode = BoundedChannelFullMode.Wait }))
@@ -71,6 +91,7 @@ public class TcpIngestServer
         var sender = endpoint?.ToString() ?? "?"; // ip:port: one machine per connection, even behind one IP
         Console.WriteLine($"[tcp] client connected: {endpoint}");
         _traffic?.Opened(sender);
+        _clients[sender] = client;
 
         try
         {
@@ -78,13 +99,23 @@ public class TcpIngestServer
             await using (var stream = client.GetStream())
             using (var reader = new StreamReader(stream, Encoding.UTF8))
             {
-                string? line;
-                while ((line = await reader.ReadLineAsync(ct)) != null)
+                var replying = _replies is null ? Task.CompletedTask : ReplyHub.WriteAsync(stream, _replies.Open(sender));
+                try
                 {
-                    if (string.IsNullOrWhiteSpace(line))
-                        continue;
-                    _traffic?.LineReceived(sender);
-                    await lane.Writer.WriteAsync((line, sender), ct);
+                    string? line;
+                    while ((line = await reader.ReadLineAsync(ct)) != null)
+                    {
+                        if (string.IsNullOrWhiteSpace(line))
+                            continue;
+                        _traffic?.LineReceived(sender);
+                        await lane.Writer.WriteAsync((line, sender), ct);
+                    }
+                }
+                finally
+                {
+                    // Replies still queued get 2 s to go out; any not sent, the adapter resends.
+                    _replies?.Close(sender);
+                    await Task.WhenAny(replying, Task.Delay(TimeSpan.FromSeconds(2)));
                 }
             }
         }
@@ -92,11 +123,18 @@ public class TcpIngestServer
         {
             // gateway stopping or restarting
         }
+        catch (Exception) when (_closing.ContainsKey(sender))
+        {
+            // closed on purpose (Disconnect): the adapter reconnects and resends
+        }
         catch (Exception ex)
         {
             Console.WriteLine($"[tcp] connection from {endpoint} failed: {ex.Message}");
         }
 
+        if (_closing.TryRemove(sender, out _))
+            Console.WriteLine($"[tcp] {endpoint} closed by the gateway so the adapter sends its unanswered messages again");
+        _clients.TryRemove(new KeyValuePair<string, TcpClient>(sender, client));
         Console.WriteLine($"[tcp] client disconnected: {endpoint}");
         _traffic?.Closed(sender);
     }

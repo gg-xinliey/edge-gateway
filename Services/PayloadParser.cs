@@ -4,7 +4,11 @@ using System.Text.Json;
 namespace EdgeGateway.Services;
 
 
-//   JSON line -> a full snapshot: {"MACHINE_STATUS":"RUN","GOOD_QTY":125}
+//   JSON line -> the message details at the top, the data tags in "data":
+//                {"message_id":"…","machine_id":"NXT102","timestamp":"…","data_source":"MCSTATECHANGE",
+//                 "data":{"event_name":"MCSTATECHANGE","current_status_code":"5",…}}
+//                (the older flat form, tags next to the details, still works:
+//                 {"message_id":"…","machine_id":"M1","MACHINE_STATUS":"RUN","GOOD_QTY":125})
 //   CSV line  -> one tag per line: "TAG_NAME,value"
 public static class PayloadParser
 {
@@ -39,8 +43,29 @@ public static class PayloadParser
         }
         else
         {
+            // The message details (message_id, machine_id, timestamp, data_source)
+            // and, in the flat form, the tags themselves.
+            JsonElement? data = null;
             foreach (var prop in root.EnumerateObject())
-                result[prop.Name] = ParseValue(prop.Value);
+            {
+                if (prop.NameEquals("data") && prop.Value.ValueKind is JsonValueKind.Object or JsonValueKind.String)
+                    data = prop.Value;
+                else
+                    result[prop.Name] = ParseValue(prop.Value);
+            }
+
+            // "data": the tags (an object, or JSON text holding one). A tag never
+            // replaces a message detail of the same name.
+            if (data is { } dataEl && TryPayloadObject(dataEl, out var dataDoc, out var tags))
+            {
+                using (dataDoc)
+                    foreach (var prop in tags.EnumerateObject())
+                        result.TryAdd(prop.Name, ParseValue(prop.Value));
+            }
+            else if (data is { } plain)
+            {
+                result["data"] = ParseValue(plain); // text that isn't an object: just a tag called "data"
+            }
         }
 
         return result;
@@ -76,7 +101,8 @@ public static class PayloadParser
     // Recurses into objects/arrays instead of calling GetString() on them —
     // the original version threw on any nested value, which is exactly the
     // shape of the MOTION payload on slide 10 ("world": {"X":..., "Y":...}).
-    private static object? ParseValue(JsonElement element) => element.ValueKind switch
+    // Also used to read saved snapshots back (IntervalSender), so they compare equal.
+    internal static object? ParseValue(JsonElement element) => element.ValueKind switch
     {
         JsonValueKind.Number => element.GetDouble(),
         JsonValueKind.True => true,
