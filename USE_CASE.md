@@ -90,7 +90,7 @@ Gateway → MQTT, topic `svi/TEST/ASSY-L01-FCT-01/IO/input`:
 - Each tag is mapped through `point-map.json` into its data group.
 
 **When MES data is sent** (per machine and data group):
-- A message that changes nothing is ignored.
+- A message that changes nothing is ignored. So is a message that only changes fields with no MES column (extras such as `components`). MES would get a row that looks the same as the last one. The new extra values are kept and go with the next real change.
 - Each change becomes one record: all current values of that group, with timestamps. It is **saved to the outbox file right away**.
 - `sendEveryMs` paces MES per group: the first change after a quiet interval is sent at once; changes within the next `sendEveryMs` wait until it is over, then **all** of them are sent, oldest first. Example with PRODUCTION every 10 s: a change at 10:00:00 goes at once; changes at 10:00:03 and 10:00:07 both go at 10:00:10.
 - No change, nothing is sent: there are no periodic repeats.

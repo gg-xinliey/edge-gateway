@@ -87,8 +87,8 @@ public sealed class IntervalSender
                 state.Stamper = config.TimeStamper;
             }
 
-            if (!ApplyChanges(state.Snapshot, fields))
-                return false; // same values as last time: nothing new for MES
+            if (!ApplyChanges(state.Snapshot, fields, MesColumns(config, dataGroup)))
+                return false; // nothing new for MES (same values, or only fields MES never gets)
 
             record = new Dictionary<string, object?>(state.Snapshot);
             config.TimeStamper.Stamp(machineId, dataGroup, record, at, source);
@@ -162,8 +162,12 @@ public sealed class IntervalSender
             ? ms
             : DefaultSendEveryMs;
 
-    // Copies incoming values into the snapshot; true when at least one differs.
-    private static bool ApplyChanges(Dictionary<string, object?> snapshot, Dictionary<string, object?> incoming)
+    // Copies incoming values into the snapshot; true when a value MES gets changed.
+    // A field with no MES column (an extra field, e.g. event_time) is kept up to date
+    // but its change alone makes no record: MES would get a row that looks unchanged.
+    // columns null = a group with no MES table: every field counts.
+    private static bool ApplyChanges(Dictionary<string, object?> snapshot, Dictionary<string, object?> incoming,
+        IReadOnlyList<string>? columns)
     {
         var changed = false;
         foreach (var (name, value) in incoming)
@@ -171,7 +175,8 @@ public sealed class IntervalSender
             if (snapshot.TryGetValue(name, out var old) && SameValue(old, value))
                 continue;
             snapshot[name] = value;
-            changed = true;
+            if (columns is null || columns.Count == 0 || columns.Contains(name, StringComparer.OrdinalIgnoreCase))
+                changed = true;
         }
 
         return changed;
