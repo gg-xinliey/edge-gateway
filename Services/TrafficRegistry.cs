@@ -106,6 +106,13 @@ public sealed class TrafficRegistry
 
     private const int MaxHeldIds = 10_000;
 
+    // A message whose "timestamp" can't be read, or is over an hour from its arrival.
+    public void BadTime(string machineId)
+    {
+        var m = _machines.GetOrAdd(machineId, id => new Machine(id, DateTimeOffset.Now));
+        lock (m) m.BadTimes++;
+    }
+
     // ---- read by the config page ----
 
     public object Snapshot()
@@ -136,7 +143,7 @@ public sealed class TrafficRegistry
                 {
                     machineId = m.Id, status, connection = m.LastEndpoint, disconnectedAt = open ? null : closedAt,
                     firstSeen = m.FirstSeen, lastMessage = m.LastMessage,
-                    total = m.Total, mes = m.Mes, mqtt = m.Mqtt, held = m.HeldIds.Count, duplicates = m.Duplicates, perSecond = m.PerSecond(now),
+                    total = m.Total, mes = m.Mes, mqtt = m.Mqtt, held = m.HeldIds.Count, duplicates = m.Duplicates, badTimes = m.BadTimes, perSecond = m.PerSecond(now),
                     dataSources = m.DataSources.OrderByDescending(d => d.Value).Select(d => new { name = d.Key, count = d.Value }).ToList()
                 };
             }
@@ -174,7 +181,7 @@ public sealed class TrafficRegistry
         public string LastEndpoint = "";
         public DateTimeOffset FirstSeen;
         public DateTimeOffset LastMessage;
-        public long Total, Mes, Mqtt, Duplicates;                                  // Total = new messages accepted (each once)
+        public long Total, Mes, Mqtt, Duplicates, BadTimes;                        // Total = new messages accepted (each once)
         public HashSet<string> HeldIds { get; } = new(StringComparer.Ordinal);    // message_ids waiting (held) right now
         public Dictionary<string, long> DataSources { get; } = new(StringComparer.OrdinalIgnoreCase);
 

@@ -466,7 +466,7 @@ function renderMachines(view) {
     `${data.machines.length} machines (${online} connected) · ${openConnections} open connections` }));
 
   view.append(machines.length ? table(
-    ['', 'machine', 'mapping', 'connection', 'last message', 'new messages', 'to MES', 'to MQTT', 'repeats', 'held', 'per s', 'data sources'],
+    ['', 'machine', 'mapping', 'connection', 'last message', 'new messages', 'to MES', 'to MQTT', 'repeats', 'held', 'time warnings', 'per s', 'data sources'],
     machines.map(m => h('tr', {},
       h('td', {}, h('span', { class: `dot ${m.status}`, title: m.status })),
       h('td', { class: 'strong', textContent: m.machineId }),
@@ -478,6 +478,7 @@ function renderMachines(view) {
       h('td', { class: 'num', textContent: m.mqtt.toLocaleString() }),
       h('td', { class: m.duplicates ? 'num warn' : 'num', textContent: m.duplicates.toLocaleString(), title: 'Lines ignored: message_id already received in the last 10 min' }),
       h('td', { class: m.held ? 'num bad' : 'num', textContent: m.held.toLocaleString(), title: 'Messages waiting right now (no tab, or tags not mapped). They count as new messages once they go through.' }),
+      h('td', { class: m.badTimes ? 'num warn' : 'num', textContent: (m.badTimes ?? 0).toLocaleString(), title: 'Messages whose timestamp could not be read (arrival time used) or was over an hour from arrival (used as sent). The log says which.' }),
       h('td', { class: 'num', textContent: m.perSecond.toFixed(1) }),
       h('td', { class: 'small', textContent: m.dataSources.map(d => `${d.name} ${d.count.toLocaleString()}`).join(' · ') || '—' })))
   ) : h('div', { class: 'empty', textContent: data.machines.length ? 'No machine matches the search.' : 'No machine has sent anything yet.' }));

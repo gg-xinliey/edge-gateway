@@ -54,6 +54,13 @@ public sealed class GatewayHost
     public GatewayStats Stats { get; } = new();
     private static readonly TimeSpan StatsEvery = TimeSpan.FromSeconds(10);
 
+    // A machine timestamp further than this from arrival is warned about.
+    private static readonly TimeSpan ClockWarning = TimeSpan.FromHours(1);
+
+    // "message_id":"..." in a line that is not valid JSON (for its nack).
+    private static readonly System.Text.RegularExpressions.Regex BrokenLineId =
+        new("\"message_id\"\\s*:\\s*\"([^\"\\\\]{1,200})\"", System.Text.RegularExpressions.RegexOptions.Compiled);
+
     public void Restart()
     {
         lock (_sync)
@@ -169,11 +176,18 @@ public sealed class GatewayHost
             {
                 Handle(raw, sender, ref ticket);
             }
-            catch
+            catch (Exception ex)
             {
                 // Not (fully) handled: no reply; the id was never marked saved, so
                 // the adapter's resend is processed again.
                 ticket?.Drop();
+
+                // A line that isn't valid JSON never will be: if its message_id can still be
+                // read, say so, or the adapter resends the same broken line forever.
+                // (Not when that id is already saved: a good copy got its ack.)
+                if (ticket is null && ex is JsonException && BrokenLineId.Match(raw) is { Success: true } id
+                    && !_messageIds.Contains(id.Groups[1].Value))
+                    replies.Nack(sender, id.Groups[1].Value, "not valid JSON");
                 throw;
             }
         }
@@ -273,11 +287,22 @@ public sealed class GatewayHost
             // When it happened on the machine; arrival time if it sent none.
             // No zone in the text: timestampsWithoutZone (UTC by default).
             var zoneless = machine.ZonelessIsUtc ? DateTimeStyles.AssumeUniversal : DateTimeStyles.AssumeLocal;
-            DateTimeOffset? eventTime =
-                TakeString(rawTags, "timestamp") is { } stamp &&
-                DateTimeOffset.TryParse(stamp, CultureInfo.InvariantCulture, zoneless, out var at)
-                    ? at
-                    : null;
+            DateTimeOffset? eventTime = null;
+            if (TakeString(rawTags, "timestamp") is { } stamp)
+            {
+                // Unreadable or far off: still used (arrival time / as sent), but shown,
+                // or wrong record times reach MES and nobody notices.
+                if (!DateTimeOffset.TryParse(stamp, CultureInfo.InvariantCulture, zoneless, out var at))
+                    BadTime(machineId, $"timestamp \"{stamp}\" can't be read, the arrival time is used");
+                else
+                {
+                    var off = at - DateTimeOffset.Now;
+                    if (off.Duration() > ClockWarning)
+                        BadTime(machineId, $"timestamp {stamp} is {off.Duration().TotalHours:0.0} h {(off > TimeSpan.Zero ? "ahead of" : "behind")} its arrival " +
+                                           "(the machine's clock or timestampsWithoutZone is wrong, or an old message was resent): used as sent");
+                    eventTime = at;
+                }
+            }
 
             // A tag the mapping doesn't know (GatewayConfig unmappedTags):
             //   "send" (default): the known tags go on, the unknown ones are left out of
@@ -371,6 +396,14 @@ public sealed class GatewayHost
                 $"[ingest] {machineId} sent tags its mapping doesn't know ({string.Join(", ", tags)}): its data cannot be used until they are mapped or set to ignore on the {mapping ?? "Template"} tab (held, not answered, the adapter keeps it)");
         }
 
+        var badTimes = new ThrottledLog(TimeSpan.FromSeconds(60));
+
+        // Counted per machine (Machines page, "time warnings"); logged once a minute per machine.
+        void BadTime(string machineId, string problem)
+        {
+            _traffic?.BadTime(machineId);
+            badTimes.Write($"time|{machineId}", $"[ingest] {machineId}: {problem}");
+        }
 
         var duplicates = new ThrottledLog(TimeSpan.FromSeconds(60));
 
