@@ -172,6 +172,8 @@ public class MesForwarder
                 return (SendResult.Delivered, null);
 
             var status = (int)response.StatusCode;
+            if (status == 409) // Conflict: MES already has this event_id (a resend): it is delivered
+                return (SendResult.Delivered, null);
             if (status is >= 400 and < 500 and not (401 or 403 or 407 or 408 or 429))
             {
                 var body = await response.Content.ReadAsStringAsync(ct);

@@ -92,6 +92,7 @@ public sealed class Outbox : IAsyncDisposable
         var batch = new List<Item>(MaxBatch);
         SqliteConnection? conn = null;
         var connFile = "";
+        var withPrevious = false; // yesterday's file attached as "prev" (see InsertBatch)
         var lastErrorLog = DateTime.MinValue;
 
         try
@@ -115,9 +116,21 @@ public sealed class Outbox : IAsyncDisposable
                             durable.CommandText = "PRAGMA synchronous = FULL;"; // commit = on disk: machines are answered after it
                             durable.ExecuteNonQuery();
                             connFile = file;
+
+                            // Yesterday's file too: a message saved before midnight and sent
+                            // again after it must not be stored (and sent to MES) a second time.
+                            var previous = Path.Combine(_dir, DayFile(DateTime.Now.AddDays(-1)));
+                            withPrevious = File.Exists(previous);
+                            if (withPrevious)
+                            {
+                                OpenFile(Path.GetFileName(previous)).Dispose(); // its table exists (also for a file from an older version)
+                                durable.CommandText = "ATTACH DATABASE $path AS prev;";
+                                durable.Parameters.AddWithValue("$path", previous);
+                                durable.ExecuteNonQuery();
+                            }
                         }
 
-                        InsertBatch(conn, batch);
+                        InsertBatch(conn, batch, withPrevious);
                         break;
                     }
                     catch (Exception ex)
@@ -151,15 +164,20 @@ public sealed class Outbox : IAsyncDisposable
 
     // INSERT OR IGNORE: event_id comes from the message_id, so a message sent
     // again after a gateway crash (its first reply never came) gives the same
-    // event_id and is not stored twice in the same day file.
-    private static void InsertBatch(SqliteConnection conn, List<Item> batch)
+    // event_id and is not stored twice in the same day file. withPrevious:
+    // yesterday's file is attached as "prev" and a row it already has is skipped
+    // too (a resend across midnight).
+    private static void InsertBatch(SqliteConnection conn, List<Item> batch, bool withPrevious)
     {
         using var tx = conn.BeginTransaction();
         using var cmd = conn.CreateCommand();
         cmd.Transaction = tx;
-        cmd.CommandText = @"
-            INSERT OR IGNORE INTO outbox (event_id, data_group, body, sent, created_at, send_after, state_key, state)
-            VALUES ($event_id, $data_group, $body, 0, $created_at, $send_after, $state_key, $state);";
+        cmd.CommandText = withPrevious
+            ? @"INSERT OR IGNORE INTO main.outbox (event_id, data_group, body, sent, created_at, send_after, state_key, state)
+                SELECT $event_id, $data_group, $body, 0, $created_at, $send_after, $state_key, $state
+                WHERE NOT EXISTS (SELECT 1 FROM prev.outbox WHERE event_id = $event_id);"
+            : @"INSERT OR IGNORE INTO outbox (event_id, data_group, body, sent, created_at, send_after, state_key, state)
+                VALUES ($event_id, $data_group, $body, 0, $created_at, $send_after, $state_key, $state);";
         var eventId = cmd.Parameters.Add("$event_id", SqliteType.Text);
         var dataGroup = cmd.Parameters.Add("$data_group", SqliteType.Text);
         var body = cmd.Parameters.Add("$body", SqliteType.Text);
