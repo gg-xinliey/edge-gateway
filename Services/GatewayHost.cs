@@ -74,12 +74,14 @@ public sealed class GatewayHost
 
     public async Task RunAsync(CancellationToken stopping)
     {
+        var failures = 0; // runs that failed in a row, for the wait before the next try
         while (!stopping.IsCancellationRequested)
         {
             using var run = CancellationTokenSource.CreateLinkedTokenSource(stopping);
             lock (_sync)
                 _currentRun = run;
 
+            var started = DateTimeOffset.UtcNow;
             try
             {
                 await RunOnceAsync(run.Token);
@@ -92,10 +94,16 @@ public sealed class GatewayHost
             {
                 State = "error";
                 LastError = ex.Message;
-                Console.WriteLine($"[gateway] stopped: {ex.Message} — fix it on the config page and restart");
 
-                // Stay down until Restart() or Ctrl+C; the config page keeps running.
-                try { await Task.Delay(Timeout.Infinite, run.Token); }
+                // Start again by itself (#8): an unattended PC must not stay down until
+                // someone presses Restart. 5 s, 10 s, 20 s, 40 s, then every 60 s; a run
+                // that went well for 5 min starts the count over. Restart() skips the wait.
+                if (DateTimeOffset.UtcNow - started > TimeSpan.FromMinutes(5))
+                    failures = 0;
+                var wait = TimeSpan.FromSeconds(Math.Min(60, 5 << Math.Min(failures++, 4)));
+                Console.WriteLine($"[gateway] stopped: {ex.Message} — starting again in {wait.TotalSeconds:0} s (or fix it on the config page and restart)");
+
+                try { await Task.Delay(wait, run.Token); }
                 catch (OperationCanceledException) { }
             }
         }

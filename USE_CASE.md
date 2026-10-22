@@ -281,5 +281,5 @@ Open **http://localhost:5100/config/**. It only opens on the gateway PC itself.
 - MachineSim keeps each data line until the gateway answers and sends unanswered ones again after a reconnect, like the data team's adapter.
 | A change reaches MES late | It waits for the group's `sendEveryMs` (PRODUCTION: up to 10 s). |
 | Backlog keeps growing | MES delivered/s is lower than queued/s in `[stats]`. Check that MES is reachable and fast enough. |
-| Page says "Gateway stopped: …" | Fix the named setting (e.g. port in use), save, then **Restart now**. |
+| Page says "Gateway stopped: …" | It starts again by itself after 5 s, 10 s, 20 s, 40 s, then every 60 s, so a passing problem (e.g. the network not up yet) needs nothing. If it keeps failing, fix the named setting (e.g. port in use), save, then **Restart now** (no wait). |
 | Machine stops sending after a restart | The machine must reconnect to TCP port 9000 by itself. |
