@@ -71,7 +71,19 @@ public class TcpIngestServer
         {
             while (!ct.IsCancellationRequested)
             {
-                var client = await listener.AcceptTcpClientAsync(ct);
+                TcpClient client;
+                try
+                {
+                    client = await listener.AcceptTcpClientAsync(ct);
+                }
+                catch (Exception ex) when (!ct.IsCancellationRequested)
+                {
+                    // One failed accept (a peer that reset while still in the backlog, a port
+                    // scan, too many open handles) must not close the port for everyone (#8).
+                    _problems.Write("accept", $"[tcp] accepting a connection failed, still listening: {ex.Message}");
+                    await Task.Delay(100, ct); // no busy loop while it keeps failing
+                    continue;
+                }
                 var lane = _lanes[(uint)Interlocked.Increment(ref _nextLane) % _lanes.Length];
                 _ = HandleClientAsync(client, lane, ct);
             }
