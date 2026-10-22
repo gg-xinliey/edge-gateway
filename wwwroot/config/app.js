@@ -106,7 +106,8 @@ function toast(message, bad = false) {
 }
 
 async function request(url, options) {
-  const res = await fetch(url, { cache: 'no-store', ...options });
+  // The server takes changes only as JSON (#12), also POST/DELETE without a body.
+  const res = await fetch(url, { cache: 'no-store', ...options, headers: { 'Content-Type': 'application/json', ...options?.headers } });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
   return body;
@@ -1444,7 +1445,7 @@ function showStatus(status) {
   const since = status.startedAt ? new Date(status.startedAt).toLocaleTimeString() : '';
   $('gwText').textContent =
     status.state === 'running' ? `Gateway running · TCP ${status.tcpPort} · since ${since}` :
-    status.state === 'error' ? `Gateway stopped: ${status.lastError}` :
+    status.state === 'error' ? `Gateway stopped: ${status.lastError} (it tries again by itself)` :
     `Gateway ${status.state}…`;
 
   // Last 10 s, per second: lines in, MQTT out, MES delivered, rows waiting for MES.

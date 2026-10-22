@@ -163,6 +163,11 @@ public sealed class AdminWebServer
         if (request.HttpMethod is "GET" or "HEAD")
             return null;
 
+        // JSON forces a browser to ask first (CORS preflight), which this server never
+        // allows: a second layer if a browser sends neither header below.
+        if (!(request.ContentType ?? "").StartsWith("application/json", StringComparison.OrdinalIgnoreCase))
+            return "Changes are only accepted as JSON (Content-Type: application/json).";
+
         var site = request.Headers["Sec-Fetch-Site"];
         var origin = request.Headers["Origin"];
         var fromOtherSite = (site is not null && site is not ("same-origin" or "none"))
