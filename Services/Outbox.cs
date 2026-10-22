@@ -380,6 +380,8 @@ public sealed class Outbox : IAsyncDisposable
     {
         _queue.Writer.TryComplete();
         await Task.WhenAny(_writer, Task.Delay(TimeSpan.FromSeconds(10)));
+        if (!_writer.IsCompleted) // never acked, so the adapters send them again
+            Console.WriteLine($"[outbox] {_dir}: {Queued} queued row(s) not written within 10 s (file locked or disk full?); they were not acked, the adapters send them again");
     }
 
     // ---- files ----

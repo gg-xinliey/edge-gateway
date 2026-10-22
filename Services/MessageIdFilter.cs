@@ -24,6 +24,7 @@ public sealed class MessageIdFilter
 
     public int Count => _seen.Count;
 
+    // IO/motion lines (no reply, nothing saved): the id counts from arrival.
     // true = first time in the window: go on with the line.
     // false = seen within the window: a duplicate, ignore the line.
     public bool TryAccept(string id)
@@ -46,9 +47,21 @@ public sealed class MessageIdFilter
         return true;
     }
 
-    // The line was rejected after the check (e.g. no machine_id): forget its id,
-    // so the corrected line sent again with the same id is not taken as a duplicate.
-    public void Forget(string id) => _seen.TryRemove(id, out _);
+    // MES lines: the id counts only once its message is saved (AckTracker). A held,
+    // rejected or unsaved message is not in here, so its resend is processed again.
+    public bool Contains(string id)
+    {
+        var now = DateTime.UtcNow.Ticks;
+        SweepIfDue(now);
+        return _seen.TryGetValue(id, out var at) && now - at < Window.Ticks;
+    }
+
+    public void MarkSaved(string id)
+    {
+        var now = DateTime.UtcNow.Ticks;
+        _seen[id] = now;
+        _order.Enqueue((id, now));
+    }
 
     // Drops ids older than the window, at most once a second, one thread at a time.
     private void SweepIfDue(long now)

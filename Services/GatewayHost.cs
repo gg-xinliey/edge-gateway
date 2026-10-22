@@ -153,7 +153,7 @@ public sealed class GatewayHost
         // Replies to the machines on their own connections: {"ack":id} once a
         // MES message is on disk, {"nack":id,"reason":...} when it never will be.
         var replies = new ReplyHub();
-        var acks = new AckTracker(replies);
+        var acks = new AckTracker(replies, _messageIds);
 
         var rejected = new ThrottledLog(TimeSpan.FromSeconds(60));
 
@@ -170,13 +170,9 @@ public sealed class GatewayHost
             }
             catch
             {
-                // Not (fully) handled: no reply, and the id is forgotten so the
-                // adapter's resend is processed again.
-                if (ticket is not null)
-                {
-                    _messageIds.Forget(ticket.MessageId);
-                    ticket.Drop();
-                }
+                // Not (fully) handled: no reply; the id was never marked saved, so
+                // the adapter's resend is processed again.
+                ticket?.Drop();
                 throw;
             }
         }
@@ -192,16 +188,16 @@ public sealed class GatewayHost
                 var twin = MqttRelay.IsTwinLine(doc.RootElement); // IO/motion: live data, never answered
 
                 // First of all: the same message_id within 10 min = the same line again.
+                // MES lines: answered by the tracker (now, or with the first copy's answer).
                 messageId = TopLevelString(doc.RootElement, "message_id");
                 if (messageId is not null)
                 {
-                    if (!_messageIds.TryAccept(messageId))
+                    var repeat = twin ? !_messageIds.TryAccept(messageId) : (ticket = acks.Begin(messageId, sender)) is null;
+                    if (repeat)
                     {
-                        Duplicate(sender, TopLevelString(doc.RootElement, "machine_id") ?? MachineFromTopic(doc.RootElement), messageId, reply: !twin);
+                        Duplicate(sender, TopLevelString(doc.RootElement, "machine_id") ?? MachineFromTopic(doc.RootElement), messageId);
                         return;
                     }
-                    if (!twin)
-                        ticket = acks.Begin(messageId, sender); // at once, so a copy arriving now waits for this one
                 }
 
                 if (mqttRelay.TryRelay(doc.RootElement))
@@ -215,14 +211,10 @@ public sealed class GatewayHost
             {
                 rawTags = PayloadParser.ParseCsv(raw);
                 messageId = PeekString(rawTags, "message_id");
-                if (messageId is not null)
+                if (messageId is not null && (ticket = acks.Begin(messageId, sender)) is null)
                 {
-                    if (!_messageIds.TryAccept(messageId))
-                    {
-                        Duplicate(sender, PeekString(rawTags, "machine_id"), messageId, reply: true);
-                        return;
-                    }
-                    ticket = acks.Begin(messageId, sender);
+                    Duplicate(sender, PeekString(rawTags, "machine_id"), messageId);
+                    return;
                 }
             }
 
@@ -326,12 +318,11 @@ public sealed class GatewayHost
 
         // Not processed and not answered: the adapter keeps the message and sends
         // it again (after a reconnect) once the machine has a working tab. The id
-        // is forgotten so that resend is processed, not taken as a repeat. The
-        // config page lists the machine with the tags it sent; the log line
+        // was never marked saved, so that resend is processed, not taken as a repeat.
+        // The config page lists the machine with the tags it sent; the log line
         // (once a minute per machine, with a count) pops up there.
         void Hold(string sender, AckTracker.Ticket ticket, string machineId, Dictionary<string, object?> tags, string why)
         {
-            _messageIds.Forget(ticket.MessageId);
             ticket.Drop();
 
             var dataSource = PeekString(tags, "data_source");
@@ -351,7 +342,6 @@ public sealed class GatewayHost
         // mapped or set to ignore on its tab.
         void HoldUnmapped(string sender, AckTracker.Ticket ticket, string machineId, string? mapping, List<string> tags, string? dataSource)
         {
-            _messageIds.Forget(ticket.MessageId);
             ticket.Drop();
             _machines.Unmapped.Hold(machineId, mapping, sender, tags);
             _traffic?.Held(machineId, sender, ticket.MessageId);
@@ -361,26 +351,20 @@ public sealed class GatewayHost
 
         var duplicates = new ThrottledLog(TimeSpan.FromSeconds(60));
 
-        // reply: MES lines are answered like the first copy (its first reply may
-        // have been lost); IO/motion lines never are.
-        void Duplicate(string sender, string? machineId, string messageId, bool reply)
+        // Counting and logging only: a MES repeat is answered by the AckTracker
+        // (like its first copy); IO/motion lines never are.
+        void Duplicate(string sender, string? machineId, string messageId)
         {
             Stats.Duplicate();
             _traffic?.Duplicate(sender, machineId);
             duplicates.Write($"dup|{sender}", $"[ingest] line from {sender} ignored: message_id {messageId} already received");
-            if (reply)
-                acks.Repeat(messageId, sender);
         }
 
-        // Answered with {"nack":id,"reason":reason}; the id is forgotten again, so
-        // the corrected line can be sent with the same message_id.
+        // Answered with {"nack":id,"reason":reason}; the id was never marked saved,
+        // so the corrected line can be sent with the same message_id.
         void Reject(string sender, AckTracker.Ticket? ticket, string reason, string logKey)
         {
-            if (ticket is not null)
-            {
-                _messageIds.Forget(ticket.MessageId);
-                ticket.Reject(reason);
-            }
+            ticket?.Reject(reason);
             Stats.Rejected();
             _traffic?.Rejected(sender);
             rejected.Write($"{logKey}|{sender}", $"[ingest] line from {sender} rejected: {reason}");

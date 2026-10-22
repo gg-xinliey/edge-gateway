@@ -10,29 +10,51 @@ namespace EdgeGateway.Services;
 // A ticket counts the rows still on their way to disk, plus one "hold" while
 // the message is being split into groups, so it cannot finish early.
 //
-// The same message_id arriving again while the first copy is still on its way
-// waits for that ticket, so it is never answered before the data is on disk.
+// A message_id counts as "already received" only once its message was saved
+// (MessageIdFilter.MarkSaved, right before the ack). So a copy of the same
+// message_id
+//   * arriving while the first copy is still on its way waits for it and gets the
+//     same answer: ack (saved), nack (rejected) or none (held / failed);
+//   * arriving after the first copy was saved is acked at once;
+//   * arriving after the first copy was held, rejected or never saved (gateway
+//     stopped with the row still queued) is processed again as a new message.
+// Before, the id counted from arrival, so such a copy could be acked although
+// nothing was ever saved (issues #2, #3).
 public sealed class AckTracker
 {
     private readonly ReplyHub _replies;
+    private readonly MessageIdFilter _saved;
     private readonly ConcurrentDictionary<string, Ticket> _inFlight = new(StringComparer.Ordinal);
 
-    public AckTracker(ReplyHub replies) => _replies = replies;
-
-    // Right after the message_id passed the duplicate check.
-    public Ticket Begin(string messageId, string sender)
+    public AckTracker(ReplyHub replies, MessageIdFilter saved)
     {
-        var ticket = new Ticket(this, messageId, sender);
-        _inFlight[messageId] = ticket;
-        return ticket;
+        _replies = replies;
+        _saved = saved;
     }
 
-    // A repeated message_id: answer when the first copy is on disk (now, if it already is).
-    public void Repeat(string messageId, string sender)
+    // A MES line with a message_id arrived. Returns its ticket when it must be
+    // processed; null when it is a repeat (already answered, or waiting for the
+    // first copy's answer): nothing more to do with this line.
+    public Ticket? Begin(string messageId, string sender)
     {
-        if (_inFlight.TryGetValue(messageId, out var ticket) && ticket.AddWaiter(sender))
-            return;
-        _replies.Ack(sender, messageId);
+        while (true)
+        {
+            var mine = new Ticket(this, messageId, sender);
+            var ticket = _inFlight.GetOrAdd(messageId, mine); // one step: a second copy always finds the first
+            if (!ReferenceEquals(ticket, mine))
+            {
+                if (ticket.AddWaiter(sender))
+                    return null; // gets the first copy's answer
+                continue;        // the first copy just finished: look again
+            }
+
+            if (_saved.Contains(messageId))
+            {
+                mine.Release(); // saved before: ack again, nothing to process
+                return null;
+            }
+            return mine;
+        }
     }
 
     public sealed class Ticket
@@ -58,7 +80,10 @@ public sealed class AckTracker
         public void PartDone()
         {
             if (Interlocked.Decrement(ref _parts) == 0)
+            {
+                _owner._saved.MarkSaved(MessageId); // before the ticket goes: a later copy then finds it saved
                 Finish(waiter => _owner._replies.Ack(waiter, MessageId));
+            }
         }
 
         // All groups handed over.
@@ -67,8 +92,8 @@ public sealed class AckTracker
         // Will never be accepted (e.g. no machine_id): tell every waiting sender why.
         public void Reject(string reason) => Finish(waiter => _owner._replies.Nack(waiter, MessageId, reason));
 
-        // Not a MES message (IO/motion) or processing failed: no reply. The
-        // adapter decides (IO/motion are not kept; a failed one is sent again).
+        // Held, or processing failed: no reply. The adapter keeps the message and
+        // sends it again; that copy is processed as new.
         public void Drop() => Finish(_ => { });
 
         internal bool AddWaiter(string sender)

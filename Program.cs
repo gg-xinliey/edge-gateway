@@ -57,6 +57,7 @@ await Task.WhenAll(
 
 // Only reached on Ctrl+C (a closed window or a hard kill never gets here),
 // so the log shows whether the last stop was a clean one. ("stopped" would mark
-// the line as a problem in the log.)
+// the line as a problem in the log.) Only ids of saved (acked) messages are in the
+// filter; rows an outbox could not write in time are logged by that outbox.
 var savedIds = messageIds.Save(messageIdsPath);
-Console.WriteLine($"[gateway] shut down cleanly (Ctrl+C): held data written to the outbox, {savedIds:N0} message_ids saved");
+Console.WriteLine($"[gateway] shut down cleanly (Ctrl+C), {savedIds:N0} message_ids of saved messages kept for the duplicate check");
