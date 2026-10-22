@@ -60,7 +60,7 @@
 
     <svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="config-page-architecture-title config-page-architecture-desc">
       <title id="config-page-architecture-title">How the config page links to the gateway</title>
-      <desc id="config-page-architecture-desc">Architecture diagram showing the browser config page calling the admin web server, which checks and saves the shared and per-machine config files, registers machine tabs, restarts the gateway or reconnects held adapters, reads its live state, and reads the outbox files and re-sends or discards failed messages.</desc>
+      <desc id="config-page-architecture-desc">Architecture diagram showing the browser config page calling the admin web server, which checks and saves the shared and per-machine config files (including extra tags assigned to MES fields, combined with +), registers machine tabs, restarts the gateway or reconnects held adapters, reads its live state, and reads the outbox files and re-sends or discards failed messages.</desc>
       <defs>
         <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
         <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/></marker>
@@ -122,7 +122,7 @@
       <rect x="40" y="332" width="160" height="56" rx="6" fill="#f5f5f5"/>
       <rect x="40" y="332" width="160" height="56" rx="6" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
       <text x="120" y="358" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Config page</text>
-      <text x="120" y="372" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">browser · tabs · polls 4 s</text>
+      <text x="120" y="372" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">tabs · assign it · polls 4 s</text>
 
       <!-- Focal: Admin web server -->
       <rect x="280" y="332" width="200" height="56" rx="6" fill="#f5f5f5"/>

@@ -62,7 +62,7 @@
     <div class="diagram">
     <svg viewBox="0 0 1280 680" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="gateway-workflow-title gateway-workflow-desc">
       <title id="gateway-workflow-title">How one line travels through the Edge Gateway</title>
-      <desc id="gateway-workflow-desc">Flowchart showing each TCP line from a machine adapter either relayed to the MQTT broker when it is IO or motion, or held without a reply when the machine has no tab or sends unknown tags, or checked for changes, saved to the outbox, acknowledged to the adapter, and posted to the MES API.</desc>
+      <desc id="gateway-workflow-desc">Flowchart showing each TCP line from a machine adapter either relayed to the MQTT broker when it is IO or motion, or held without a reply when the machine has no tab or sends unknown tags, or mapped (joined tags a+b become a_b) and checked for changes, saved to the outbox, acknowledged to the adapter, and posted to the MES API with only the MES table columns.</desc>
       <defs>
         <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
         <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/></marker>
@@ -140,11 +140,12 @@
       <text x="420" y="332" fill="#2d3142" font-size="11" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">known?</text>
 
       <!-- Step: Change check -->
-      <rect x="584" y="288" width="200" height="64" rx="6" fill="#f5f5f5"/>
-      <rect x="584" y="288" width="200" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
-      <text x="684" y="312" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Map + change check</text>
-      <text x="684" y="327" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">machine · source · group</text>
-      <text x="684" y="340" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">UTC times · sendEveryMs</text>
+      <rect x="584" y="280" width="200" height="80" rx="6" fill="#f5f5f5"/>
+      <rect x="584" y="280" width="200" height="80" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="684" y="304" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Map + change check</text>
+      <text x="684" y="319" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">machine · source · group</text>
+      <text x="684" y="332" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">UTC times · sendEveryMs</text>
+      <text x="684" y="345" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">MES columns only · a+b → a_b</text>
 
       <!-- Focal store: Outbox -->
       <rect x="856" y="292" width="160" height="56" rx="6" fill="#f5f5f5"/>
@@ -173,8 +174,8 @@
 
       <!-- ============ Callouts ============ -->
       <text x="584" y="236" fill="#2d3142" font-size="14" font-style="italic" font-family="'Instrument Serif', serif">same values as last time are not sent, even after a restart</text>
-      <path d="M 660 244 Q 676 260 683 285" fill="none" stroke="rgba(45,49,66,0.40)" stroke-width="1" stroke-dasharray="4,3"/>
-      <circle cx="684" cy="288" r="2" fill="#2d3142"/>
+      <path d="M 660 244 Q 676 256 683 277" fill="none" stroke="rgba(45,49,66,0.40)" stroke-width="1" stroke-dasharray="4,3"/>
+      <circle cx="684" cy="280" r="2" fill="#2d3142"/>
 
       <text x="1248" y="420" fill="#2d3142" font-size="14" font-style="italic" font-family="'Instrument Serif', serif" text-anchor="end">MES down: rows wait in the outbox, sent later in order</text>
       <text x="1248" y="438" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="end">retry wait 2 → 4 → 8 → 16 → 32 → 60 s, then every 60 s</text>

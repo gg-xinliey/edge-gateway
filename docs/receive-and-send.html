@@ -230,6 +230,7 @@
         <p class="eyebrow">MES answer</p>
         <div class="card-header"><span class="card-dot link"></span><h3>What happens to the row</h3></div>
         <ul>
+          <li>Payload: only the MES table columns (null when no tag). Extra fields and <code>record_timestamp</code> are not sent; tags joined with <code>+</code> arrive as one value, <code>001_xxxx</code></li>
           <li><code>2xx</code>: sent</li>
           <li><code>5xx</code>, timeout 15 s, 401/403/429: retry, wait 2 → 4 → 8 → 16 → 32 → 60 s, then every 60 s, no limit</li>
           <li>Back to 2 s as soon as MES takes a row, so the backlog starts within 60 s of MES coming back</li>

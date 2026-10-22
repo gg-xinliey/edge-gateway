@@ -909,25 +909,31 @@ function renderGroupFields(view, group, withTitle) {
       }));
   }
 
-  // Extra fields: no MES column (never in the MES payload), or every field of a non-MES group.
+  // Extra fields: no MES column (never in the MES payload): "assign it" puts the
+  // tag on a MES field. A non-MES group (MOTION, IO): every field, free text.
   const extraGrid = h('div', { class: 'grid two' },
     h('div', { class: 'head', textContent: 'incoming tag' }),
-    h('div', { class: 'head', textContent: columns ? 'extra field (no MES column, NOT sent)' : 'fieldName' }),
+    h('div', { class: 'head', textContent: columns ? 'assign it' : 'fieldName' }),
     h('div'));
   let extras = 0;
   for (const row of state.data['point-map']) {
     if (row.dataGroup !== group || (columns ?? []).includes(row.fieldName)) continue;
     if (!matches(`${row.tag} ${row.fieldName} ${row.dataGroup}`)) continue;
-    appendPointRow(extraGrid, row, false, group);
+    if (columns) appendExtraRow(extraGrid, row, group, columns);
+    else appendPointRow(extraGrid, row, false, group);
     extras++;
   }
-  if (!searching)
-    for (let i = 0; i < (columns ? 1 : BLANK_ROWS); i++) appendPointRow(extraGrid, null, false, group);
+  if (!searching) {
+    if (columns) appendExtraRow(extraGrid, null, group, columns);
+    else for (let i = 0; i < BLANK_ROWS; i++) appendPointRow(extraGrid, null, false, group);
+  }
   shown += extras;
 
   if (extras || !searching) {
     if (columns)
-      section.append(h('p', { class: 'section-note extra-note', textContent: 'Extra fields for this tab only: NOT sent to MES (the payload has only the MES fields). Move a tag to a MES field above when it belongs there.' }));
+      section.append(h('p', { class: 'section-note extra-note', textContent:
+        'Extra fields for this tab only: NOT sent to MES. Use "assign it" to put a tag on a MES field. ' +
+        'A field that already has a tag gets both, combined with + (the gateway sends the values joined with _, e.g. 001_xxxx).' }));
     section.append(extraGrid);
   }
 
@@ -959,6 +965,78 @@ function removeMesField(group, column) {
   if (!confirm(`Remove ${column} from the MES format of ${group}? Every machine stops sending it as a MES column (tags mapped to it here become extra fields). It takes effect when you save.`)) return;
   state.mesSchema[group] = state.mesSchema[group].filter(c => c !== column);
   state.mesDirty = true;
+  markDirty('point-map');
+  render();
+}
+
+// An extra row of a MES group: incoming tag + "assign it" (pick a MES field).
+// Until assigned, the tag stays an extra field (named after the tag, not sent).
+// row = null draws a blank row; typing in it adds a real row to the group.
+function appendExtraRow(grid, row, group, columns) {
+  const rows = state.data['point-map'];
+  const filled = ruleFilled(group);
+
+  const tag = h('input', {
+    value: row?.tag ?? '', 'aria-label': 'incoming tag', placeholder: row ? '' : 'new tag',
+    oninput: e => {
+      if (!row) {
+        row = { tag: '', dataGroup: group, fieldName: '' };
+        rows.push(row);
+        appendExtraRow(grid, null, group, columns); // keep a blank row available
+      }
+      const named = !row.fieldName || row.fieldName === row.tag.trim().toLowerCase();
+      row.tag = e.target.value;
+      if (named) row.fieldName = row.tag.trim().toLowerCase();
+      markDirty('point-map');
+    },
+  });
+
+  const options = columns.map(column => {
+    const has = rows.filter(r => r !== row && r.dataGroup === group && r.fieldName === column && (r.tag ?? '').trim()).map(r => r.tag);
+    return [column, has.length ? `${column}  (has ${has.join(', ')}: combine with +)`
+      : filled.has(column) ? `${column}  (set by TimeStamp rule)` : column];
+  });
+  const assign = select([['', row?.fieldName ? `not assigned: ${row.fieldName} (not sent)` : 'assign it…'], ...options], '', column => {
+    if (!column) return;
+    if (!row || !(row.tag ?? '').trim()) {
+      toast('Type the incoming tag first.', true);
+      assign.value = '';
+      return;
+    }
+    assignExtra(group, row, column);
+  }, 'assign it to a MES field');
+
+  const remove = h('button', {
+    class: 'row-x', type: 'button', textContent: '×', title: 'Remove row',
+    onclick: () => {
+      if (!row) { tag.value = ''; return; }
+      rows.splice(rows.indexOf(row), 1);
+      markDirty('point-map');
+      render();
+    },
+  });
+
+  grid.append(tag, assign, remove);
+}
+
+// "assign it": the extra tag goes onto a MES field. A field that already has a
+// tag gets both, combined with + (the gateway joins the values with _), so the
+// tag already there keeps working. With several tags on the field, the first one
+// is combined.
+function assignExtra(group, row, column) {
+  const rows = state.data['point-map'];
+  const tag = row.tag.trim();
+  const existing = rows.find(r => r !== row && r.dataGroup === group && r.fieldName === column && (r.tag ?? '').trim());
+  if (existing) {
+    const parts = existing.tag.split('+').map(t => t.trim()).filter(Boolean);
+    if (!parts.some(p => p.toLowerCase() === tag.toLowerCase())) parts.push(tag);
+    existing.tag = parts.join('+');
+    rows.splice(rows.indexOf(row), 1);
+    toast(`${column} now gets ${existing.tag} (values joined with _). Save to apply.`);
+  } else {
+    row.fieldName = column;
+    toast(`${tag} now goes to ${column}. Save to apply.`);
+  }
   markDirty('point-map');
   render();
 }
@@ -1003,7 +1081,8 @@ function appendPointRow(grid, row, showGroup, group) {
 function renderUnidentified(view, unid, groups) {
   view.append(h('p', {
     class: 'section-note',
-    textContent: 'Tags the gateway received that are not in the point map (since it last started). Pick a group and a fieldName, then save to add them.',
+    textContent: 'Tags the gateway received that are not in the point map (since it last started). Pick a group and a fieldName, then save to add them. ' +
+      'A MES field that already has a tag gets both, combined with + (values joined with _).',
   }));
 
   const list = unid.filter(u => matches(`${u.tag} ${u.lastValue}`));
@@ -1198,7 +1277,13 @@ function buildBody(key) {
     for (const [tag, edit] of Object.entries(state.unidEdits)) {
       const fieldName = edit.fieldName.trim();
       if (!edit.dataGroup && fieldName) throw new Error(`Pick a group for the unidentified tag '${tag}'.`);
-      if (edit.dataGroup) rows.push({ tag, dataGroup: edit.dataGroup, fieldName: fieldName || tag.toLowerCase() });
+      if (!edit.dataGroup) continue;
+      const field = fieldName || tag.toLowerCase();
+      // Like "assign it": a MES field that already has a tag gets both, combined with +.
+      const existing = (mesColumns(edit.dataGroup) ?? []).includes(field)
+        && rows.find(r => r.dataGroup === edit.dataGroup && r.fieldName === field && r.tag);
+      if (!existing) rows.push({ tag, dataGroup: edit.dataGroup, fieldName: field });
+      else if (!existing.tag.split('+').some(p => p.trim().toLowerCase() === tag.toLowerCase())) existing.tag += `+${tag}`;
     }
 
     const noTag = rows.find(r => !r.tag);
