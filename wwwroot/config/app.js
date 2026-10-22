@@ -47,6 +47,7 @@ const state = {
   mesDirty: false,          // MES format edited (saved together with PointMap)
   held: [],                 // machines sending without a tab: their data is held (/api/held)
   unmapped: [],             // machines whose data is held for tags their mapping doesn't know (/api/unmapped)
+  copyFrom: {},             // held machine -> mapping picked in "copy mapping from" (survives the 4 s redraw)
   failedCount: 0,           // messages MES rejected as invalid, waiting for re-send / discard (status.failed)
   failed: null,             // /api/failed: { total, rows } for the MES failures view
   failedPicked: new Set(),  // "scope|day|id" ticked in the MES failures view
@@ -151,12 +152,17 @@ async function loadUnidentified() {
 }
 
 async function loadMachineConfigs() {
+  // A failed request keeps the list: it must not look like every tab was closed.
   try { state.machineConfigs = await request('/api/machine-configs'); }
-  catch { state.machineConfigs = []; }
+  catch { renderTabs(); return; }
   if (state.scope && !state.machineConfigs.some(m => m.machineId === state.scope)) {
-    // removed meanwhile (e.g. in another browser window)
-    state.scope = '';
-    if (state.tab !== GENERAL) state.tab = SHARED;
+    // The shown machine's tab is gone (closed here or in another window): load the
+    // Template's own data, so a save can't write that machine's mapping over it (#9).
+    for (const key of MAPPING) state.dirty.delete(key);
+    await loadScope('');
+    if (state.tab !== GENERAL) { state.tab = SHARED; resetOutbox(); }
+    render();
+    return;
   }
   renderTabs();
 }
@@ -225,18 +231,8 @@ async function removeMachine(id) {
     toast(`Not removed: ${e.message}`, true);
     return;
   }
-  if (state.scope === id) {
-    state.dirty.delete('point-map');
-    state.dirty.delete('timestamp-rules');
-  }
-  await loadMachineConfigs();
+  await loadMachineConfigs(); // if it was the tab shown, this loads the Template's data
   toast(holdPolicy() ? `${id}'s tab is closed: its data is held until it gets a tab again.` : `${id} uses the shared mapping again.`);
-  if (state.tab === id || state.scope === id) {
-    await loadScope('');
-    state.tab = SHARED;
-    resetOutbox();
-    render();
-  }
 }
 
 function renderTabs() {
@@ -446,7 +442,10 @@ function renderMachines(view) {
     view.append(table(
       ['machine', 'connection', 'since', 'held lines', 'data sources', 'tags sent', 'register, copying the mapping of'],
       state.held.map(m => {
-        const from = select(sources, guessCopyFrom(m.machineId), () => {}, 'copy mapping from');
+        // The choice is kept in state: the view is redrawn every 4 s, which would reset it (#11).
+        const picked = state.copyFrom[m.machineId];
+        const choice = sources.some(([v]) => v === picked) ? picked : guessCopyFrom(m.machineId);
+        const from = select(sources, choice, v => { state.copyFrom[m.machineId] = v; }, 'copy mapping from');
         return h('tr', {},
           h('td', { class: 'strong', textContent: m.machineId }),
           h('td', { textContent: m.connection }),
@@ -519,6 +518,8 @@ async function pollMachines() {
   try { state.machines = await request('/api/machines'); } catch { return; }
   if (state.view === 'machines') await loadMachineConfigs(); // for the mapping column
   if (state.view !== 'machines') return;
+  if (document.activeElement?.tagName === 'SELECT' && $('view').contains(document.activeElement))
+    return; // a dropdown is open or in use: redrawing would close it (#11); next poll catches up
   const scroll = [window.scrollY, $('view').scrollTop]; // the refresh must not jump the page back up
   render();
   window.scrollTo(0, scroll[0]);
@@ -941,12 +942,23 @@ function renderGroupFields(view, group, withTitle) {
   return shown;
 }
 
-// The tags typed for one MES field (comma-separated) replace its rows.
+// The tags typed for one MES field (comma-separated) replace its rows. In place:
+// the rows on screen keep the same list, so their edits and × still count (#10).
 function setFieldTags(group, column, text) {
   const tags = [...new Set(text.split(',').map(t => t.trim()).filter(Boolean))];
-  state.data['point-map'] = state.data['point-map'].filter(r => !(r.dataGroup === group && r.fieldName === column));
-  for (const tag of tags) state.data['point-map'].push({ tag, dataGroup: group, fieldName: column });
+  const rows = state.data['point-map'];
+  for (let i = rows.length - 1; i >= 0; i--)
+    if (rows[i].dataGroup === group && rows[i].fieldName === column) rows.splice(i, 1);
+  for (const tag of tags) rows.push({ tag, dataGroup: group, fieldName: column });
   markDirty('point-map');
+}
+
+// Takes one row out of the point map. A row that is not in it (any more) removes
+// nothing: splice(-1, 1) would delete the last row of an unrelated group (#10).
+function removeRow(row) {
+  const rows = state.data['point-map'];
+  const i = rows.indexOf(row);
+  if (i >= 0) rows.splice(i, 1);
 }
 
 // The MES format is shared by every machine: changing it is saved with PointMap.
@@ -1010,7 +1022,7 @@ function appendExtraRow(grid, row, group, columns) {
     class: 'row-x', type: 'button', textContent: '×', title: 'Remove row',
     onclick: () => {
       if (!row) { tag.value = ''; return; }
-      rows.splice(rows.indexOf(row), 1);
+      removeRow(row);
       markDirty('point-map');
       render();
     },
@@ -1031,7 +1043,7 @@ function assignExtra(group, row, column) {
     const parts = existing.tag.split('+').map(t => t.trim()).filter(Boolean);
     if (!parts.some(p => p.toLowerCase() === tag.toLowerCase())) parts.push(tag);
     existing.tag = parts.join('+');
-    rows.splice(rows.indexOf(row), 1);
+    removeRow(row);
     toast(`${column} now gets ${existing.tag} (values joined with _). Save to apply.`);
   } else {
     row.fieldName = column;
@@ -1068,7 +1080,7 @@ function appendPointRow(grid, row, showGroup, group) {
     class: 'row-x', type: 'button', textContent: '×', title: 'Remove row',
     onclick: () => {
       if (!row) { tag.value = ''; field.value = ''; return; }
-      rows.splice(rows.indexOf(row), 1);
+      removeRow(row);
       markDirty('point-map');
       render();
     },
