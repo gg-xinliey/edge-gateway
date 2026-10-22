@@ -78,6 +78,15 @@ public sealed class IntervalSender
             foreach (var stale in state.Snapshot.Keys.Where(k => !produced.Contains(k)).ToList())
                 state.Snapshot.Remove(stale);
 
+            // A config save built a new TimeStamper, which knows no open span: carry this
+            // group's over (trigger value before this message, and its start), else the
+            // span would restart now, with no end or previous value (#7).
+            if (!ReferenceEquals(state.Stamper, config.TimeStamper))
+            {
+                RestoreSpan(config, machineId, source, dataGroup, state.Snapshot, state.SpanSince);
+                state.Stamper = config.TimeStamper;
+            }
+
             if (!ApplyChanges(state.Snapshot, fields))
                 return false; // same values as last time: nothing new for MES
 
@@ -85,6 +94,7 @@ public sealed class IntervalSender
             config.TimeStamper.Stamp(machineId, dataGroup, record, at, source);
             sendAfter = SendAfter(state, SendEveryMs(config, dataGroup));
             saved = Save(machineId, source, dataGroup, state.Snapshot, record, config);
+            state.SpanSince = saved.SpanSince;
         }
 
         // Lines of one machine come from one connection and one worker, in order,
@@ -98,19 +108,25 @@ public sealed class IntervalSender
     // saved in the outbox (and the span they had open), if there are any.
     private GroupState Restored((string Machine, string DataSource, string Group) key, ConfigSnapshot config)
     {
-        var state = new GroupState();
+        var state = new GroupState { Stamper = config.TimeStamper };
         if (!_saved.Value.TryGetValue(SavedState.KeyOf(key.Machine, key.DataSource, key.Group), out var saved))
             return state;
 
         foreach (var (name, value) in saved.Values)
             state.Snapshot[name] = PayloadParser.ParseValue(value);
-
-        var rule = config.TimeStamper.RuleFor(key.Group);
-        if (rule is { Mode: TimestampMode.Span, TriggerField: { } trigger } && saved.SpanSince is { } since
-            && DateTimeOffset.TryParse(since, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal, out var sinceAt))
-            config.TimeStamper.Restore(key.Machine, key.Group, key.DataSource, state.Snapshot.GetValueOrDefault(trigger), sinceAt);
-
+        state.SpanSince = saved.SpanSince;
+        RestoreSpan(config, key.Machine, key.DataSource, key.Group, state.Snapshot, saved.SpanSince);
         return state;
+    }
+
+    // Tells the TimeStamper the open span of a Span group: its trigger value and since when.
+    private static void RestoreSpan(ConfigSnapshot config, string machineId, string source, string dataGroup,
+        Dictionary<string, object?> snapshot, string? since)
+    {
+        var rule = config.TimeStamper.RuleFor(dataGroup);
+        if (rule is { Mode: TimestampMode.Span, TriggerField: { } trigger } && since is not null
+            && DateTimeOffset.TryParse(since, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal, out var sinceAt))
+            config.TimeStamper.Restore(machineId, dataGroup, source, snapshot.GetValueOrDefault(trigger), sinceAt);
     }
 
     private static SavedState Save(string machineId, string source, string dataGroup, Dictionary<string, object?> snapshot,
@@ -176,5 +192,7 @@ public sealed class IntervalSender
     {
         public Dictionary<string, object?> Snapshot = new();
         public long NextDueMs; // end of the current sendEveryMs interval (UTC ms)
+        public TimeStamper? Stamper; // the config's TimeStamper that last saw this group's span
+        public string? SpanSince;    // the open span's start (Span groups), as in the last record
     }
 }
