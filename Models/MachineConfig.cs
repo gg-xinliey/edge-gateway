@@ -35,6 +35,16 @@ public class MachineConfig
     [System.Text.Json.Serialization.JsonIgnore] // helper, not a setting
     public bool HoldUnregistered => !UnregisteredMachines.Trim().Equals("shared", StringComparison.OrdinalIgnoreCase);
 
+    // A machine with a tab sends a tag its mapping doesn't know:
+    //   "send" (default) the tags it knows go to MES as usual and the message is
+    //          answered; the unknown ones are left out of MES, listed under the tab's
+    //          Unidentified (with their value) and logged, until mapped or ignored
+    //   "hold" the whole message is held (not processed, not answered) until then
+    public string UnmappedTags { get; set; } = "send";
+
+    [System.Text.Json.Serialization.JsonIgnore] // helper, not a setting
+    public bool HoldUnmappedTags => UnmappedTags.Trim().Equals("hold", StringComparison.OrdinalIgnoreCase);
+
     // Rows MES has acknowledged are deleted after this many days.
     // Rows not yet delivered are never deleted.
     public int OutboxKeepSentDays { get; set; } = 7;

@@ -40,6 +40,12 @@ public class TimeStamper
         var key = $"{machineId}:{dataSource}:{dataGroup}";
         var newValue = rule.TriggerField is not null ? fields.GetValueOrDefault(rule.TriggerField) : null;
 
+        if (dataGroup.Equals("ALARM", StringComparison.OrdinalIgnoreCase))
+        {
+            StampAlarm(key, rule, fields, now, newValue);
+            return;
+        }
+
         var state = _lastState.AddOrUpdate(
             key,
             _ => (newValue, now),
@@ -55,6 +61,41 @@ public class TimeStamper
 
         fields[rule.StartField!] = FormatIso(state.since);
     }
+
+    // MES's ALARM table: start and clear time belong to the alarm itself, not to
+    // "the time between changes". Alarm on: start = when it went on (kept while it
+    // stays on). Alarm off: the same start + clear time = now. An off with no known
+    // on before it (e.g. the first message) gets neither.
+    private void StampAlarm(string key, TimestampRule rule, Dictionary<string, object?> fields, DateTimeOffset now, object? value)
+    {
+        var on = IsOn(value);
+        var known = _lastState.TryGetValue(key, out var before);
+        var wasOn = known && IsOn(before.value);
+
+        if (on)
+        {
+            var since = wasOn ? before.since : now;
+            _lastState[key] = (value, since);
+            fields[rule.StartField!] = FormatIso(since);
+            return;
+        }
+
+        if (wasOn)
+        {
+            fields[rule.StartField!] = FormatIso(before.since);
+            fields[rule.EndField!] = FormatIso(now);
+        }
+        _lastState[key] = (value, now);
+    }
+
+    private static bool IsOn(object? value) => value switch
+    {
+        null => false,
+        bool b => b,
+        double d => d != 0,
+        string s => !(s.Trim() is "" or "0" or "false" or "False" or "FALSE" or "off" or "OFF" or "Off"),
+        _ => true
+    };
 
     // After a restart: the span that was open (its trigger value and start), read
     // back from the outbox, so the next change closes it with the right start

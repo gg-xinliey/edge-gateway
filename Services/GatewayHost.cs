@@ -156,6 +156,7 @@ public sealed class GatewayHost
         var acks = new AckTracker(replies, _messageIds);
 
         var rejected = new ThrottledLog(TimeSpan.FromSeconds(60));
+        var unknownTags = new ThrottledLog(TimeSpan.FromSeconds(60)); // unmappedTags = send: once a minute per machine
 
         // One line from one machine, parsed once: IO/motion lines go to MQTT,
         // everything else to MES. "message_id", "machine_id", "data_source" and
@@ -278,14 +279,34 @@ public sealed class GatewayHost
                     ? at
                     : null;
 
-            // A tag the mapping doesn't know: the whole message is held (MES
-            // accepts no UNIDENTIFIED group, and a message is never sent half).
+            // A tag the mapping doesn't know (GatewayConfig unmappedTags):
+            //   "send" (default): the known tags go on, the unknown ones are left out of
+            //          MES (they are on the tab's Unidentified list) and logged, so one
+            //          new tag doesn't stop the machine's data;
+            //   "hold": the whole message is held until every tag is mapped or ignored.
             var config = store.Current;
+
+            // NXT sends alarm on/off as two data_sources (event names) and no alarm_status
+            // tag. One source + alarm_status 1/0 lets the ALARM span close (start and clear
+            // time). Only when the mapping knows alarm_status, so nothing is held for it.
+            // shortcut: event names hard-coded, move to config when another machine type does this
+            if (dataSource is "MCALARMON" or "MCALARMOFF" && config.Normalizer.IsMapped("alarm_status"))
+            {
+                rawTags["alarm_status"] = dataSource == "MCALARMON" ? 1.0 : 0.0;
+                dataSource = "MCALARM";
+            }
+
             var unmapped = config.Normalizer.Unmapped(rawTags);
             if (unmapped.Count > 0)
             {
-                HoldUnmapped(sender, ticket, machineId, store.Label, unmapped, dataSource);
-                return;
+                if (machine.HoldUnmappedTags)
+                {
+                    HoldUnmapped(sender, ticket, machineId, store.Label, unmapped, dataSource);
+                    return;
+                }
+                unknownTags.Write($"unknown|{machineId}",
+                    $"[ingest] {machineId} sent tags its mapping doesn't know ({string.Join(", ", unmapped)}): the other tags were sent, these are left out " +
+                    $"until they are mapped or set to ignore on the {store.Label ?? "Template"} tab (PointMap > Unidentified)");
             }
             _traffic?.Message(machineId, sender, "MES", dataSource, messageId);
 
@@ -295,8 +316,9 @@ public sealed class GatewayHost
 
             foreach (var (dataGroup, fields) in buckets)
             {
-                // "ignore" tags are known but never sent.
-                if (dataGroup.Equals(Normalizer.IgnoredGroup, StringComparison.OrdinalIgnoreCase))
+                // "ignore" tags are known but never sent; unknown tags never go to MES.
+                if (dataGroup.Equals(Normalizer.IgnoredGroup, StringComparison.OrdinalIgnoreCase)
+                    || dataGroup.Equals(Normalizer.UnidentifiedGroup, StringComparison.OrdinalIgnoreCase))
                     continue;
 
                 if (TwinRouter.IsTwinOnly(dataGroup))
@@ -348,6 +370,7 @@ public sealed class GatewayHost
             heldUnmapped.Write($"unmapped|{machineId}",
                 $"[ingest] {machineId} sent tags its mapping doesn't know ({string.Join(", ", tags)}): its data cannot be used until they are mapped or set to ignore on the {mapping ?? "Template"} tab (held, not answered, the adapter keeps it)");
         }
+
 
         var duplicates = new ThrottledLog(TimeSpan.FromSeconds(60));
 

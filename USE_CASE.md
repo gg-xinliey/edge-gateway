@@ -56,8 +56,9 @@ Gateway → MQTT, topic `svi/TEST/ASSY-L01-FCT-01/IO/input`:
 - `message_id` is required, and is checked **first**: the same `message_id` again within 10 minutes means the same line came twice (e.g. resent after a reconnect), so it is ignored. Any text works; a GUID is best. The gateway remembers the ids over a clean restart (Stop Gateway.bat / Ctrl+C), not after a crash or a closed window. IO/motion lines don't need one, but one that has a `message_id` is checked the same way.
 - `machine_id` is required. `timestamp` is optional: it is when the event happened on the machine, and the gateway uses it for MES times (otherwise the arrival time is used). A timestamp with `Z` or an offset (`+07:00`) is taken as written. **Without one it is UTC** (setting `timestampsWithoutZone` in machine-config.json: `UTC` or `local`).
 - Each `data_source` is kept apart: the same data group from two data sources (e.g. `mcstatechange` and `mcstartstate`, both with traceability tags) gives **two separate envelopes**, even when they arrive at the same time. Changes, intervals and Span times are tracked per machine + data_source + group.
+- NXT alarms come as two event names, `MCALARMON` and `MCALARMOFF`, with no status tag. When the machine's tab maps `alarm_status`, both become data_source `MCALARM` with `alarm_status` 1 (on) or 0 (off). Then the ALARM record of an alarm going off has the same `alarm_start_time` as its on record, plus `alarm_clear_time`. An off with no on before it gets neither time.
 - **All MES times are sent in UTC with `Z`**, e.g. `2026-10-16T08:25:28.086Z` (`record_timestamp`, start/end times, `publish_timestamp`). MQTT keeps the SpotWelding local format `yyyy-MM-dd HH:mm:ss.fff`. `data_source` is optional: it goes into the envelope's `data_source` (otherwise `dataSource` from machine-config.json is used). None of these three is a data tag.
-- Any other field is a data tag. **Every tag must be known to the machine's mapping** (mapped, or set to ignore). A message with an unknown tag is **held** as a whole: nothing goes to MES under `UNIDENTIFIED` (MES has no such group) and nothing is sent half. See "A tag the mapping doesn't know" below.
+- Any other field is a data tag, mapped by the machine's tab (or set to ignore). An unknown tag never goes to MES (MES has no `UNIDENTIFIED` group): by default the rest of the message goes on without it; with `unmappedTags` = `hold` the whole message is held. See "A tag the mapping doesn't know" below.
 
 **Reply to the adapter** (one JSON line back on the same TCP connection, per MES message):
 
@@ -110,7 +111,7 @@ Gateway → MQTT, topic `svi/TEST/ASSY-L01-FCT-01/IO/input`:
 | MES line without `machine_id` | **Rejected**, so data is never filed under the wrong machine | Once a minute per sender: `[ingest] line from <ip> rejected: no machine_id (+N more ...)`. Its `message_id` is forgotten, so the corrected line can be sent with the same id |
 | CSV line `TAG,value` | **Rejected**: it can't carry a `machine_id` | Same as above |
 | Same values as the last message | Nothing sent to MES (no change) | — |
-| Tag the machine's mapping doesn't know | The whole message is **held**: not processed, not answered, the adapter keeps it. Released (resent) once the tag is mapped or set to ignore | Pop-up + log line once a minute: `[ingest] NXT102 sent tags its mapping doesn't know (source_ref): ...`; the machine's tab shows ⚠ and a red bar listing the tags |
+| Tag the machine's mapping doesn't know | `unmappedTags` = `send` (default): the known tags go to MES, the unknown ones are left out until mapped. `hold`: the whole message is **held** (not answered, the adapter keeps it) until the tag is mapped or set to ignore | Log line once a minute: `[ingest] NXT102 sent tags its mapping doesn't know (source_ref): ...`; the tags are listed under the tab's ⚠ Unidentified (`hold`: also ⚠ on the tab and a red bar) |
 | Line that is not valid JSON | Skipped | Once a minute per sender: `[tcp] failed to process message from <ip> ...` with a count |
 | Broker down | MQTT messages are dropped, not queued; retried after 5 s | `[mqtt] cannot connect ...`; `[mqtt] N messages dropped` once a minute |
 | MES down, unreachable or too slow (no answer in 15 s), or answers 5xx / 401 / 403 / 407 / 408 / 429 | Kept in the outbox and retried, each machine's data in order. The wait between tries grows: 2 s, 4 s, 8 s … up to 60 s, back to 2 s once MES takes something. So after MES is back it can take up to 60 s before the backlog starts to drain | `[forwarder] send failed ... will retry in N s or more`, once a minute; backlog grows in `[stats]`. When MES is back: one `[forwarder] MES reachable again after N s (N tries) — N waiting rows delivered` line |
@@ -152,13 +153,15 @@ All files are in the `Config\` folder **next to the running exe**, e.g. `bin\Rel
 - The **×** on a machine's tab removes its tab (with `hold`, its data is held again). Its files are kept in `Config\machines-removed\`, and whatever is in its outbox is still delivered (visible under Template → Outbox).
 - If a machine's own files can't be read (edited by hand wrongly), its lines are held the same way until the files are fixed.
 
-**A tag the mapping doesn't know** (e.g. the data team adds `source_ref`)
-- MES accepts no `UNIDENTIFIED` group, so such a message is **held as a whole**: not processed, not answered, the adapter keeps it. Nothing incomplete reaches MES.
-- You see: a pop-up and a log line (once a minute per machine), **⚠** on the machine's tab, and a red bar on that tab listing the unknown tags with **show them**.
+**A tag the mapping doesn't know** (e.g. the data team adds `source_ref`) — GatewayConfig `unmappedTags`:
+
+| Setting | What happens to such a message |
+|---|---|
+| `send` (default) | The tags the mapping knows go to MES as usual and the message is acked: one new tag does not stop the machine's data. The unknown tags are **left out of MES** (never as `UNIDENTIFIED`) and listed under the tab's PointMap → **⚠ Unidentified** with their last value. Log line once a minute per machine: `[ingest] NXT102 sent tags its mapping doesn't know (source_ref): the other tags were sent, these are left out ...`. Values of a tag before it is mapped are not sent later. |
+| `hold` | The whole message is **held**: not processed, not answered, the adapter keeps it. A pop-up and a log line, **⚠** on the machine's tab and a red bar listing the tags. When the machine's last unknown tag is handled, the gateway closes its connection; the adapter sends the held messages again, and they go through complete. Until then that machine's MES data waits. |
+
 - Fix it on that tab: PointMap → **⚠ Unidentified** → for each tag pick a group and field (a MES column, or an extra field), or **ignore (never sent)** for a tag MES doesn't need. Then **save**.
-- When the machine's last unknown tag is handled, the gateway closes its connection; the adapter reconnects and sends the held messages again, and they go through complete.
 - Ignored tags are kept in PointMap under the group `IGNORED`; remove a row there to stop ignoring it.
-- Until it is fixed, **that machine's MES data waits** (other machines are not affected).
 
 **Logs (the gateway usually runs in the background)**
 - Every console line is also written to `logs\gateway-yyyy-MM-dd.log` next to the exe. There's one file per day, and files are deleted after 14 days. Problem lines are marked `ERR`.

@@ -136,6 +136,8 @@ public static class ConfigValidator
             return "gatewayId is empty.";
         if (machine.UnregisteredMachines.Trim().ToLowerInvariant() is not ("hold" or "shared"))
             return "unregisteredMachines must be hold or shared.";
+        if (machine.UnmappedTags.Trim().ToLowerInvariant() is not ("send" or "hold"))
+            return "unmappedTags must be send or hold.";
         if (!System.Net.IPAddress.TryParse(machine.ListenAddress, out var listen))
             return "listenAddress must be an IP address, e.g. 0.0.0.0 (all) or 192.168.250.78.";
         if (!listen.Equals(System.Net.IPAddress.Any) && !System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces()
