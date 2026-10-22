@@ -63,13 +63,11 @@ public sealed class GatewayConfigStore
         var pointMapPath = Path.Combine(_configRoot, "point-map.json");
         var timestampRulesPath = Path.Combine(_configRoot, "timestamp-rules.json");
 
-        var pointMap = JsonSerializer.Deserialize<List<PointMapEntry>>(
-            File.ReadAllText(pointMapPath), _jsonOptions)
-            ?? throw new InvalidOperationException("Config/point-map.json did not contain a valid list.");
+        var pointMap = Read<List<PointMapEntry>>(pointMapPath)
+            ?? throw new InvalidOperationException($"{pointMapPath} did not contain a valid list.");
 
-        var timestampRules = JsonSerializer.Deserialize<Dictionary<string, TimestampRule>>(
-            File.ReadAllText(timestampRulesPath), _jsonOptions)
-            ?? throw new InvalidOperationException("Config/timestamp-rules.json did not contain a valid object.");
+        var timestampRules = Read<Dictionary<string, TimestampRule>>(timestampRulesPath)
+            ?? throw new InvalidOperationException($"{timestampRulesPath} did not contain a valid object.");
 
         return new ConfigSnapshot(
             pointMap,
@@ -77,6 +75,19 @@ public sealed class GatewayConfigStore
             new Normalizer(pointMap, _unidentified),
             new TimeStamper(timestampRules),
             LoadMesColumns());
+    }
+
+    // A broken or missing file: the error names the file, not only the JSON position.
+    private T? Read<T>(string path)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<T>(File.ReadAllText(path), _jsonOptions);
+        }
+        catch (Exception ex) when (ex is JsonException or IOException)
+        {
+            throw new InvalidDataException($"{path}: {ex.Message}", ex);
+        }
     }
 
     // Config/mes-schema.json: per data group, the columns of its MES table (from

@@ -93,8 +93,25 @@ public sealed class MachineRegistry
             return $"{machineId} has no own mapping.";
         if (entry.Store is null)
             return Load(entry.Id, entry.Folder).Error;
-        entry.Store.Reload();
-        return null;
+        return ReloadOrHold(entry);
+    }
+
+    // A file broken by hand must only hold that machine's lines, not stop the
+    // gateway (issue #4): the machine becomes unreadable, like at a cold start.
+    // Null = reloaded, else why not.
+    private string? ReloadOrHold(Entry entry)
+    {
+        try
+        {
+            entry.Store!.Reload();
+            return null;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[config] {entry.Id}: own mapping can't be read, its lines are held until it is fixed: {ex.Message}");
+            _machines[entry.Id] = new Entry(entry.Id, entry.Folder, null, entry.Unidentified, ex.Message);
+            return ex.Message;
+        }
     }
 
     // Gives a machine its own mapping, starting from a copy of copyFrom's
@@ -160,7 +177,7 @@ public sealed class MachineRegistry
             if (entry.Store is null)
                 Load(entry.Id, entry.Folder); // was unreadable: try again
             else
-                entry.Store.Reload();
+                ReloadOrHold(entry);
         }
     }
 
