@@ -125,6 +125,13 @@ public sealed class AdminWebServer
         {
             var path = context.Request.Url?.AbsolutePath ?? "/";
 
+            var refused = Refused(context.Request);
+            if (refused is not null)
+            {
+                await WriteJsonAsync(context.Response, 403, new { error = refused });
+                return;
+            }
+
             if (path.StartsWith("/api/", StringComparison.OrdinalIgnoreCase))
             {
                 await HandleApiAsync(context, path);
@@ -142,6 +149,26 @@ public sealed class AdminWebServer
         {
             context.Response.Close();
         }
+    }
+
+    // Only this PC, and changes only from the config page itself (issue #12): a web
+    // page from anywhere else, opened in a browser on this PC, could otherwise POST to
+    // the API (discard failed messages, restart, add tabs). A browser marks such a
+    // request with Sec-Fetch-Site / Origin; scripts on this PC send neither and still work.
+    // Null = allowed, else why not.
+    private string? Refused(HttpListenerRequest request)
+    {
+        if (request.RemoteEndPoint is { } remote && !IPAddress.IsLoopback(remote.Address))
+            return "The config page only works on the gateway PC itself.";
+        if (request.HttpMethod is "GET" or "HEAD")
+            return null;
+
+        var site = request.Headers["Sec-Fetch-Site"];
+        var origin = request.Headers["Origin"];
+        var fromOtherSite = (site is not null && site is not ("same-origin" or "none"))
+            || (origin is not null && !origin.Equals($"http://localhost:{_port}", StringComparison.OrdinalIgnoreCase)
+                                   && !origin.Equals($"http://127.0.0.1:{_port}", StringComparison.OrdinalIgnoreCase));
+        return fromOtherSite ? "Changes are only accepted from the config page itself." : null;
     }
 
     private async Task HandleApiAsync(HttpListenerContext context, string path)
