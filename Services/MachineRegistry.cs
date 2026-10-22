@@ -163,7 +163,7 @@ public sealed class MachineRegistry
 
         var removed = Path.Combine(Shared.ConfigRoot, FolderName + "-removed");
         Directory.CreateDirectory(removed);
-        Directory.Move(entry.Folder, Path.Combine(removed, $"{entry.Id}-{DateTime.Now:yyyyMMdd-HHmmss}"));
+        Directory.Move(entry.Folder, Path.Combine(removed, string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{entry.Id}-{DateTime.Now:yyyyMMdd-HHmmss}")));
         Console.WriteLine($"[config] {entry.Id}: own mapping removed (kept in Config/{FolderName}-removed); it uses the shared mapping now");
         return true;
     }

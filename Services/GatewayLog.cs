@@ -71,7 +71,7 @@ public sealed class GatewayLog
 
             try
             {
-                FileFor(now).WriteLine($"{now:yyyy-MM-dd HH:mm:ss.fff} {(isError ? "ERR " : "    ")}{text}");
+                FileFor(now).WriteLine(string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{now:yyyy-MM-dd HH:mm:ss.fff} {(isError ? "ERR " : "    ")}{text}"));
             }
             catch
             {
@@ -90,7 +90,7 @@ public sealed class GatewayLog
         Directory.CreateDirectory(_logDir);
         _fileDate = now.Date;
         _file = new StreamWriter(
-            new FileStream(Path.Combine(_logDir, $"gateway-{now:yyyy-MM-dd}.log"), FileMode.Append, FileAccess.Write, FileShare.ReadWrite),
+            new FileStream(Path.Combine(_logDir, string.Create(System.Globalization.CultureInfo.InvariantCulture, $"gateway-{now:yyyy-MM-dd}.log")), FileMode.Append, FileAccess.Write, FileShare.ReadWrite),
             new UTF8Encoding(false)) { AutoFlush = true };
 
         DeleteOldFiles(now);

@@ -386,7 +386,8 @@ public sealed class Outbox : IAsyncDisposable
 
     // ---- files ----
 
-    private static string DayFile(DateTime day) => $"outbox-{day:yyyy-MM-dd}.db";
+    // Invariant culture: on a Thai-locale PC the default calendar is Buddhist (outbox-2569-..., #5).
+    private static string DayFile(DateTime day) => string.Create(CultureInfo.InvariantCulture, $"outbox-{day:yyyy-MM-dd}.db");
 
     // Legacy file first, then day files oldest first.
     private List<string> AllFiles() =>
@@ -410,8 +411,16 @@ public sealed class Outbox : IAsyncDisposable
                 _delivered.Add(file);
     }
 
-    private static bool TryDayOf(string file, out DateTime day) =>
-        DateTime.TryParseExact(file, "'outbox-'yyyy-MM-dd'.db'", CultureInfo.InvariantCulture, DateTimeStyles.None, out day);
+    // A file named on a Thai-locale PC before #5 (outbox-2569-...) counts as its Gregorian
+    // day (Buddhist year - 543), so it is cleaned up like the others.
+    private static bool TryDayOf(string file, out DateTime day)
+    {
+        if (!DateTime.TryParseExact(file, "'outbox-'yyyy-MM-dd'.db'", CultureInfo.InvariantCulture, DateTimeStyles.None, out day))
+            return false;
+        if (day.Year >= 2400)
+            day = day.AddYears(-543);
+        return true;
+    }
 
     // The day a file's data belongs to. Day files: from the name. Legacy
     // outbox.db: its newest row (not the file time, which acknowledging
