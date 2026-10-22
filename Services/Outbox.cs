@@ -42,6 +42,7 @@ public sealed class Outbox : IAsyncDisposable
     private readonly Task _writer;
 
     private readonly object _filesSync = new();
+    private readonly object _schemaSync = new(); // one schema creation at a time; see OpenFile
     private readonly HashSet<string> _initialised = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _delivered = new(StringComparer.OrdinalIgnoreCase); // past days with no unsent rows
 
@@ -430,11 +431,28 @@ public sealed class Outbox : IAsyncDisposable
         var conn = new SqliteConnection($"Data Source={Path.Combine(_dir, file)}");
         conn.Open();
 
-        bool firstTime;
-        lock (_filesSync)
-            firstTime = _initialised.Add(file);
+        // A file counts as initialised only once its schema exists: a reader that opens a
+        // brand-new day file (the MES sender, just after midnight) waits here instead of
+        // querying a file that has no table yet ("no such table: outbox", issue #1).
+        lock (_schemaSync)
+        {
+            bool known;
+            lock (_filesSync)
+                known = _initialised.Contains(file);
+            if (!known)
+            {
+                try { CreateSchema(conn); }
+                catch { conn.Dispose(); throw; }
+                lock (_filesSync)
+                    _initialised.Add(file);
+            }
+        }
 
-        if (firstTime)
+        return conn;
+    }
+
+    private static void CreateSchema(SqliteConnection conn)
+    {
         {
             using var cmd = conn.CreateCommand();
             cmd.CommandText = @"
@@ -476,8 +494,6 @@ public sealed class Outbox : IAsyncDisposable
             cmd.CommandText = "CREATE INDEX IF NOT EXISTS ix_outbox_failed ON outbox (id) WHERE failed_at IS NOT NULL AND discarded_at IS NULL;";
             cmd.ExecuteNonQuery();
         }
-
-        return conn;
     }
 
     private static string Now() => DateTimeOffset.UtcNow.ToString("o");

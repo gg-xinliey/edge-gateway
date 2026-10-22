@@ -68,6 +68,28 @@ public class MesForwarder
     {
         while (!ct.IsCancellationRequested)
         {
+            try
+            {
+                await PassAsync(ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                // An outbox error (file locked past the busy timeout, disk full ...) must not
+                // stop the gateway: rows stay on disk and are sent on a later pass (issue #1).
+                _problems.Write("outbox", $"{_tag} outbox error, trying again in {FirstRetryDelay.TotalSeconds:0} s: {ex.Message}");
+                await Task.Delay(FirstRetryDelay, ct);
+            }
+        }
+    }
+
+    // One pass: read due rows, send them per machine in order, mark them, then wait as needed.
+    private async Task PassAsync(CancellationToken ct)
+    {
+        {
             var chunk = _outbox.ReadUnsent(ChunkSize);
             var delivered = new ConcurrentBag<OutboxKey>();
             var rejected = new ConcurrentBag<(OutboxKey Key, string Error)>();
