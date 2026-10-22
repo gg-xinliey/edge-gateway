@@ -72,6 +72,12 @@ public sealed class IntervalSender
 
         lock (state)
         {
+            // Values of fields the current mapping no longer produces (tag remapped or set
+            // to ignore, also when restored after a restart) must not keep going to MES (#6).
+            var produced = config.Normalizer.FieldsOf(dataGroup);
+            foreach (var stale in state.Snapshot.Keys.Where(k => !produced.Contains(k)).ToList())
+                state.Snapshot.Remove(stale);
+
             if (!ApplyChanges(state.Snapshot, fields))
                 return false; // same values as last time: nothing new for MES
 

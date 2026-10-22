@@ -33,7 +33,18 @@ public class Normalizer
             .Select(p => (p, p.Tag.Split(JoinMark, StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)))
             .ToList();
         _joinParts = new HashSet<string>(_joins.SelectMany(j => j.Parts), StringComparer.OrdinalIgnoreCase);
+        _fieldsByGroup = pointMap
+            .GroupBy(p => p.DataGroup, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => (IReadOnlySet<string>)g.Select(p => p.FieldName).ToHashSet(StringComparer.OrdinalIgnoreCase),
+                StringComparer.OrdinalIgnoreCase);
     }
+
+    private readonly Dictionary<string, IReadOnlySet<string>> _fieldsByGroup;
+    private static readonly IReadOnlySet<string> NoFields = new HashSet<string>();
+
+    // The field names this mapping can put into a data group. A remembered value of
+    // any other field is stale (its tag was remapped or set to ignore).
+    public IReadOnlySet<string> FieldsOf(string dataGroup) => _fieldsByGroup.GetValueOrDefault(dataGroup) ?? NoFields;
 
     // Mapped to a real group, set to ignore, or part of a joined field.
     public bool IsMapped(string tag) =>
