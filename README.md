@@ -57,7 +57,7 @@ and `state\` from `bin\Debug\net8.0\` into `data\`, and set `listenAddress` to `
 container). `localhost` in `mesUrl` or the broker means the container itself: use
 `host.docker.internal` for this PC.
 
-Only one gateway can run at a time (same ports). The firewall rule for TCP 9000 is IT's.
+Only one gateway can run at a time (same ports).
 On a Linux host, `data\` must be writable by the container's user (uid 1654).
 
 ## Where things are
@@ -109,11 +109,9 @@ They run while the gateway runs. End-to-end check with MachineSim and the fake M
 
 ## Known limits
 
-- The gateway PC still runs the console window with its data under `bin\`. The Docker image is
-  ready but not built or run yet (no Docker on the development PC).
+- Port 9000 has no login: keep it on the machine network.
 - Docker Desktop (Windows) may show every machine's connection from one Docker address on the
   Machines page; then all adapters share one worker (about 10,000 lines/s).
-- Port 9000 has no login: keep it on the machine network (firewall rule by IT).
 - The real MES API is not confirmed yet (repeat `event_id`, 409, timeout, login). After a gateway crash a row
   can reach MES twice with the same `event_id`; MES must drop the repeat.
 - Disk: a day file with a failed row is kept until the row is re-sent or discarded; there is no free-space alarm.
