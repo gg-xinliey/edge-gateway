@@ -105,9 +105,7 @@ They run while the gateway runs. End-to-end check with MachineSim and the fake M
 
 ## Known limits
 
-- The gateway PC still runs the console window with its data under `bin\`. The service is ready
-  (`service\`) but not installed yet.
-- Port 9000 has no login: keep it on the machine network (firewall rule by IT).
+- Port 9000 has no login: keep it on the machine network.
 - The real MES API is not confirmed yet (repeat `event_id`, 409, timeout, login). After a gateway crash a row
   can reach MES twice with the same `event_id`; MES must drop the repeat.
 - Disk: a day file with a failed row is kept until the row is re-sent or discarded; there is no free-space alarm.
