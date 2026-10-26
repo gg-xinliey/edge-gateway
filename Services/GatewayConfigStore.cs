@@ -63,10 +63,10 @@ public sealed class GatewayConfigStore
         var pointMapPath = Path.Combine(_configRoot, "point-map.json");
         var timestampRulesPath = Path.Combine(_configRoot, "timestamp-rules.json");
 
-        var pointMap = Read<List<PointMapEntry>>(pointMapPath)
+        var pointMap = Read<List<PointMapEntry>>(pointMapPath, "point-map")
             ?? throw new InvalidOperationException($"{pointMapPath} did not contain a valid list.");
 
-        var timestampRules = Read<Dictionary<string, TimestampRule>>(timestampRulesPath)
+        var timestampRules = Read<Dictionary<string, TimestampRule>>(timestampRulesPath, "timestamp-rules")
             ?? throw new InvalidOperationException($"{timestampRulesPath} did not contain a valid object.");
 
         return new ConfigSnapshot(
@@ -78,16 +78,26 @@ public sealed class GatewayConfigStore
     }
 
     // A broken or missing file: the error names the file, not only the JSON position.
-    private T? Read<T>(string path)
+    // key: the config page's name for the file; a file edited by hand gets the page's
+    // checks too, so a mistake holds the machine (red tab) instead of failing every
+    // message (#16).
+    private T? Read<T>(string path, string key)
     {
+        string json;
+        T? value;
         try
         {
-            return JsonSerializer.Deserialize<T>(File.ReadAllText(path), _jsonOptions);
+            json = File.ReadAllText(path);
+            value = JsonSerializer.Deserialize<T>(json, _jsonOptions);
         }
         catch (Exception ex) when (ex is JsonException or IOException)
         {
             throw new InvalidDataException($"{path}: {ex.Message}", ex);
         }
+
+        if (Admin.ConfigValidator.Validate(key, json, _jsonOptions, adminPort: 0) is { } problem)
+            throw new InvalidDataException($"{path}: {problem}");
+        return value;
     }
 
     // Config/mes-schema.json: per data group, the columns of its MES table (from

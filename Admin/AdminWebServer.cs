@@ -523,7 +523,17 @@ public sealed class AdminWebServer
                 if (File.Exists(filePath))
                     File.Copy(filePath, backupPath, overwrite: true);
 
-                await File.WriteAllTextAsync(filePath, normalized + Environment.NewLine, Encoding.UTF8);
+                // Written in full next to it (on disk), then swapped in: a power cut while
+                // saving leaves the old file or the new one, never half of one (#17).
+                var tempPath = filePath + ".tmp";
+                await using (var file = new FileStream(tempPath, FileMode.Create, FileAccess.Write))
+                await using (var writer = new StreamWriter(file, Encoding.UTF8))
+                {
+                    await writer.WriteAsync(normalized + Environment.NewLine);
+                    await writer.FlushAsync();
+                    file.Flush(flushToDisk: true);
+                }
+                File.Move(tempPath, filePath, overwrite: true);
 
                 var restartToApply = RestartToApply.Contains(key);
 

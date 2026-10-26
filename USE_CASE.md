@@ -85,13 +85,13 @@ Gateway → MQTT, topic `svi/TEST/ASSY-L01-FCT-01/IO/input`:
 - The envelope has every `machine_events` column the gateway can know. MES fills `id` and `received_at` itself.
 - `event_time` is the machine's `timestamp` (the arrival time when it sent none). `event_id` is made from the `message_id` and the data group, so it is the same every time that message is sent or resent; MES can drop repeats by `event_id`.
 - The payload has **every column of the group's MES table, in the table's order, `null` when not sent**. The columns per group are in `Config\mes-schema.json` (from the MES data dictionary). Edit that file when MES changes a table, then restart.
-- Fields that have no MES column (e.g. Nexim's `components`, `cycle_active`) are still sent after the columns; MES keeps the whole payload in `payload_json`.
-- A tag only fills a MES column when its **fieldName in PointMap is the column name** (e.g. `work_order_no`, not `work_order`). Otherwise the column is `null` and the field is sent as an extra.
+- Fields that have no MES column (extra fields, e.g. Nexim's `components`, `cycle_active`) are **not sent to MES**. To send one, add it to the group's MES format (**+ MES field**) once MES has the column.
+- A tag only fills a MES column when its **fieldName in PointMap is the column name** (e.g. `work_order_no`, not `work_order`). Otherwise the column is `null` and the field is not sent.
 - Put many tags in one message. One tag per line costs far more work.
 - Each tag is mapped through `point-map.json` into its data group.
 
 **When MES data is sent** (per machine and data group):
-- A message that changes nothing is ignored. So is a message that only changes fields with no MES column (extras such as `components`). MES would get a row that looks the same as the last one. The new extra values are kept and go with the next real change.
+- A message that changes nothing is ignored. So is a message that only changes fields with no MES column (extras such as `components`). MES would get a row that looks the same as the last one.
 - Each change becomes one record: all current values of that group, with timestamps. It is **saved to the outbox file right away**.
 - `sendEveryMs` paces MES per group: the first change after a quiet interval is sent at once; changes within the next `sendEveryMs` wait until it is over, then **all** of them are sent, oldest first. Example with PRODUCTION every 10 s: a change at 10:00:00 goes at once; changes at 10:00:03 and 10:00:07 both go at 10:00:10.
 - No change, nothing is sent: there are no periodic repeats.
@@ -154,7 +154,7 @@ All files are in the `Config\` folder **next to the running exe**, e.g. `bin\Rel
 - **Register a held machine:** General → Machines → pick whose mapping to copy (a machine with a similar name is suggested) → **register**. The machine gets its tab, the gateway closes its connection so the adapter reconnects and sends the held data again, and that data is processed with the new tab. The tags it sent are listed under its PointMap → ⚠ Unidentified, to map.
 - IO/motion lines are never held: they don't use the mapping.
 - The **×** on a machine's tab removes its tab (with `hold`, its data is held again). Its files are kept in `Config\machines-removed\`, and whatever is in its outbox is still delivered (visible under Template → Outbox).
-- If a machine's own files can't be read (edited by hand wrongly), its lines are held the same way until the files are fixed.
+- If a machine's own files can't be read, or break a rule the config page checks (edited by hand, e.g. a Span rule without `endField`), its lines are held the same way until the files are fixed. The tab is red with the file and the problem. The same mistake in the shared files stops the gateway (it retries every 60 s) until fixed.
 
 **A tag the mapping doesn't know** (e.g. the data team adds `source_ref`) — GatewayConfig `unmappedTags`:
 
@@ -221,7 +221,7 @@ Open **http://localhost:5100/config/**. It only opens on the gateway PC itself.
 
 **Machines** (read-only, updates every 4 s)
 1. One row per `machine_id` the gateway has received: a dot for the state, the connection (ip:port), the last message, and the message counts.
-   - Green = connection open and a message in the last 60 s. Orange = open but quiet for over 60 s. Grey = disconnected.
+   - Green = connection open and a message in the last 60 s. Orange = open but quiet for over 60 s. Grey = disconnected. A machine that lost power or its cable shows grey after about 90 s (TCP keepalive).
    - **messages** = all lines with this machine; **to MES** = lines that went into the outbox; **to MQTT** = lines relayed to the broker.
    - **repeats** (orange if above 0) = lines ignored because their `message_id` was already received in the last 10 min.
    - **time warnings** (orange if above 0) = messages whose `timestamp` couldn't be read (arrival time used) or was more than 1 h from arrival (wrong machine clock, wrong `timestampsWithoutZone`, or an old message resent). The log says which.

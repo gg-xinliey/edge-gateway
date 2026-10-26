@@ -117,6 +117,13 @@ public class TcpIngestServer
             await using (var stream = client.GetStream())
             using (var reader = new StreamReader(stream, Encoding.UTF8))
             {
+                // A peer that is gone without closing (power off, cable pulled) is noticed in
+                // about 90 s (60 s quiet + 3 probes 10 s apart), not left "open" forever (#18).
+                client.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+                client.Client.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveTime, 60);
+                client.Client.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveInterval, 10);
+                client.Client.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveRetryCount, 3);
+
                 var replying = _replies is null ? Task.CompletedTask : ReplyHub.WriteAsync(stream, _replies.Open(sender));
                 try
                 {
