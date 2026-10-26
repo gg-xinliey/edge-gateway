@@ -48,7 +48,7 @@
     <div class="diagram">
     <svg viewBox="0 0 1280 880" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="receive-and-send-title receive-and-send-desc">
       <title id="receive-and-send-title">How we receive data, answer the adapter, and send to MES</title>
-      <desc id="receive-and-send-desc">Sequence diagram showing the adapter sending lines to the gateway: IO and motion lines are relayed to the MQTT broker without a reply, MES lines are checked, saved to the outbox and only then acknowledged to the adapter, and the outbox rows are posted to MES, marked sent on a 2xx answer, otherwise retried or moved to failed messages.</desc>
+      <desc id="receive-and-send-desc">Sequence diagram showing the adapter sending lines to the gateway: IO and motion lines are relayed to the MQTT broker without a reply, MES lines are checked, saved to the outbox and only then acknowledged to the adapter, and the outbox rows are posted to MES, marked sent on a 2xx or 409 answer, otherwise retried or moved to failed messages.</desc>
       <defs>
         <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
         <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/></marker>
@@ -69,7 +69,7 @@
       <rect x="364" y="552" width="620" height="224" rx="4" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
       <rect x="364" y="552" width="40" height="16" rx="2" fill="#f5f5f5" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
       <text x="384" y="564" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.12em">ALT</text>
-      <text x="448" y="564" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.04em">[MES answers 2xx]</text>
+      <text x="448" y="564" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.04em">[MES answers 2xx or 409]</text>
       <line x1="372" y1="664" x2="976" y2="664" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="4,3"/>
       <text x="436" y="680" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.04em">[else: 5xx · timeout · 4xx]</text>
 
@@ -132,8 +132,8 @@
       <rect x="516" y="508" width="88" height="12" rx="2" fill="#f5f5f5"/>
       <text x="560" y="517" fill="#2e5aa8" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">POST ENVELOPE</text>
 
-      <rect x="806" y="580" width="48" height="12" rx="2" fill="#f5f5f5"/>
-      <text x="830" y="589" fill="#eb6c36" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">2XX</text>
+      <rect x="798" y="580" width="64" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="830" y="589" fill="#eb6c36" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">2XX / 409</text>
 
       <rect x="524" y="620" width="72" height="12" rx="2" fill="#f5f5f5"/>
       <text x="560" y="629" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">MARK SENT</text>
@@ -147,7 +147,7 @@
       <!-- Resend timing for the else branch (right of the outbox bar, inside the frame) -->
       <text x="716" y="744" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.04em">retry wait 2 → 4 → 8 → 16 → 32 → 60 s</text>
       <text x="716" y="756" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.04em">then every 60 s · back to 2 s after a 2xx</text>
-      <text x="716" y="768" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.04em">4xx: no auto resend, re-send on page</text>
+      <text x="716" y="768" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.04em">other 4xx: no auto resend, re-send on page</text>
 
       <!-- ============ Actors ============ -->
       <!-- Adapter (input) -->
@@ -210,9 +210,11 @@
         <div class="card-header"><span class="card-dot coral"></span><h3>Answers on the same connection</h3></div>
         <ul>
           <li><code>{"ack":id}</code> once the line is on disk (ms)</li>
-          <li>Same <code>message_id</code> again (10 min): <code>ack</code> again, nothing new to MES</li>
+          <li>Same <code>message_id</code> again: the first copy's answer, nothing new to MES</li>
           <li>No <code>machine_id</code>: <code>{"nack":id,"reason":"no machine_id"}</code></li>
+          <li>Not valid JSON, <code>message_id</code> readable: <code>{"nack":id,"reason":"not valid JSON"}</code></li>
           <li>Unchanged values: still <code>ack</code>, no record</li>
+          <li>Unknown tag: <code>ack</code>; the known tags go to MES, the unknown one is left out and listed under Unidentified</li>
         </ul>
       </div>
       <div class="card">
@@ -220,9 +222,10 @@
         <div class="card-header"><span class="card-dot muted"></span><h3>Adapter keeps the line</h3></div>
         <ul>
           <li>Machine has no tab: held until registered</li>
-          <li>Tag not mapped: held until mapped or ignored</li>
-          <li>No <code>message_id</code>, or broken JSON</li>
+          <li>Tag not mapped, only with <code>unmappedTags</code> = <code>hold</code></li>
+          <li>No <code>message_id</code>, or broken JSON without one</li>
           <li>IO / motion lines: never answered</li>
+          <li>Line over 1 MB with no line break: connection closed</li>
           <li>Resend: after it reconnects (its own interval). Held machines are disconnected once fixed, so they resend at once</li>
         </ul>
       </div>
@@ -231,10 +234,11 @@
         <div class="card-header"><span class="card-dot link"></span><h3>What happens to the row</h3></div>
         <ul>
           <li>Payload: only the MES table columns (null when no tag). Extra fields and <code>record_timestamp</code> are not sent; tags joined with <code>+</code> arrive as one value, <code>001_xxxx</code></li>
-          <li><code>2xx</code>: sent</li>
-          <li><code>5xx</code>, timeout 15 s, 401/403/429: retry, wait 2 → 4 → 8 → 16 → 32 → 60 s, then every 60 s, no limit</li>
+          <li><code>2xx</code>: sent. <code>409</code>: MES has it already, counted as sent</li>
+          <li><code>5xx</code>, timeout 15 s, 401/403/407/408/429: retry, wait 2 → 4 → 8 → 16 → 32 → 60 s, then every 60 s, no limit</li>
           <li>Back to 2 s as soon as MES takes a row, so the backlog starts within 60 s of MES coming back</li>
           <li>Other <code>4xx</code>: failed messages, no auto resend; re-send or discard on the page</li>
+          <li>Gateway crash before a row is marked sent: sent again with the same <code>event_id</code>; MES must drop the repeat</li>
         </ul>
       </div>
     </div>

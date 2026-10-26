@@ -60,7 +60,7 @@
 
     <svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="config-page-architecture-title config-page-architecture-desc">
       <title id="config-page-architecture-title">How the config page links to the gateway</title>
-      <desc id="config-page-architecture-desc">Architecture diagram showing the browser config page calling the admin web server, which checks and saves the shared and per-machine config files (including extra tags assigned to MES fields, combined with +), registers machine tabs, restarts the gateway or reconnects held adapters, reads its live state, and reads the outbox files and re-sends or discards failed messages.</desc>
+      <desc id="config-page-architecture-desc">Architecture diagram showing the browser config page on the gateway PC calling the admin web server (this PC only, changes as JSON), which checks and saves the shared and per-machine config files (including extra tags assigned to MES fields, combined with +), registers machine tabs, restarts the gateway or reconnects held adapters, reads its live state, and reads the outbox files and re-sends or discards failed messages.</desc>
       <defs>
         <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
         <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/></marker>
@@ -128,13 +128,13 @@
       <rect x="280" y="332" width="200" height="56" rx="6" fill="#f5f5f5"/>
       <rect x="280" y="332" width="200" height="56" rx="6" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
       <text x="380" y="358" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Admin web server</text>
-      <text x="380" y="372" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">localhost:5100 · /api/*</text>
+      <text x="380" y="372" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">localhost:5100 · this PC only</text>
 
       <!-- Step: Check before save -->
       <rect x="280" y="132" width="200" height="56" rx="6" fill="#f5f5f5"/>
       <rect x="280" y="132" width="200" height="56" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
       <text x="380" y="158" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Check before save</text>
-      <text x="380" y="172" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">loads it like the gateway</text>
+      <text x="380" y="172" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">same check on every load</text>
 
       <!-- Store: Config files (disk) -->
       <rect x="600" y="132" width="200" height="56" rx="6" fill="#f5f5f5"/>
@@ -159,10 +159,10 @@
       <rect x="920" y="332" width="200" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
       <text x="1020" y="358" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Gateway</text>
       <text x="1020" y="372" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">TCP in · MQTT · MES out</text>
-      <text x="1020" y="385" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">restart · reconnect held</text>
+      <text x="1020" y="385" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">restart · retry · reconnect held</text>
 
       <!-- ============ Callouts (margin, drawn last) ============ -->
-      <text x="44" y="84" fill="#2d3142" font-size="14" font-style="italic" font-family="'Instrument Serif', serif">a bad file is refused with a message; nothing is written</text>
+      <text x="44" y="84" fill="#2d3142" font-size="14" font-style="italic" font-family="'Instrument Serif', serif">a bad file is refused; the old one stays whole</text>
       <path d="M 220 92 Q 280 104 299 129" fill="none" stroke="rgba(45,49,66,0.40)" stroke-width="1" stroke-dasharray="4,3"/>
       <circle cx="300" cy="132" r="2" fill="#2d3142"/>
 
