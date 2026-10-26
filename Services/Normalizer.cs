@@ -103,9 +103,7 @@ public class Normalizer
             }
             else
             {
-                // Logged the first time only; the config page keeps the count.
-                if (_unidentified?.Record(tag, value) ?? true)
-                    Console.WriteLine($"[normaliser] unmapped tag '{tag}' — map it on the config page (PointMap > Unidentified)");
+                // Counted and logged by Unmapped(), which the gateway calls first (#20).
                 bucketKey = "UNIDENTIFIED";
                 fieldName = tag;
             }

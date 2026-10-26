@@ -61,8 +61,8 @@ discoveries / notes
 - the page edits the Config next to the RUNNING exe (e.g. bin\Release\net8.0\Config),
   not the project Config folder
 - Unidentified list lives in memory: survives a page restart, cleared when the exe closes
-- MqttOptions.MaxPublishRateMs is used as "messages per second" (20 -> 1 per 50 ms),
-  the name is misleading
+- MqttOptions.MaxPublishRateMs was used as "messages per second" (20 -> 1 per 50 ms);
+  since 2026-10-26 (#21) it is ms between publishes, default 50 (same speed as before)
 - MqttOptions and MqttConnectionConfig both read brokerAddress with DIFFERENT defaults
   (127.0.0.1 vs 192.168.251.189); only matters if the key is missing from
   mqtt-config.json (the page always writes it)

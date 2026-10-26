@@ -253,6 +253,19 @@ if (which == "cfg")
     catch (Exception ex) { Report("config folder loads", false, $"shared: {ex.Message}"); }
 }
 
+if (which is "all" or "20")
+{
+    // #20: one message with an unknown tag adds 1 to its count, not 2. The gateway
+    // calls Unmapped() then Sort() for every MES message.
+    var tracker = new UnidentifiedTagTracker();
+    var normalizer = new Normalizer(new List<PointMapEntry> { new() { Tag = "known", DataGroup = "TRACEABILITY", FieldName = "station_id" } }, tracker);
+    var raw = new Dictionary<string, object?> { ["known"] = "1", ["brand_new"] = "2" };
+    normalizer.Unmapped(raw);
+    normalizer.Sort(raw);
+    var counts = tracker.Snapshot().Select(t => $"{t.Tag}={t.Count}").ToList();
+    Report("#20 unknown tag counted once per message", counts.SequenceEqual(new[] { "brand_new=1" }), string.Join(", ", counts));
+}
+
 if (which is "all" or "16")
 {
     // #16: a file edited by hand that is valid JSON but breaks a rule (Span with no endField)

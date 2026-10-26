@@ -28,7 +28,8 @@ public class MqttOptions
     public double MotionDeadband { get; set; } = 0.01;
 
     // Hard ceiling on publishes per topic, regardless of how fast the
-    // source is changing.
-    public int MaxPublishRateMs { get; set; } = 20;
+    // source is changing: at least this many ms between two publishes
+    // (50 = at most 20 per second).
+    public int MaxPublishRateMs { get; set; } = 50;
 }
 

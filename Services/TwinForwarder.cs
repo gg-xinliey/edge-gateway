@@ -21,7 +21,7 @@ public class TwinForwarder
         _mqtt = mqtt;
         _options = options;
         _machineId = machineId;
-        _minInterval = TimeSpan.FromSeconds(1.0 / Math.Max(1, options.MaxPublishRateMs));
+        _minInterval = TimeSpan.FromMilliseconds(Math.Max(1, options.MaxPublishRateMs));
     }
 
     public async Task RunAsync(CancellationToken ct)
