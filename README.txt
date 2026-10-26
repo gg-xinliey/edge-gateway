@@ -271,3 +271,16 @@ remaining
 - span memory lost on config save / restart (see notes) if MES needs every span closed
 - point-map edits made on the page are in bin\Debug\net8.0\Config, not in Config\
 - MES batch, Windows service (see "open" above)
+
+
+==========================================================================
+update 2026-10-26 : regression checks in the repo
+==========================================================================
+
+regression checks (tests\EdgeGateway.Checks): one check per GitHub issue fixed, each
+failed before its fix. Runs while the gateway runs (own build configuration).
+- dotnet run --project tests\EdgeGateway.Checks             all (about 1 min)
+- dotnet run --project tests\EdgeGateway.Checks -- 14       one issue
+- dotnet run --project tests\EdgeGateway.Checks -- cfg bin\Debug\net8.0\Config
+                                         would the gateway load this config folder?
+run them before every commit that touches Services\ or Admin\.
