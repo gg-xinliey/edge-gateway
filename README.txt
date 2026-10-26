@@ -116,7 +116,9 @@ changes
    (outbox\outbox-yyyy-MM-dd.db); a day file older than outboxKeepSentDays is
    deleted only when all its rows were delivered; old outbox.db still read
 4. ingest: TCP readers only queue lines; up to 8 worker lanes, one lane per
-   connection (each machine in order); each line parsed once
+   sender IP (each machine in order, also across a reconnect; adapters on one
+   PC share a lane, ~10,000 lines/s in a Debug build); each line parsed once;
+   a line over 1 MB without a line break closes its connection
 5. MES forwarder: 2,000 rows per pass, 16 machines in parallel, each in order,
    no pause while there is a backlog, 15 s HTTP timeout
 6. MQTT relay: one send queue + one sender (drop oldest when full)

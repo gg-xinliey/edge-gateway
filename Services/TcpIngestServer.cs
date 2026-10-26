@@ -12,14 +12,18 @@ namespace EdgeGateway.Services;
 //
 // Many machines: a connection's reader only reads lines and queues them, so
 // slow processing never stops the gateway from reading the socket. Workers
-// ("lanes", one per CPU core, max 8) process the lines. Each connection is
-// tied to one lane, so lines from one machine are handled in the order sent.
+// ("lanes", one per CPU core, max 8) process the lines. Each sender IP is
+// tied to one lane, so lines from one machine are handled in the order sent,
+// also across a reconnect (#14). Adapters on one PC share its lane.
+//
+// A line longer than MaxLineChars (no line break) closes its connection (#13).
 //
 // Replies ({"ack":...} once a message is on disk) go back on the same
 // connection through ReplyHub; each connection has its own reply writer.
 public class TcpIngestServer
 {
     private const int LaneCapacity = 20_000; // per lane; when full the reader waits (back-pressure to the machine)
+    private const int MaxLineChars = 1_048_576; // real messages are ~1 KB; a sender that never sends '\n' must not fill the memory
 
     private readonly IPAddress _address;
     private readonly int _port;
@@ -29,7 +33,6 @@ public class TcpIngestServer
     private readonly Channel<(string Line, string Sender)>[] _lanes;
     private readonly ThrottledLog _problems = new(TimeSpan.FromSeconds(60));
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, TcpClient> _clients = new();
-    private int _nextLane;
 
     // Closes one machine connection (ip:port). Its adapter reconnects and sends
     // every message it got no reply for again (used after registering a held machine).
@@ -84,8 +87,7 @@ public class TcpIngestServer
                     await Task.Delay(100, ct); // no busy loop while it keeps failing
                     continue;
                 }
-                var lane = _lanes[(uint)Interlocked.Increment(ref _nextLane) % _lanes.Length];
-                _ = HandleClientAsync(client, lane, ct);
+                _ = HandleClientAsync(client, ct);
             }
         }
         finally
@@ -97,10 +99,14 @@ public class TcpIngestServer
         }
     }
 
-    private async Task HandleClientAsync(TcpClient client, Channel<(string, string)> lane, CancellationToken ct)
+    private async Task HandleClientAsync(TcpClient client, CancellationToken ct)
     {
         var endpoint = client.Client.RemoteEndPoint;
         var sender = endpoint?.ToString() ?? "?"; // ip:port: one machine per connection, even behind one IP
+
+        // By IP, not per connection: after a reconnect the old connection's lines still
+        // queued and the adapter's resends go through one queue, in order (#14).
+        var lane = _lanes[(uint)((endpoint as IPEndPoint)?.Address.GetHashCode() ?? 0) % _lanes.Length];
         Console.WriteLine($"[tcp] client connected: {endpoint}");
         _traffic?.Opened(sender);
         _clients[sender] = client;
@@ -114,8 +120,7 @@ public class TcpIngestServer
                 var replying = _replies is null ? Task.CompletedTask : ReplyHub.WriteAsync(stream, _replies.Open(sender));
                 try
                 {
-                    string? line;
-                    while ((line = await reader.ReadLineAsync(ct)) != null)
+                    await foreach (var line in ReadLinesAsync(reader, ct))
                     {
                         if (string.IsNullOrWhiteSpace(line))
                             continue;
@@ -149,6 +154,40 @@ public class TcpIngestServer
         _clients.TryRemove(new KeyValuePair<string, TcpClient>(sender, client));
         Console.WriteLine($"[tcp] client disconnected: {endpoint}");
         _traffic?.Closed(sender);
+    }
+
+    // Lines ending in '\n' or "\r\n", like StreamReader.ReadLineAsync, but a line over
+    // MaxLineChars throws, so the connection is closed instead of growing forever (#13).
+    private static async IAsyncEnumerable<string> ReadLinesAsync(StreamReader reader,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+    {
+        var buffer = new char[4096];
+        var line = new StringBuilder();
+        int read;
+        while ((read = await reader.ReadAsync(buffer, ct)) > 0)
+        {
+            var start = 0;
+            for (var end = Array.IndexOf(buffer, '\n', 0, read); end >= 0; end = Array.IndexOf(buffer, '\n', start, read - start))
+            {
+                line.Append(buffer, start, end - start);
+                yield return TakeLine(line);
+                start = end + 1;
+            }
+            line.Append(buffer, start, read - start);
+            if (line.Length > MaxLineChars)
+                throw new InvalidDataException($"a line passed {MaxLineChars:N0} characters without a line break, connection closed");
+        }
+        if (line.Length > 0)
+            yield return TakeLine(line); // last line without '\n'
+    }
+
+    private static string TakeLine(StringBuilder line)
+    {
+        if (line.Length > 0 && line[line.Length - 1] == '\r')
+            line.Length--;
+        var text = line.ToString();
+        line.Clear();
+        return text;
     }
 
     private async Task WorkAsync(Channel<(string Line, string Sender)> lane)
