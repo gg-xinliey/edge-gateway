@@ -140,25 +140,5 @@ public class Normalizer
 
         return buckets;
     }
-    public static void AppendToJsonStream<T>(string filePath, T newItem)
-    {
-        // 1. If file is missing or empty, write it as a new array
-        if (!File.Exists(filePath) || new FileInfo(filePath).Length <= 2)
-        {
-            File.WriteAllText(filePath, JsonSerializer.Serialize(new[] { newItem }));
-            return;
-        }
 
-        // 2. Open file for reading and writing without loading it all into memory
-        using var stream = new FileStream(filePath, FileMode.Open, FileAccess.ReadWrite);
-
-        // Seek to 1 byte before the end of the file to step over the closing bracket ']'
-        stream.Seek(-1, SeekOrigin.End);
-
-        // 3. Write a comma separator and serialize the new item directly into the stream
-        using var writer = new StreamWriter(stream,new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-        writer.Write(","); // Add comma separator
-        writer.Write(JsonSerializer.Serialize(newItem));
-        writer.Write("]"); // Re-close the array
-    }
 }
