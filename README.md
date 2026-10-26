@@ -20,30 +20,47 @@ Full guide (message format, every reply, every setting, troubleshooting): [USE_C
 | Gateway only | `dotnet run --project EdgeGateway.csproj` |
 | Config page | http://localhost:5100/config/ (on the gateway PC only) |
 
+The `..\*.bat` files sit next to this folder on the development PC and are not in git; they start
+the scripts in `tools\LocalMqttTest\test-env\`. Running the gateway by hand needs no admin rights.
+
 Machines connect to `listenAddress:tcpPort` in `machine-config.json` (now `192.168.250.78:9000`).
 A failed start is retried by itself (5 s, 10 s ... every 60 s).
 
 ### As a Windows service (production)
 
-The same exe runs as the service `EdgeGateway`: it starts with Windows, restarts after a crash,
-and a service stop is a clean stop (like Ctrl+C). Program in `C:\Program Files\EdgeGateway`,
-data in `C:\ProgramData\EdgeGateway`. The scripts in `service\` need an administrator:
+The same exe runs as the service `EdgeGateway`: it starts with Windows (after the network),
+restarts after a crash (5 s, 10 s, then 60 s), and a service stop is a clean stop, like Ctrl+C.
 
-| Step | Command |
+**Install:** double-click `service\Install Gateway Service.bat`. It asks three things
+(Enter keeps the default):
+
+| Question | Default |
 |---|---|
-| Install (one click) | double-click `service\Install Gateway Service.bat`: it asks for the program folder, data folder and old gateway folder to take over (Enter = default), stops a console gateway, builds, asks for admin rights, installs and starts |
-| Install another PC | build there, or copy `bin\publish\EdgeGateway` along (self-contained: no .NET needed), then the same `.bat` |
-| Install by hand | `service\publish.ps1`, then as admin `service\install-service.ps1 -CopyDataFrom "<old exe folder>" -Start` |
+| Program folder (replaced on every update) | `C:\Program Files\EdgeGateway` |
+| Data folder (Config with machine tabs, outbox, logs; never replaced) | `C:\ProgramData\EdgeGateway` |
+| Old gateway folder to take its data over from (`none` = fresh start) | `bin\Debug\net8.0`, if it exists |
+
+Then it stops a console gateway (asks first), builds, asks Windows for admin rights, installs and
+starts the service. The admin window stays open with the result.
+
+**Another PC:** copy this folder. Without the .NET SDK there, copy `bin\publish\EdgeGateway` along
+too (self-contained, no .NET needed). After the install, set on the config page (GatewayConfig)
+that PC's `listenAddress`, the `mesUrl` and the MQTT broker, then **Restart now**.
+
+| Also | How (as administrator) |
+|---|---|
+| Is it running? | `Get-Service EdgeGateway`; log: `<data folder>\logs` |
 | New version | `service\publish.ps1`, then `service\update-service.ps1` |
-| Remove (data is kept) | `service\uninstall-service.ps1` |
+| Remove (program and data are kept) | `service\uninstall-service.ps1` |
+| Install without the `.bat` | `service\publish.ps1`, then `service\install-service.ps1 -CopyDataFrom "<old exe folder>" -Start` |
 
 Only one gateway can run at a time (same ports). The firewall rule for TCP 9000 is IT's.
 
 ## Where things are
 
 Everything below is in the data folder: next to the running exe (e.g. `bin\Debug\net8.0\`), or the
-folder given with `--data` (the service: `C:\ProgramData\EdgeGateway`). The config page edits these
-files, not the project's `Config\` folder.
+folder given with `--data` (the service: the data folder chosen at install). The config page edits
+these files, not the project's `Config\` folder.
 
 | Path | What |
 |---|---|
@@ -54,7 +71,7 @@ files, not the project's `Config\` folder.
 | `Config\mes-schema.json` | the MES columns per data group (applied on save) |
 | `outbox\<machine_id>\outbox-yyyy-MM-dd.db` | saved records (SQLite); a day file is deleted after `outboxKeepSentDays` once all of it was sent |
 | `logs\gateway-yyyy-MM-dd.log` | the log, kept 14 days (also on the config page) |
-| `state\message-ids.txt` | message_ids of the last 10 min, kept over a clean stop (Ctrl+C) |
+| `state\message-ids.txt` | message_ids of the last 10 min, kept over a clean stop (Ctrl+C or service stop) |
 
 ## Replies to the adapter
 
