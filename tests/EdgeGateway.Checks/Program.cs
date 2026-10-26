@@ -253,6 +253,30 @@ if (which == "cfg")
     catch (Exception ex) { Report("config folder loads", false, $"shared: {ex.Message}"); }
 }
 
+if (which is "all" or "docker")
+{
+    // Config page access (#12), also in a container (--admin-all-ips): Docker's port mapping
+    // brings requests in from the bridge (172.17.0.1), maybe on another port (8080 -> 5100).
+    var bridge = System.Net.IPAddress.Parse("172.17.0.1");
+    var loop = System.Net.IPAddress.Loopback;
+    string? R(System.Net.IPAddress ip, string method, string? type, string? site, string? origin, string url, bool all) =>
+        EdgeGateway.Admin.AdminWebServer.Refused(ip, method, type, site, origin, new Uri(url), all);
+    var cases = new (string Name, bool Allowed, string? Got)[]
+    {
+        ("PC: GET from loopback", true, R(loop, "GET", null, null, null, "http://localhost:5100/api/status", false)),
+        ("PC: GET from another PC", false, R(bridge, "GET", null, null, null, "http://localhost:5100/api/status", false)),
+        ("PC: page's own save", true, R(loop, "PUT", "application/json", "same-origin", "http://localhost:5100", "http://localhost:5100/api/config/point-map", false)),
+        ("PC: other site's POST", false, R(loop, "POST", "text/plain", "cross-site", "https://evil.example", "http://localhost:5100/api/gateway/restart", false)),
+        ("Docker: GET via mapping", true, R(bridge, "GET", null, null, null, "http://localhost:5100/api/status", true)),
+        ("Docker: page's own save on mapped port 8080", true, R(bridge, "PUT", "application/json", "same-origin", "http://localhost:8080", "http://localhost:8080/api/config/point-map", true)),
+        ("Docker: other name (DNS rebinding / other PC)", false, R(bridge, "GET", null, null, null, "http://evil.example:5100/api/status", true)),
+        ("Docker: other site's POST", false, R(bridge, "POST", "application/json", "cross-site", "https://evil.example", "http://localhost:5100/api/failed/discard", true)),
+        ("Docker: POST not JSON", false, R(bridge, "POST", "text/plain", null, null, "http://localhost:5100/api/gateway/restart", true)),
+    };
+    var wrong = cases.Where(c => (c.Got is null) != c.Allowed).Select(c => $"{c.Name}: {(c.Got is null ? "allowed" : "refused")}").ToList();
+    Report("docker: config page access rules", wrong.Count == 0, wrong.Count == 0 ? $"{cases.Length} cases as expected" : string.Join("; ", wrong));
+}
+
 if (which is "all" or "20")
 {
     // #20: one message with an unknown tag adds 1 to its count, not 2. The gateway

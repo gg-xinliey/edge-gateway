@@ -14,25 +14,28 @@ var adminPort = adminPortArg >= 0 && adminPortArg + 1 < args.Length && int.TryPa
     : 5100;
 
 // "--data <folder>": where Config\, outbox\, logs\ and state\ live (default: next to the exe).
+// The Docker image uses /data, a volume.
 var dataArg = Array.IndexOf(args, "--data");
 if (dataArg >= 0 && dataArg + 1 < args.Length)
     DataFolder.Use(args[dataArg + 1]);
 
-// "--service": started by Windows as the EdgeGateway service (service\install-service.ps1).
-// Started by hand (dotnet run, the .bat files) it is a console window, Ctrl+C to stop.
-var asService = args.Contains("--service");
-if (asService && OperatingSystem.IsWindows())
-{
-    System.ServiceProcess.ServiceBase.Run(new GatewayService(RunAsync));
-    return;
-}
+// "--admin-all-ips": the config page listens on every address (in a container, where
+// Docker's port mapping brings the requests in); see AdminWebServer.Refused.
+var adminAllIps = args.Contains("--admin-all-ips");
 
+// Ctrl+C, and SIGTERM (docker stop): a clean stop, the outbox writes what it holds.
 using var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) =>
 {
     e.Cancel = true;
     cts.Cancel();
 };
+using var sigterm = System.Runtime.InteropServices.PosixSignalRegistration.Create(
+    System.Runtime.InteropServices.PosixSignal.SIGTERM, signal =>
+    {
+        signal.Cancel = true;
+        cts.Cancel();
+    });
 await RunAsync(cts.Token);
 
 async Task RunAsync(CancellationToken stop)
@@ -47,24 +50,34 @@ async Task RunAsync(CancellationToken stop)
         Converters = { new JsonStringEnumConverter() }
     };
 
+    // A new data folder (e.g. an empty Docker volume) starts with the default Config next to the exe.
+    var configDir = Path.Combine(DataFolder.Root, "Config");
+    if (!Directory.Exists(configDir))
+    {
+        Directory.CreateDirectory(configDir);
+        foreach (var file in Directory.GetFiles(Path.Combine(AppContext.BaseDirectory, "Config"), "*.json"))
+            File.Copy(file, Path.Combine(configDir, Path.GetFileName(file)));
+        Console.WriteLine($"[config] new data folder: default Config copied to {configDir}");
+    }
+
     var unidentified = new UnidentifiedTagTracker();
-    var configStore = new GatewayConfigStore(Path.Combine(DataFolder.Root, "Config"), jsonOptions, unidentified);
+    var configStore = new GatewayConfigStore(configDir, jsonOptions, unidentified);
     // Machines with their own mapping (Config/machines/<machine_id>/); the rest use the shared one.
     var machines = new MachineRegistry(configStore, unidentified, jsonOptions);
     if (machines.Ids.Count > 0)
         Console.WriteLine($"[config] machines with their own mapping: {string.Join(", ", machines.Ids)}");
     var traffic = new TrafficRegistry(); // per connection / machine counts for the Machines view
 
-    // message_ids of the last 10 min, kept over a clean restart (saved below on Ctrl+C / service stop).
+    // message_ids of the last 10 min, kept over a clean restart (saved below on Ctrl+C / docker stop).
     var messageIdsPath = Path.Combine(DataFolder.Root, "state", "message-ids.txt");
     var messageIds = MessageIdFilter.Load(messageIdsPath);
     if (messageIds.Count > 0)
         Console.WriteLine($"[ingest] {messageIds.Count:N0} message_ids from the last {MessageIdFilter.Window.TotalMinutes:0} min loaded (duplicate check)");
 
     var gateway = new GatewayHost(machines, jsonOptions, traffic, messageIds);
-    var adminServer = new AdminWebServer(adminPort, "wwwroot", machines, gateway, log, jsonOptions, traffic);
+    var adminServer = new AdminWebServer(adminPort, "wwwroot", machines, gateway, log, jsonOptions, traffic, adminAllIps);
 
-    Console.WriteLine(asService ? "Edge gateway starting as a Windows service" : "Edge gateway starting — Ctrl+C to stop");
+    Console.WriteLine("Edge gateway starting — Ctrl+C to stop");
     Console.WriteLine($"Data folder: {DataFolder.Root}");
     Console.WriteLine($"Configuration UI: http://localhost:{adminPort}/config/");
 
@@ -73,14 +86,14 @@ async Task RunAsync(CancellationToken stop)
         PageAsync()               // config page; stays up across restarts
     );
 
-    // Only reached on Ctrl+C or a service stop (a closed window or a hard kill never
-    // gets here), so the log shows whether the last stop was a clean one. ("stopped"
-    // would mark the line as a problem in the log.) Only ids of saved (acked) messages
-    // are in the filter; rows an outbox could not write in time are logged by that outbox.
+    // Only reached on Ctrl+C or SIGTERM (a hard kill never gets here), so the log
+    // shows whether the last stop was a clean one. ("stopped" would mark the line as
+    // a problem in the log.) Only ids of saved (acked) messages are in the filter;
+    // rows an outbox could not write in time are logged by that outbox.
     var savedIds = messageIds.Save(messageIdsPath);
-    Console.WriteLine($"[gateway] shut down cleanly ({(asService ? "service stop" : "Ctrl+C")}), {savedIds:N0} message_ids of saved messages kept for the duplicate check");
+    Console.WriteLine($"[gateway] shut down cleanly, {savedIds:N0} message_ids of saved messages kept for the duplicate check");
 
-    // The page failing to start (port taken, or no URL rights for the service account)
+    // The page failing to start (port taken, or no rights for the address)
     // must not stop the gateway, and must not stay silent until the next stop.
     async Task PageAsync()
     {

@@ -4,9 +4,10 @@ obj/
 .vs/
 *.user
 
-# local runtime data
+# local runtime data (data/ = the Docker volume, docker-compose.yml)
 outbox/
 logs/
+data/
 
 # backups the config page writes on every save (Config/<file>.bak)
 Config/*.bak

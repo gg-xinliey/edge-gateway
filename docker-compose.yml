@@ -1,0 +1,20 @@
+# Edge Gateway in Docker. In this folder:
+#   docker compose up -d --build     build and start (and after every code change)
+#   docker compose logs -f           follow the log
+#   docker compose down              stop (a clean stop)
+services:
+  gateway:
+    build: .
+    image: edge-gateway
+    container_name: edge-gateway
+    restart: unless-stopped          # starts with Docker, restarts after a crash
+    stop_grace_period: 30s           # a clean stop (outbox written) takes up to ~15 s
+    ports:
+      - "9000:9000"                  # machines (TCP), on every address of this PC
+      - "127.0.0.1:5100:5100"        # config page: on this PC only, http://localhost:5100/config/
+    volumes:
+      - ./data:/data                 # Config with machine tabs, outbox, logs, state
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # this PC, seen from inside the container
+    environment:
+      - TZ=Asia/Bangkok

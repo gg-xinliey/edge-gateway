@@ -1,0 +1,15 @@
+# Only the gateway's own sources go into the image build.
+bin/
+obj/
+.vs/
+.git/
+data/
+outbox/
+logs/
+docs/
+tests/
+tools/
+Config/*.bak
+*.md
+Dockerfile
+docker-compose.yml

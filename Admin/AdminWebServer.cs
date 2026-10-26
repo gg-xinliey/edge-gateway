@@ -27,6 +27,7 @@ public sealed class AdminWebServer
     private readonly TrafficRegistry? _traffic;
     private readonly JsonSerializerOptions _jsonOptions;
     private readonly int _port;
+    private readonly bool _allIps; // in a container: listen on every address, check the browser's host name instead
 
     private static readonly JsonSerializerOptions ApiJson = new()
     {
@@ -65,8 +66,10 @@ public sealed class AdminWebServer
         GatewayHost gateway,
         GatewayLog log,
         JsonSerializerOptions jsonOptions,
-        TrafficRegistry? traffic = null)
+        TrafficRegistry? traffic = null,
+        bool allIps = false)
     {
+        _allIps = allIps;
         _log = log;
         _traffic = traffic;
         _port = port;
@@ -94,7 +97,7 @@ public sealed class AdminWebServer
         Directory.CreateDirectory(_wwwRoot);
         Directory.CreateDirectory(_configRoot);
 
-        var prefix = $"http://localhost:{_port}/";
+        var prefix = _allIps ? $"http://+:{_port}/" : $"http://localhost:{_port}/";
         _listener.Prefixes.Add(prefix);
         _listener.Start();
 
@@ -156,23 +159,33 @@ public sealed class AdminWebServer
     // the API (discard failed messages, restart, add tabs). A browser marks such a
     // request with Sec-Fetch-Site / Origin; scripts on this PC send neither and still work.
     // Null = allowed, else why not.
-    private string? Refused(HttpListenerRequest request)
+    private string? Refused(HttpListenerRequest request) =>
+        Refused(request.RemoteEndPoint?.Address, request.HttpMethod, request.ContentType,
+            request.Headers["Sec-Fetch-Site"], request.Headers["Origin"], request.Url, _allIps);
+
+    // allIps (in a container): Docker's port mapping hands the request over, so the peer
+    // is never loopback. The page counts as "this PC only" when Docker publishes it on the
+    // host's 127.0.0.1 only (docker-compose.yml), and the browser must have asked for
+    // localhost / 127.0.0.1: a page under another name (DNS rebinding) is refused.
+    public static string? Refused(IPAddress? remote, string method, string? contentType, string? site, string? origin, Uri? url, bool allIps)
     {
-        if (request.RemoteEndPoint is { } remote && !IPAddress.IsLoopback(remote.Address))
+        if (allIps
+                ? url?.Host is not ("localhost" or "127.0.0.1" or "[::1]")
+                : remote is not null && !IPAddress.IsLoopback(remote))
             return "The config page only works on the gateway PC itself.";
-        if (request.HttpMethod is "GET" or "HEAD")
+        if (method is "GET" or "HEAD")
             return null;
 
         // JSON forces a browser to ask first (CORS preflight), which this server never
         // allows: a second layer if a browser sends neither header below.
-        if (!(request.ContentType ?? "").StartsWith("application/json", StringComparison.OrdinalIgnoreCase))
+        if (!(contentType ?? "").StartsWith("application/json", StringComparison.OrdinalIgnoreCase))
             return "Changes are only accepted as JSON (Content-Type: application/json).";
 
-        var site = request.Headers["Sec-Fetch-Site"];
-        var origin = request.Headers["Origin"];
+        // Same origin = the address the browser used for this request (also behind a
+        // Docker port mapping such as localhost:8080 -> 5100).
+        var self = url?.GetLeftPart(UriPartial.Authority);
         var fromOtherSite = (site is not null && site is not ("same-origin" or "none"))
-            || (origin is not null && !origin.Equals($"http://localhost:{_port}", StringComparison.OrdinalIgnoreCase)
-                                   && !origin.Equals($"http://127.0.0.1:{_port}", StringComparison.OrdinalIgnoreCase));
+            || (origin is not null && !origin.Equals(self, StringComparison.OrdinalIgnoreCase));
         return fromOtherSite ? "Changes are only accepted from the config page itself." : null;
     }
 
