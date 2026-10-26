@@ -13,3 +13,4 @@ Config/*.bak
 *.md
 Dockerfile
 docker-compose.yml
+mes-data/

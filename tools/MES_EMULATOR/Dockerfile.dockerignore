@@ -1,0 +1,6 @@
+# Used instead of the gateway's .dockerignore when building tools/MES_EMULATOR/Dockerfile:
+# only the fake MES source and the default MES format go into the build.
+*
+!tools/MES_EMULATOR/MES_EMULATOR.csproj
+!tools/MES_EMULATOR/Program.cs
+!Config/mes-schema.json

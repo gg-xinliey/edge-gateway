@@ -1,6 +1,6 @@
-# Edge Gateway in Docker. In this folder:
+# Edge Gateway in Docker, with a fake MES next to it. In this folder:
 #   docker compose up -d --build     build and start (and after every code change)
-#   docker compose logs -f           follow the log
+#   docker compose logs -f           follow the log (both)
 #   docker compose down              stop (a clean stop)
 services:
   gateway:
@@ -9,6 +9,8 @@ services:
     container_name: edge-gateway
     restart: unless-stopped          # starts with Docker, restarts after a crash
     stop_grace_period: 30s           # a clean stop (outbox written) takes up to ~15 s
+    depends_on:
+      - fake-mes
     ports:
       - "9000:9000"                  # machines (TCP), on every address of this PC
       - "127.0.0.1:5100:5100"        # config page: on this PC only, http://localhost:5100/config/
@@ -16,5 +18,22 @@ services:
       - ./data:/data                 # Config with machine tabs, outbox, logs, state
     extra_hosts:
       - "host.docker.internal:host-gateway"   # this PC, seen from inside the container
+    environment:
+      - TZ=Asia/Bangkok
+
+  # Fake MES for tests: the gateway's first mesUrl is http://fake-mes:5000/api/v1/machine-events.
+  # For the real MES, set its mesUrl on the config page; this one can then be removed.
+  fake-mes:
+    build:
+      context: .
+      dockerfile: tools/MES_EMULATOR/Dockerfile
+    image: edge-gateway-fake-mes
+    container_name: edge-gateway-fake-mes
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5001:5001"        # control on this PC only: http://localhost:5001/stats
+    volumes:
+      - ./mes-data:/mes              # received.jsonl: what the fake MES stored
+      - ./data:/gateway-data:ro      # the gateway's MES format (Config/mes-schema.json)
     environment:
       - TZ=Asia/Bangkok

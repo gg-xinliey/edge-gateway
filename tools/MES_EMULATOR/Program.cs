@@ -24,11 +24,20 @@ using System.Text.Json.Nodes;
 //
 //   dotnet run            prints one short line per envelope
 //   dotnet run -- -v      prints whole envelopes
+//
+// In Docker (Dockerfile next to this file, started by the gateway's docker-compose.yml):
+//   --all-ips             listen on every address, not only localhost
+//   --data <folder>       where received.jsonl goes (default: this project folder)
+//   --schema <file>       the gateway's mes-schema.json (missing: the copy next to the exe)
 
 var verbose = args.Contains("-v");
+string? Arg(string name) { var i = Array.IndexOf(args, name); return i >= 0 && i + 1 < args.Length ? args[i + 1] : null; }
+var host = args.Contains("--all-ips") ? "+" : "localhost";
 var projectDir = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", ".."));
-var receivedFile = Path.Combine(projectDir, "received.jsonl");
-var schema = LoadSchema(projectDir);
+var receivedFile = Path.Combine(Arg("--data") ?? projectDir, "received.jsonl");
+var schema = LoadSchema(new[] { Arg("--schema"), Path.Combine(AppContext.BaseDirectory, "mes-schema.json"),
+        Path.Combine(projectDir, "..", "..", "Config", "mes-schema.json") } // tools\MES_EMULATOR -> the gateway project
+    .First(path => path is not null && File.Exists(path))!);
 
 var mode = "up";
 string? rejectGroup = null;
@@ -55,7 +64,7 @@ void OpenData()
 {
     if (data is { IsListening: true }) return;
     data = new HttpListener();
-    data.Prefixes.Add("http://localhost:5000/");
+    data.Prefixes.Add($"http://{host}:5000/");
     data.Start();
     _ = Task.Run(() => ServeData(data));
 }
@@ -68,7 +77,7 @@ void CloseData()
 
 OpenData();
 var control = new HttpListener();
-control.Prefixes.Add("http://localhost:5001/");
+control.Prefixes.Add($"http://{host}:5001/");
 control.Start();
 Console.WriteLine($"Fake MES on http://localhost:5000/  (control: http://localhost:5001/mode?set=up|down|unreachable|slow|reject, /stats, /reset)");
 Console.WriteLine($"Known data groups: {string.Join(", ", schema.Keys)}");
@@ -261,9 +270,9 @@ static string Short(JsonNode? payload)
 }
 
 // The MES tables: the gateway's Config/mes-schema.json (same file the gateway uses).
-static Dictionary<string, string[]> LoadSchema(string projectDir)
+static Dictionary<string, string[]> LoadSchema(string path)
 {
-    var path = Path.GetFullPath(Path.Combine(projectDir, "..", "..", "Config", "mes-schema.json")); // tools\MES_EMULATOR -> the gateway project
+    Console.WriteLine($"MES tables from {Path.GetFullPath(path)}");
     var schema = JsonSerializer.Deserialize<Dictionary<string, string[]>>(File.ReadAllText(path))!;
     return new Dictionary<string, string[]>(schema, StringComparer.OrdinalIgnoreCase);
 }

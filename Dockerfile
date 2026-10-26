@@ -9,10 +9,11 @@ RUN dotnet restore EdgeGateway.csproj
 COPY . .
 RUN dotnet publish EdgeGateway.csproj -c Release -o /app --no-restore
 # Defaults for a new data folder, as seen from inside a container: listen on every
-# address (Docker maps the host's port to it), and "this PC" (fake MES, local MQTT
-# broker) is host.docker.internal. Set the real MES and broker on the config page.
+# address (Docker maps the host's port to it), MES = the fake MES next to it
+# (docker-compose.yml), and the local MQTT broker on this PC is host.docker.internal.
+# Set the real MES and broker on the config page.
 RUN sed -i -e 's/"listenAddress": *"[^"]*"/"listenAddress": "0.0.0.0"/' \
-           -e 's#//localhost:#//host.docker.internal:#' /app/Config/machine-config.json \
+           -e 's#//localhost:5000/#//fake-mes:5000/#' /app/Config/machine-config.json \
  && sed -i -e 's/"brokerAddress": *"127\.0\.0\.1"/"brokerAddress": "host.docker.internal"/' /app/Config/mqtt-config.json
 
 FROM mcr.microsoft.com/dotnet/runtime:8.0

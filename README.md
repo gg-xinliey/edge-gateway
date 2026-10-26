@@ -45,11 +45,13 @@ What the compose file sets up:
 | Data | `data\` next to `docker-compose.yml`: Config with machine tabs, outbox, logs, state |
 | Restart | starts with Docker and after a crash (`restart: unless-stopped`) |
 | Time | Thailand (`TZ=Asia/Bangkok`) for day files, logs and MQTT time stamps |
+| Fake MES | runs next to it (`fake-mes`); what it received: `http://localhost:5001/stats`, `mes-data\received.jsonl` |
 
 **First start** with an empty `data\`: the default Config is copied in, with `listenAddress`
-`0.0.0.0` (inside the container the gateway listens on every address; Docker maps port 9000 to it)
-and the MES and MQTT broker on `host.docker.internal` (the PC itself). Set the real `mesUrl` and
-broker on the config page, then **Restart now**.
+`0.0.0.0` (inside the container the gateway listens on every address; Docker maps port 9000 to it),
+MES = the fake MES (`http://fake-mes:5000/api/v1/machine-events`), and the MQTT broker on
+`host.docker.internal` (the PC itself). For the real MES and broker, set them on the config page,
+then **Restart now**.
 
 **Take over the current gateway's data:** stop it (`Stop Gateway.bat`), copy `Config\`, `outbox\`
 and `state\` from `bin\Debug\net8.0\` into `data\`, and set `listenAddress` to `0.0.0.0` in

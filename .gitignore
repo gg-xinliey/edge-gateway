@@ -8,6 +8,7 @@ obj/
 outbox/
 logs/
 data/
+mes-data/
 
 # backups the config page writes on every save (Config/<file>.bak)
 Config/*.bak
