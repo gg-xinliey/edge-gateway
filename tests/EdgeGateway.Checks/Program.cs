@@ -245,7 +245,7 @@ if (which == "cfg")
     var json = new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true, Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() } };
     try
     {
-        var registry = new MachineRegistry(new GatewayConfigStore(args[1], json), new UnidentifiedTagTracker(), json);
+        var registry = new MachineRegistry(new GatewayConfigStore(Path.GetFullPath(args[1]), json), new UnidentifiedTagTracker(), json); // relative to where it is run
         var list = registry.List();
         Report("config folder loads", list.All(m => m.Readable), $"shared ok, {list.Count(m => m.Readable)} of {list.Count} machine tabs ok" +
             string.Concat(list.Where(m => !m.Readable).Select(m => $"\n      {m.Id}: {m.Error}")));

@@ -9,9 +9,9 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- The checks are their own project (tests\EdgeGateway.Checks), not part of the gateway. -->
-    <Compile Remove="tests\**" />
-    <None Remove="tests\**" />
+    <!-- The checks (tests\) and test tools (tools\) are their own projects, not part of the gateway. -->
+    <Compile Remove="tests\**;tools\**" />
+    <None Remove="tests\**;tools\**" />
     <None Remove="Config\machine-config.json" />
     <None Remove="Config\mes-schema.json" />
     <None Remove="Config\mqtt-config.json" />

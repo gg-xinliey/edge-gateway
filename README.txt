@@ -274,8 +274,16 @@ remaining
 
 
 ==========================================================================
-update 2026-10-26 : regression checks in the repo
+update 2026-10-26 : regression checks and test tools in the repo
 ==========================================================================
+
+test tools moved into this repo (were next to it, outside git):
+  tools\LocalMqttTest   local broker, load test, test-env scripts (was ..\LocalMqttTest)
+  tools\MES_EMULATOR    fake MES                                  (was ..\MES_EMULATOR)
+  tools\MachineSim      machine simulator + end-to-end check      (was ..\MachineSim)
+older notes above still say ..\LocalMqttTest etc. The .bat files in ..\ (Start Gateway,
+Stop Gateway, Start Real MES Test, Crash Gateway) point at tools\ now. Their run data
+(received.jsonl, run-data.jsonl, outage logs, gateway-run\) stays out of git.
 
 regression checks (tests\EdgeGateway.Checks): one check per GitHub issue fixed, each
 failed before its fix. Runs while the gateway runs (own build configuration).

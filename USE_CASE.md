@@ -19,7 +19,7 @@ The gateway is a shared server. Many machines (sized for 50, tested at 5,000 mes
    - MQTT Explorer (connected to the broker in `mqtt-config.json`) shows your topics.
    - The bottom left of the config page shows a green dot with **Gateway running**, and the same rates.
 
-To test without the real broker, use `..\LocalMqttTest`. It has its own broker, and the gateway copy uses TCP port 19000 and page port 15100.
+To test without the real broker, use `tools\LocalMqttTest`. It has its own broker, and the gateway copy uses TCP port 19000 and page port 15100.
 - `dotnet run -- --load 5000 60 50` simulates 50 machines at 5,000 messages/s for 60 s, with a fake MES. Results are saved in `load-results\`.
 
 ## 3. Input → output

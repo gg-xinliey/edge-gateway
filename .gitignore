@@ -10,3 +10,15 @@ logs/
 
 # backups the config page writes on every save (Config/<file>.bak)
 Config/*.bak
+
+# test tools: their run data and logs, not their code
+tools/MES_EMULATOR/received*.jsonl
+tools/MachineSim/run-data.jsonl
+tools/MachineSim/last-run.txt
+tools/MachineSim/sim-out.txt
+tools/LocalMqttTest/gateway-run/
+tools/LocalMqttTest/load-results/
+tools/LocalMqttTest/outgoing.txt
+tools/LocalMqttTest/source-log.txt
+tools/LocalMqttTest/case*-start.txt
+tools/LocalMqttTest/test-env/outage-*.txt
