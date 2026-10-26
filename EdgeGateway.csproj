@@ -52,6 +52,7 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.12" />
     <PackageReference Include="MQTTnet" Version="4.3.7.1207" />
+    <PackageReference Include="System.ServiceProcess.ServiceController" Version="8.0.1" />
 
   </ItemGroup>
 

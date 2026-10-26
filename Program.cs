@@ -13,35 +13,19 @@ var adminPort = adminPortArg >= 0 && adminPortArg + 1 < args.Length && int.TryPa
     ? port
     : 5100;
 
-// First: every console line also goes to logs\gateway-<date>.log (kept 14 days)
-// and to the config page's Log view, so errors are not lost in the background.
-var log = GatewayLog.Install(Path.Combine(AppContext.BaseDirectory, "logs"), keepDays: 14);
+// "--data <folder>": where Config\, outbox\, logs\ and state\ live (default: next to the exe).
+var dataArg = Array.IndexOf(args, "--data");
+if (dataArg >= 0 && dataArg + 1 < args.Length)
+    DataFolder.Use(args[dataArg + 1]);
 
-var jsonOptions = new JsonSerializerOptions
+// "--service": started by Windows as the EdgeGateway service (service\install-service.ps1).
+// Started by hand (dotnet run, the .bat files) it is a console window, Ctrl+C to stop.
+var asService = args.Contains("--service");
+if (asService && OperatingSystem.IsWindows())
 {
-    PropertyNameCaseInsensitive = true,
-    Converters = { new JsonStringEnumConverter() }
-};
-
-var unidentified = new UnidentifiedTagTracker();
-var configStore = new GatewayConfigStore("Config", jsonOptions, unidentified);
-// Machines with their own mapping (Config/machines/<machine_id>/); the rest use the shared one.
-var machines = new MachineRegistry(configStore, unidentified, jsonOptions);
-if (machines.Ids.Count > 0)
-    Console.WriteLine($"[config] machines with their own mapping: {string.Join(", ", machines.Ids)}");
-var traffic = new TrafficRegistry(); // per connection / machine counts for the Machines view
-
-// message_ids of the last 10 min, kept over a clean restart (saved below on Ctrl+C).
-var messageIdsPath = Path.Combine(AppContext.BaseDirectory, "state", "message-ids.txt");
-var messageIds = MessageIdFilter.Load(messageIdsPath);
-if (messageIds.Count > 0)
-    Console.WriteLine($"[ingest] {messageIds.Count:N0} message_ids from the last {MessageIdFilter.Window.TotalMinutes:0} min loaded (duplicate check)");
-
-var gateway = new GatewayHost(machines, jsonOptions, traffic, messageIds);
-var adminServer = new AdminWebServer(adminPort, "wwwroot", machines, gateway, log, jsonOptions, traffic);
-
-Console.WriteLine("Edge gateway starting — Ctrl+C to stop");
-Console.WriteLine($"Configuration UI: http://localhost:{adminPort}/config/");
+    System.ServiceProcess.ServiceBase.Run(new GatewayService(RunAsync));
+    return;
+}
 
 using var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) =>
@@ -49,15 +33,58 @@ Console.CancelKeyPress += (_, e) =>
     e.Cancel = true;
     cts.Cancel();
 };
+await RunAsync(cts.Token);
 
-await Task.WhenAll(
-    gateway.RunAsync(cts.Token),      // TCP in -> MES outbox / digital twin; restartable
-    adminServer.RunAsync(cts.Token)   // config page; stays up across restarts
-);
+async Task RunAsync(CancellationToken stop)
+{
+    // First: every console line also goes to logs\gateway-<date>.log (kept 14 days)
+    // and to the config page's Log view, so errors are not lost in the background.
+    var log = GatewayLog.Install(Path.Combine(DataFolder.Root, "logs"), keepDays: 14);
 
-// Only reached on Ctrl+C (a closed window or a hard kill never gets here),
-// so the log shows whether the last stop was a clean one. ("stopped" would mark
-// the line as a problem in the log.) Only ids of saved (acked) messages are in the
-// filter; rows an outbox could not write in time are logged by that outbox.
-var savedIds = messageIds.Save(messageIdsPath);
-Console.WriteLine($"[gateway] shut down cleanly (Ctrl+C), {savedIds:N0} message_ids of saved messages kept for the duplicate check");
+    var jsonOptions = new JsonSerializerOptions
+    {
+        PropertyNameCaseInsensitive = true,
+        Converters = { new JsonStringEnumConverter() }
+    };
+
+    var unidentified = new UnidentifiedTagTracker();
+    var configStore = new GatewayConfigStore(Path.Combine(DataFolder.Root, "Config"), jsonOptions, unidentified);
+    // Machines with their own mapping (Config/machines/<machine_id>/); the rest use the shared one.
+    var machines = new MachineRegistry(configStore, unidentified, jsonOptions);
+    if (machines.Ids.Count > 0)
+        Console.WriteLine($"[config] machines with their own mapping: {string.Join(", ", machines.Ids)}");
+    var traffic = new TrafficRegistry(); // per connection / machine counts for the Machines view
+
+    // message_ids of the last 10 min, kept over a clean restart (saved below on Ctrl+C / service stop).
+    var messageIdsPath = Path.Combine(DataFolder.Root, "state", "message-ids.txt");
+    var messageIds = MessageIdFilter.Load(messageIdsPath);
+    if (messageIds.Count > 0)
+        Console.WriteLine($"[ingest] {messageIds.Count:N0} message_ids from the last {MessageIdFilter.Window.TotalMinutes:0} min loaded (duplicate check)");
+
+    var gateway = new GatewayHost(machines, jsonOptions, traffic, messageIds);
+    var adminServer = new AdminWebServer(adminPort, "wwwroot", machines, gateway, log, jsonOptions, traffic);
+
+    Console.WriteLine(asService ? "Edge gateway starting as a Windows service" : "Edge gateway starting — Ctrl+C to stop");
+    Console.WriteLine($"Data folder: {DataFolder.Root}");
+    Console.WriteLine($"Configuration UI: http://localhost:{adminPort}/config/");
+
+    await Task.WhenAll(
+        gateway.RunAsync(stop),   // TCP in -> MES outbox / digital twin; restartable
+        PageAsync()               // config page; stays up across restarts
+    );
+
+    // Only reached on Ctrl+C or a service stop (a closed window or a hard kill never
+    // gets here), so the log shows whether the last stop was a clean one. ("stopped"
+    // would mark the line as a problem in the log.) Only ids of saved (acked) messages
+    // are in the filter; rows an outbox could not write in time are logged by that outbox.
+    var savedIds = messageIds.Save(messageIdsPath);
+    Console.WriteLine($"[gateway] shut down cleanly ({(asService ? "service stop" : "Ctrl+C")}), {savedIds:N0} message_ids of saved messages kept for the duplicate check");
+
+    // The page failing to start (port taken, or no URL rights for the service account)
+    // must not stop the gateway, and must not stay silent until the next stop.
+    async Task PageAsync()
+    {
+        try { await adminServer.RunAsync(stop); }
+        catch (Exception ex) { Console.WriteLine($"[config] config page could not start on port {adminPort}, the gateway runs without it: {ex.Message}"); }
+    }
+}

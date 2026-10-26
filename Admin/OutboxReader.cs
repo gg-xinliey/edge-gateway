@@ -20,7 +20,7 @@ public static class OutboxReader
     private static readonly Regex DayPattern = new(@"^\d{4}-\d{2}-\d{2}$", RegexOptions.Compiled);
     private const string Legacy = "legacy"; // the old single outbox.db, if still there
 
-    public static string Folder => Path.Combine(AppContext.BaseDirectory, "outbox");
+    public static string Folder => Path.Combine(EdgeGateway.Services.DataFolder.Root, "outbox");
 
     // "" = the shared outbox (outbox/), then one per machine with its own
     // outbox folder (outbox/<machine_id>/).

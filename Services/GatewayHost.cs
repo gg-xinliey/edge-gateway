@@ -137,9 +137,9 @@ public sealed class GatewayHost
 
         // MES paths: the shared one (outbox/) and one per machine with its own
         // mapping (outbox/<machine_id>/). Each: outbox file right away, then to MES
-        // per data group on its interval (sendEveryMs, read live). Outbox folders
-        // are next to the exe (not the working directory: a service starts in System32).
-        var outboxRoot = Path.Combine(AppContext.BaseDirectory, "outbox");
+        // per data group on its interval (sendEveryMs, read live). Outbox folders are in
+        // the data folder (not the working directory: a service starts in System32).
+        var outboxRoot = Path.Combine(DataFolder.Root, "outbox");
         var pipelines = new ConcurrentDictionary<string, Lazy<MesPipeline>>(StringComparer.OrdinalIgnoreCase);
         var pipelineFailed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 

@@ -23,9 +23,25 @@ Full guide (message format, every reply, every setting, troubleshooting): [USE_C
 Machines connect to `listenAddress:tcpPort` in `machine-config.json` (now `192.168.250.78:9000`).
 A failed start is retried by itself (5 s, 10 s ... every 60 s).
 
+### As a Windows service (production)
+
+The same exe runs as the service `EdgeGateway`: it starts with Windows, restarts after a crash,
+and a service stop is a clean stop (like Ctrl+C). Program in `C:\Program Files\EdgeGateway`,
+data in `C:\ProgramData\EdgeGateway`. The scripts in `service\` need an administrator:
+
+| Step | Command |
+|---|---|
+| 1. Release build | `service\publish.ps1` |
+| 2. Install once (take over the console gateway's data) | stop the console gateway, then `service\install-service.ps1 -CopyDataFrom "<repo>\bin\Debug\net8.0" -Start` |
+| New version | `service\publish.ps1`, then `service\update-service.ps1` |
+| Remove (data is kept) | `service\uninstall-service.ps1` |
+
+Only one gateway can run at a time (same ports). The firewall rule for TCP 9000 is IT's.
+
 ## Where things are
 
-Everything below is next to the running exe (e.g. `bin\Debug\net8.0\`). The config page edits these
+Everything below is in the data folder: next to the running exe (e.g. `bin\Debug\net8.0\`), or the
+folder given with `--data` (the service: `C:\ProgramData\EdgeGateway`). The config page edits these
 files, not the project's `Config\` folder.
 
 | Path | What |
@@ -54,6 +70,7 @@ files, not the project's `Config\` folder.
 | `Services\` | the gateway: TCP in, mapping, outbox, MES sender, MQTT relay |
 | `Admin\`, `wwwroot\config\` | the config page and its API |
 | `Config\` | default config files (copied next to the exe on build) |
+| `service\` | publish, install, update, uninstall the Windows service |
 | `docs\` | diagrams |
 | `tests\EdgeGateway.Checks\` | regression checks, one per fixed GitHub issue |
 | `tools\` | `LocalMqttTest` (local broker, load test, test-env scripts), `MES_EMULATOR` (fake MES), `MachineSim` (machine simulator + end-to-end check) |
@@ -70,7 +87,8 @@ They run while the gateway runs. End-to-end check with MachineSim and the fake M
 
 ## Known limits
 
-- Runs as a console window, not a Windows service, and its data and config live under `bin\`. Fix before production.
+- The gateway PC still runs the console window with its data under `bin\`. The service is ready
+  (`service\`) but not installed yet.
 - Port 9000 has no login: keep it on the machine network (firewall rule by IT).
 - The real MES API is not confirmed yet (repeat `event_id`, 409, timeout, login). After a gateway crash a row
   can reach MES twice with the same `event_id`; MES must drop the repeat.
