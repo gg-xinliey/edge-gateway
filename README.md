@@ -31,8 +31,9 @@ data in `C:\ProgramData\EdgeGateway`. The scripts in `service\` need an administ
 
 | Step | Command |
 |---|---|
-| 1. Release build | `service\publish.ps1` |
-| 2. Install once (take over the console gateway's data) | stop the console gateway, then `service\install-service.ps1 -CopyDataFrom "<repo>\bin\Debug\net8.0" -Start` |
+| Install (one click) | double-click `service\Install Gateway Service.bat`: it asks for the program folder, data folder and old gateway folder to take over (Enter = default), stops a console gateway, builds, asks for admin rights, installs and starts |
+| Install another PC | build there, or copy `bin\publish\EdgeGateway` along (self-contained: no .NET needed), then the same `.bat` |
+| Install by hand | `service\publish.ps1`, then as admin `service\install-service.ps1 -CopyDataFrom "<old exe folder>" -Start` |
 | New version | `service\publish.ps1`, then `service\update-service.ps1` |
 | Remove (data is kept) | `service\uninstall-service.ps1` |
 
