@@ -656,8 +656,10 @@ if (which is "all" or "101")
         cmd.ExecuteNonQuery();
     }
     var rows = outbox.ReadUnsent(10).Select(r => r.Envelope.event_id).ToList();
+    var backlog = outbox.CountUnsent();
     await outbox.DisposeAsync();
-    Report("SVI-101 a late batch in yesterday's file is still read", rows.Contains("late"), $"read: [{string.Join(", ", rows)}]");
+    Report("SVI-101 a late batch in yesterday's file is still read and counted", rows.Contains("late") && backlog == 1,
+        $"read: [{string.Join(", ", rows)}], backlog {backlog} (want 1)");
 }
 
 if (which is "all" or "100")
