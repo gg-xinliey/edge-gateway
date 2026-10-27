@@ -48,4 +48,10 @@ public class MachineConfig
     // Rows MES has acknowledged are deleted after this many days.
     // Rows not yet delivered are never deleted.
     public int OutboxKeepSentDays { get; set; } = 7;
+
+    // A record MES keeps answering 500 or 413 moves to failed messages after this many
+    // tries in a row, once MES took other records meanwhile or after MesStuckRowMinutes
+    // (MesForwarder). Read at start: applied by Restart Gateway.
+    public int MesStuckRowTries { get; set; } = 5;
+    public int MesStuckRowMinutes { get; set; } = 10;
 }

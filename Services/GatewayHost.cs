@@ -158,7 +158,8 @@ public sealed class GatewayHost
         MesPipeline NewPipeline(string? machineId)
         {
             var pipeline = new MesPipeline(machineId, machineId is null ? outboxRoot : Path.Combine(outboxRoot, machineId),
-                machine.OutboxKeepSentDays, http, machine.MesUrl, envelopeBuilder, Stats, parts.Token);
+                machine.OutboxKeepSentDays, http, machine.MesUrl, envelopeBuilder, Stats, parts.Token,
+                machine.MesStuckRowTries, machine.MesStuckRowMinutes);
             // A MES sender that dies stops this run (as the shared one always did), so it is seen.
             _ = pipeline.Running.ContinueWith(t => pipelineFailed.TrySetException(t.Exception!.InnerExceptions),
                 TaskContinuationOptions.OnlyOnFaulted);

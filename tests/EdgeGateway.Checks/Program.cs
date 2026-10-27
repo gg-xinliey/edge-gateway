@@ -786,5 +786,38 @@ if (which is "all" or "96")
         $"{atMes.Select(x => x.Id).Distinct().Count()} event_ids, replies: {string.Join(" ", replies)}");
 }
 
+if (which is "all" or "stuck")
+{
+    // Stuck-row limits as General settings: tries >= 1, minutes 1-10, 0 refused.
+    var (_, json) = TempConfig();
+    string? Check(string extra) => EdgeGateway.Admin.ConfigValidator.Validate("machine-config",
+        $$"""{"listenAddress":"0.0.0.0","tcpPort":9000,"mesUrl":"http://localhost:5001/","timestampsWithoutZone":"UTC"{{extra}}}""", json, 8080);
+    var cases = new (string Extra, bool Ok)[]
+    {
+        ("", true), (",\"mesStuckRowTries\":1", true), (",\"mesStuckRowTries\":1000", true), (",\"mesStuckRowTries\":0", false),
+        (",\"mesStuckRowMinutes\":1", true), (",\"mesStuckRowMinutes\":10", true), (",\"mesStuckRowMinutes\":0", false), (",\"mesStuckRowMinutes\":11", false),
+    };
+    var wrong = cases.Where(c => (Check(c.Extra) is null) != c.Ok).Select(c => $"{c.Extra.TrimStart(',')} -> {Check(c.Extra) ?? "accepted"}").ToList();
+    Report("settings: stuck-row limits checked on save", wrong.Count == 0, wrong.Count == 0 ? $"{cases.Length} cases as expected" : string.Join("; ", wrong));
+
+    // The forwarder uses the tries value it is given: 2 tries, then failed (another machine delivering).
+    var port = 19900 + Random.Shared.Next(90);
+    var tries = 0;
+    var mes = FakeMes(port, body => { if (!body.Contains("\"machine_id\":\"BIG\"")) return 200; Interlocked.Increment(ref tries); return 500; });
+    var dir = Path.Combine(Path.GetTempPath(), "gw-97", Guid.NewGuid().ToString("N"));
+    var outbox = new Outbox(dir);
+    await QueueRow(outbox, "BIG", "PROCESS");
+    await QueueRow(outbox, "OTHER", "PROCESS", 0, -1); // delivered in the first pass, after BIG's first 500
+    using var stop = new CancellationTokenSource();
+    var forwarder = new MesForwarder(new HttpClient { Timeout = TimeSpan.FromSeconds(5) }, $"http://localhost:{port}/", outbox,
+        new GatewayStats(), null, TimeSpan.FromHours(1), stuckTries: 2).RunAsync(stop.Token);
+    var feed = Task.Run(async () => { for (var i = 0; !stop.IsCancellationRequested && i < 30; i++) { await QueueRow(outbox, "OTHER", "PROCESS", 0, i); await Task.Delay(500); } });
+    var big = Counts(dir, "BIG");
+    for (var i = 0; i < 20 && big.Failed == 0; i++) { await Task.Delay(1000); big = Counts(dir, "BIG"); }
+    stop.Cancel(); try { await forwarder; } catch { } try { await feed; } catch { }
+    mes.Stop(); await outbox.DisposeAsync(); Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+    Report("settings: forwarder uses mesStuckRowTries", big.Failed == 1 && tries == 2, $"failed {big.Failed} (want 1) after {tries} tries (want 2)");
+}
+
 Console.WriteLine(failed == 0 ? "ALL PASS" : $"{failed} FAILED");
 return failed == 0 ? 0 : 1;

@@ -151,6 +151,10 @@ public static class ConfigValidator
             return "mesUrl must be a full http:// or https:// address.";
         if (machine.OutboxKeepSentDays < 1)
             return "outboxKeepSentDays must be at least 1.";
+        if (machine.MesStuckRowTries < 1)
+            return "mesStuckRowTries must be at least 1.";
+        if (machine.MesStuckRowMinutes is < 1 or > 10)
+            return "mesStuckRowMinutes must be between 1 and 10.";
         if (machine.TimestampsWithoutZone.Trim().ToLowerInvariant() is not ("utc" or "local"))
             return "timestampsWithoutZone must be UTC or local.";
 

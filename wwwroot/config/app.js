@@ -1278,6 +1278,8 @@ const SETTINGS = {
   unregisteredMachines: { label: 'Machine without a tab', choices: [['hold', 'hold its data until it gets a tab'], ['shared', 'map it with the Template']] },
   unmappedTags: { label: 'Tag not in the mapping', choices: [['send', 'send the known tags, leave it out'], ['hold', 'hold the whole message until it is mapped']] },
   outboxKeepSentDays: { label: 'Keep sent records (days)', help: 'A day file is deleted when it is this many days old and everything in it was sent.' },
+  mesStuckRowTries: { label: 'MES: tries before a stuck record moves to failed', help: 'A record MES keeps answering 500 or 413 moves to failed messages after this many tries in a row, once MES took other records meanwhile. At least 1. Applied on Restart Gateway.' },
+  mesStuckRowMinutes: { label: 'MES: minutes before a stuck record moves to failed (when nothing else is sent)', help: 'Same, when MES took nothing else meanwhile (e.g. one machine alone). 1 to 10. Applied on Restart Gateway.' },
 };
 
 // MQTTConfig / MachineConfig: one setting per row.

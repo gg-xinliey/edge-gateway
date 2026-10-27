@@ -27,8 +27,8 @@ namespace EdgeGateway.Services;
 //     and the machine's next rows go on. Re-send it after a fix, or discard it
 //     with a reason, on the config page.
 //   * MES answers 500 (not 502/503/504: down or overloaded) or 413 for the same row
-//     ServerErrorTries times in a row, and either took other records meanwhile or
-//     kept at it for StuckLimit (10 min): MES fails on that row. It is moved to failed
+//     mesStuckRowTries times in a row (5), and either took other records meanwhile or
+//     kept at it for mesStuckRowMinutes (10 min): MES fails on that row. It is moved to failed
 //     messages too (alert on the page), so the machine's next rows go on (SVI-97).
 //     The time limit covers a machine alone in its own outbox: nothing else is
 //     delivered there, so "MES took others" never comes.
@@ -40,9 +40,10 @@ public class MesForwarder
     private static readonly TimeSpan FirstRetryDelay = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan MaxRetryDelay = TimeSpan.FromSeconds(60);
     private const int MaxErrorText = 1_000;
-    private const int ServerErrorTries = 5;
+    private const int DefaultStuckTries = 5;
     private static readonly TimeSpan DefaultStuckLimit = TimeSpan.FromMinutes(10);
     private readonly TimeSpan _stuckLimit;
+    private readonly int _stuckTries;
 
     // Rows MES answered 500 for, by event_id: tries in a row and when the first was (UTC ticks).
     private readonly ConcurrentDictionary<string, (int Tries, long FirstTicks)> _serverErrors = new();
@@ -70,11 +71,12 @@ public class MesForwarder
     private readonly string _outboxTag; // "[outbox]" or "[outbox NXT101]"
 
     // label: the machine_id of the machine's own pipeline; null for the shared one.
-    // stuckLimit: see StuckLimit above (checks shorten it).
+    // stuckLimit / stuckTries: the stuck-row rule above (machine-config mesStuckRowMinutes / mesStuckRowTries).
     public MesForwarder(HttpClient http, string mesUrl, Outbox outbox, GatewayStats? stats = null, string? label = null,
-        TimeSpan? stuckLimit = null)
+        TimeSpan? stuckLimit = null, int? stuckTries = null)
     {
         _stuckLimit = stuckLimit ?? DefaultStuckLimit;
+        _stuckTries = stuckTries ?? DefaultStuckTries;
         _http = http;
         _endpoint = new Uri(mesUrl);
         _outbox = outbox;
@@ -231,13 +233,13 @@ public class MesForwarder
     }
 
     // One more 500 (or 413) for this row. Returns why it counts as the row's fault (for the failed
-    // message), or null to retry: needs ServerErrorTries of them, and MES took a record
+    // message), or null to retry: needs _stuckTries of them, and MES took a record
     // (any machine) after the first, or the 500s went on for the stuck limit.
     private string? FailsOnThisRow(string eventId)
     {
         var now = DateTimeOffset.UtcNow.UtcTicks;
         var entry = _serverErrors.AddOrUpdate(eventId, _ => (1, now), (_, old) => (old.Tries + 1, old.FirstTicks));
-        if (entry.Tries < ServerErrorTries)
+        if (entry.Tries < _stuckTries)
             return null;
         var why = _stats is not null && _stats.LastDeliveredTicks > entry.FirstTicks
             ? $"{entry.Tries} times in a row for this record while it took other records"

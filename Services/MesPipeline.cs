@@ -16,12 +16,13 @@ public sealed class MesPipeline : IAsyncDisposable
     private GatewayConfigStore? _senderStore;
 
     public MesPipeline(string? machineId, string outboxFolder, int keepSentDays, HttpClient http, string mesUrl,
-        EnvelopeBuilder envelopes, GatewayStats stats, CancellationToken ct)
+        EnvelopeBuilder envelopes, GatewayStats stats, CancellationToken ct, int stuckRowTries = 5, int stuckRowMinutes = 10)
     {
         MachineId = machineId;
         _envelopes = envelopes;
         Outbox = new Outbox(outboxFolder, keepSentDays, stats);
-        Running = new MesForwarder(http, mesUrl, Outbox, stats, machineId).RunAsync(ct);
+        Running = new MesForwarder(http, mesUrl, Outbox, stats, machineId,
+            TimeSpan.FromMinutes(stuckRowMinutes), stuckRowTries).RunAsync(ct);
     }
 
     public string? MachineId { get; }  // null = the shared pipeline
