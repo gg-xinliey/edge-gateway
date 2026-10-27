@@ -107,7 +107,7 @@ Gateway → MQTT, topic `svi/TEST/ASSY-L01-FCT-01/IO/input`:
 | Correct topic, but `payload` missing or not JSON | **Dropped** | `[mqtt] dropped '...': "payload" is missing or not a JSON object` |
 | Topic not ending in `IO/…` or `motion/…`, e.g. `M01/PRODUCTION/x` | Treated as MES data, not MQTT | Counted in `[stats]` as MES |
 | Same `message_id` again within 10 min | **Ignored**, before anything else is checked | Once a minute per sender: `[ingest] line from <ip:port> ignored: message_id … already received`; **repeats** on the Machines page |
-| MES line from a `machine_id` without a tab | **Held** (with `unregisteredMachines` = `hold`): not processed, not answered; the adapter keeps it | Pop-up + log line once a minute: `[ingest] NXT103 is not registered (no tab): its data cannot be used until it has a tab ...`; red "⚠ N not registered" on the tab bar; General → Machines → **register** |
+| MES line from a `machine_id` without a tab | **Held** (with `unregisteredMachines` = `hold`): not processed, not answered; the adapter keeps it | Log line once a minute: `[ingest] NXT103 is not registered (no tab): its data cannot be used until it has a tab ...`; red "⚠ N not registered" on the tab bar; General → Machines → **register** |
 | MES line without `message_id` | **Rejected** | Once a minute per sender: `[ingest] line from <ip:port> rejected: no message_id`; **rejected** on the Machines page |
 | MES line without `machine_id` | **Rejected**, so data is never filed under the wrong machine | Once a minute per sender: `[ingest] line from <ip> rejected: no machine_id (+N more ...)`. Its `message_id` is forgotten, so the corrected line can be sent with the same id |
 | CSV line `TAG,value` | **Rejected**: it can't carry a `machine_id` | Same as above |
@@ -147,7 +147,7 @@ All files are in the `Config\` folder **next to the running exe**, e.g. `bin\Rel
 
 | Setting | What happens to its MES lines |
 |---|---|
-| `hold` (default) | **Held**: not processed, not answered. The adapter keeps them. A red "⚠ N not registered" shows on the tab bar, the log line pops up, and General → Machines lists the machine with the tags it sent and a **register** button |
+| `hold` (default) | **Held**: not processed, not answered. The adapter keeps them. A red "⚠ N not registered" shows on the tab bar, the log has a line about it, and General → Machines lists the machine with the tags it sent and a **register** button |
 | `shared` | Processed with the Template mapping and the shared outbox (no notice) |
 
 - **Best:** register a machine before it starts sending. Same model as an existing machine (NXT103 next to NXT101): open that machine's tab and press **+**. New model: get the field list, press **+**, fill in the incoming tags.
@@ -161,7 +161,7 @@ All files are in the `Config\` folder **next to the running exe**, e.g. `bin\Rel
 | Setting | What happens to such a message |
 |---|---|
 | `send` (default) | The tags the mapping knows go to MES as usual and the message is acked: one new tag does not stop the machine's data. The unknown tags are **left out of MES** (never as `UNIDENTIFIED`) and listed under the tab's PointMap → **⚠ Unidentified** with their last value. Log line once a minute per machine: `[ingest] NXT102 sent tags its mapping doesn't know (source_ref): the other tags were sent, these are left out ...`. Values of a tag before it is mapped are not sent later. |
-| `hold` | The whole message is **held**: not processed, not answered, the adapter keeps it. A pop-up and a log line, **⚠** on the machine's tab and a red bar listing the tags. When the machine's last unknown tag is handled, the gateway closes its connection; the adapter sends the held messages again, and they go through complete. Until then that machine's MES data waits. |
+| `hold` | The whole message is **held**: not processed, not answered, the adapter keeps it. A log line, **⚠** on the machine's tab and a red bar listing the tags. When the machine's last unknown tag is handled, the gateway closes its connection; the adapter sends the held messages again, and they go through complete. Until then that machine's MES data waits. |
 
 - Fix it on that tab: PointMap → **⚠ Unidentified** → for each tag pick a group and field (a MES column, or an extra field), or **ignore (never sent)** for a tag MES doesn't need. Then **save**.
 - Ignored tags are kept in PointMap under the group `IGNORED`; remove a row there to stop ignoring it.
@@ -215,22 +215,22 @@ Open **http://localhost:5100/config/**. It only opens on the gateway PC itself.
 3. Use **remove rule** to delete a rule.
 
 **MQTTConfig / GatewayConfig** (General tab)
-1. Edit the values. GatewayConfig is `Config\machine-config.json`: gatewayId, listen address + port, MES URL, default data source, timestamps without a zone, outbox keep days, `unregisteredMachines` (`hold` or `shared`, see "A new machine" above). There is no machineId: which machine a line is from comes from the line's `machine_id`.
+1. Edit the values. Each setting has a plain name, its name in the file underneath (e.g. `mesUrl`), and a help line. The settings with fixed choices (`timestampsWithoutZone`, `unregisteredMachines`, `unmappedTags`) are drop-downs. GatewayConfig is `Config\machine-config.json`: gatewayId, listen address + port, MES URL, default data source, timestamps without a zone, outbox keep days, `unregisteredMachines` (`hold` or `shared`, see "A new machine" above). There is no machineId: which machine a line is from comes from the line's `machine_id`.
 2. These only apply after a restart.
 3. The gateway's own MQTT heartbeat is `svi/<area>/<gatewayId>/keepalive`.
 
 **Machines** (read-only, updates every 4 s)
-1. One row per `machine_id` the gateway has received: a dot for the state, the connection (ip:port), the last message, and the message counts.
+1. One row per `machine_id` the gateway has received: a dot for the state before its name, its tab, the connection (ip:port), the last message, and the message counts.
    - Green = connection open and a message in the last 60 s. Orange = open but quiet for over 60 s. Grey = disconnected. A machine that lost power or its cable shows grey after about 90 s (TCP keepalive).
-   - **messages** = all lines with this machine; **to MES** = lines that went into the outbox; **to MQTT** = lines relayed to the broker.
-   - **repeats** (orange if above 0) = lines ignored because their `message_id` was already received in the last 10 min.
-   - **time warnings** (orange if above 0) = messages whose `timestamp` couldn't be read (arrival time used) or was more than 1 h from arrival (wrong machine clock, wrong `timestampsWithoutZone`, or an old message resent). The log says which.
+   - **messages** = all lines with this machine; **to MES / MQTT** = lines that went into the outbox / were relayed to the broker.
+   - **issues** shows only the counters that are not 0 (hover for what each means):
+     - **held** (red) = messages waiting right now (no tab, or tags not mapped);
+     - **repeats** (orange) = lines ignored because their `message_id` was already received in the last 10 min;
+     - **time warnings** (orange) = messages whose `timestamp` couldn't be read (arrival time used) or was more than 1 h from arrival (wrong machine clock, wrong `timestampsWithoutZone`, or an old message resent). The log says which.
    - **data sources** = how many messages came with each `data_source`.
 2. **Connections** lists each TCP connection (open first, plus the last 200 closed ones):
    - **lines**: non-empty lines received on it.
-   - **rejected** (red if above 0): lines without `machine_id` or `message_id`, not used.
-   - **repeats** (orange if above 0): lines ignored for a repeated `message_id`.
-   - **unreadable** (red if above 0): lines that weren't valid JSON.
+   - **issues**, only when not 0: **rejected** (red: no `machine_id` or `message_id`, not used), **unreadable** (red: not valid JSON), **repeats** (orange: repeated `message_id`, ignored).
 3. To check that nothing was missed: the source's count of sent lines must equal **lines** on its connection. Every line is counted when it arrives, before it is handled.
 4. Counts start when the exe starts. A **Restart now** from the page keeps them; closing the exe resets them.
 
@@ -251,7 +251,8 @@ Open **http://localhost:5100/config/**. It only opens on the gateway PC itself.
 
 **Log**
 1. Shows everything the gateway printed, with problems in red. Tick **Show problems only** to filter.
-2. When a new problem arrives, the page shows a red pop-up, and the status area shows **⚠ N new problems · view log**. Click it to open the Log.
+2. New problem lines are counted in the status area: **⚠ N new problems · view log**. Click it to open the Log. There is no pop-up per line.
+3. A problem that lasts shows as one banner at the top of every view until it is solved: **MES not reachable since …** (records wait in the outbox, with how many), **MQTT broker not reachable since …** (IO / motion data and the keepalive are not published), **Gateway stopped** (it tries again by itself), or the page lost its connection to the gateway. Pop-ups are only for what you just did (save, register, restart) and for records MES rejects.
 
 **Every view**
 - Bottom left: gateway state, plus the last 10 s per second: lines in, MQTT out, MES delivered, and the backlog (rows waiting for MES).

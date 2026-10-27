@@ -22,7 +22,7 @@
 body { margin: 0; min-height: 100vh; background: var(--page); }
 button, input, select { font: inherit; color: inherit; }
 
-.shell { max-width: 1000px; margin: 18px auto 24px; }
+.shell { max-width: 1400px; margin: 18px auto 24px; padding: 0 16px; }
 
 .window {
   display: grid;
@@ -35,11 +35,12 @@ button, input, select { font: inherit; color: inherit; }
   box-shadow: 0 2px 12px rgba(0, 0, 0, .08);
 }
 
-/* ---- top tabs, like browser tabs: General | Other machines | one per machine | + ---- */
-.tabs { position: relative; z-index: 1; display: flex; align-items: flex-end; gap: 2px; padding: 0 6px; margin-bottom: -1px; overflow-x: auto; scrollbar-width: thin; }
+/* ---- top tabs, like browser tabs: General | Other machines | one per machine | + ----
+   Full names, wrapping onto more rows: every machine readable, the open tab always in sight. */
+.tabs { position: relative; z-index: 1; display: flex; flex-wrap: wrap; align-items: flex-end; gap: 4px 2px; padding: 0 6px; margin-bottom: -1px; }
 .tab {
-  display: flex; align-items: center; gap: 6px; flex: 0 1 auto;
-  height: 32px; min-width: 92px; max-width: 200px; padding: 0 8px 0 14px;
+  display: flex; align-items: center; gap: 6px; flex: 0 0 auto;
+  height: 32px; min-width: 92px; padding: 0 8px 0 14px;
   background: #d6d6d6; border: 1px solid var(--line); border-bottom: none; border-radius: 8px 8px 0 0;
   font-size: 13px; white-space: nowrap; cursor: pointer; user-select: none;
 }
@@ -94,6 +95,7 @@ span.bad { color: var(--bad); font-weight: 600; }
 .err-badge[hidden] { display: none; }
 
 /* ---- Machines / Outbox tables ---- */
+.table-wrap { overflow-x: auto; } /* a wide table scrolls by itself, not the whole page */
 table.data { width: 100%; border-collapse: collapse; background: var(--field); border: 1px solid var(--line); font-size: 13px; }
 table.data th { text-align: left; font-weight: 600; padding: 6px 8px; border-bottom: 1px solid var(--line); background: #f7f7f7; white-space: nowrap; }
 table.data td { padding: 5px 8px; border-bottom: 1px solid #eeeeee; vertical-align: top; }
@@ -136,6 +138,14 @@ button.more { margin-top: 10px; }
 /* ---- right: search, picker, rows, save ---- */
 .panel { display: flex; flex-direction: column; min-width: 0; }
 
+/* Ongoing problems: amber = data is safe and waits, red = the gateway itself is down */
+.alerts { display: grid; gap: 6px; margin-bottom: 12px; }
+.alerts[hidden] { display: none; }
+.alert { padding: 8px 12px; border: 1px solid; border-radius: 3px; font-size: 13px; line-height: 1.45; }
+.alert.warn { background: #fff4e0; border-color: #e0a84a; color: #6b4000; }
+.alert.bad { background: #fdecea; border-color: var(--bad); color: var(--bad); }
+.alert .link { margin-left: 6px; color: inherit; }
+
 button {
   height: 30px;
   padding: 0 16px;
@@ -164,7 +174,10 @@ select { height: 32px; min-width: 190px; padding: 0 6px; background: var(--field
 .grid { display: grid; gap: 12px 12px; align-items: center; max-width: 640px; }
 .grid.two { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 30px; }
 .grid.three { grid-template-columns: 150px minmax(0, 1fr) minmax(0, 1fr) 30px; }
-.grid.form { grid-template-columns: 200px minmax(0, 1fr); }
+.grid.form { grid-template-columns: 230px minmax(0, 1fr); align-items: start; max-width: 780px; }
+.grid.form .label { padding-top: 6px; }
+.grid.form .label .key { display: block; margin-top: 2px; font: 11px Consolas, "Cascadia Mono", monospace; color: var(--muted); }
+.grid.form .help { margin-top: 4px; font-size: 12px; color: var(--muted); }
 .grid.unid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 160px minmax(0, 1fr); max-width: none; }
 .grid .head { padding-left: 4px; font-size: 15px; }
 .grid .label { padding-left: 4px; }
@@ -212,7 +225,7 @@ dialog::backdrop { background: rgba(0, 0, 0, .25); }
 .nav[hidden] { display: none; }
 
 @media (max-width: 720px) {
-  .shell { margin: 0; }
+  .shell { margin: 0; padding: 0; }
   .window { grid-template-columns: 1fr; margin: 0; min-height: 100vh; }
   .side { flex-direction: row; flex-wrap: wrap; }
   .side h1 { width: 100%; margin-bottom: 4px; }

@@ -37,7 +37,8 @@ const state = {
   lastLogId: 0,
   errorCount: 0,            // problem lines since the gateway started
   seenErrors: 0,            // errorCount when the Log view was last opened
-  logsLoaded: false,        // no pop-ups for the backlog on first load
+  problems: { mes: new Map(), mqtt: null }, // ongoing: MES down per forwarder -> since, MQTT down since (banners)
+  unreachable: false,       // the page lost its connection to the gateway
   errorsOnly: false,
   machines: null,           // /api/machines
   outbox: { scope: '', scopes: null, days: null, day: null, machine: '', group: '', source: '', status: '', rows: [], more: false, open: {}, loading: false },
@@ -421,10 +422,13 @@ function ago(iso) {
 const localTime = iso => iso ? new Date(iso).toLocaleString() : '—';
 
 function table(headers, rows) {
-  return h('table', { class: 'data' },
+  return h('div', { class: 'table-wrap' }, h('table', { class: 'data' },
     h('thead', {}, h('tr', {}, ...headers.map(t => h('th', { textContent: t })))),
-    h('tbody', {}, ...rows));
+    h('tbody', {}, ...rows)));
 }
+
+// One "issues" cell instead of a column per counter: only the counters that are not 0.
+const issues = parts => parts.filter(([n]) => n > 0).map(([n, what]) => `${n.toLocaleString()} ${what}`).join(' · ') || '—';
 
 function renderMachines(view) {
   const data = state.machines;
@@ -467,34 +471,37 @@ function renderMachines(view) {
     `${data.machines.length} machines (${online} connected) · ${openConnections} open connections` }));
 
   view.append(machines.length ? table(
-    ['', 'machine', 'mapping', 'connection', 'last message', 'new messages', 'to MES', 'to MQTT', 'repeats', 'held', 'time warnings', 'per s', 'data sources'],
+    ['machine', 'tab', 'connection', 'last message', 'messages', 'to MES / MQTT', 'per s', 'issues', 'data sources'],
     machines.map(m => h('tr', {},
-      h('td', {}, h('span', { class: `dot ${m.status}`, title: m.status })),
-      h('td', { class: 'strong', textContent: m.machineId }),
+      h('td', { class: 'strong' }, h('span', { class: `dot ${m.status}`, title: m.status }), ` ${m.machineId}`),
       h('td', { class: 'small' }, ownTabLink(m.machineId)),
       h('td', { textContent: m.status === 'disconnected' ? `${m.connection} (gone ${ago(m.disconnectedAt)})` : m.connection }),
       h('td', { textContent: ago(m.lastMessage), title: localTime(m.lastMessage) }),
       h('td', { class: 'num', textContent: m.total.toLocaleString(), title: 'Each message counted once, when it is accepted. Repeats and held tries are not counted; a held message counts when it goes through.' }),
-      h('td', { class: 'num', textContent: m.mes.toLocaleString() }),
-      h('td', { class: 'num', textContent: m.mqtt.toLocaleString() }),
-      h('td', { class: m.duplicates ? 'num warn' : 'num', textContent: m.duplicates.toLocaleString(), title: 'Lines ignored: message_id already received in the last 10 min' }),
-      h('td', { class: m.held ? 'num bad' : 'num', textContent: m.held.toLocaleString(), title: 'Messages waiting right now (no tab, or tags not mapped). They count as new messages once they go through.' }),
-      h('td', { class: m.badTimes ? 'num warn' : 'num', textContent: (m.badTimes ?? 0).toLocaleString(), title: 'Messages whose timestamp could not be read (arrival time used) or was over an hour from arrival (used as sent). The log says which.' }),
+      h('td', { class: 'num', textContent: `${m.mes.toLocaleString()} / ${m.mqtt.toLocaleString()}` }),
       h('td', { class: 'num', textContent: m.perSecond.toFixed(1) }),
+      h('td', {
+        class: m.held ? 'small bad' : (m.duplicates || m.badTimes) ? 'small warn' : 'small',
+        textContent: issues([[m.held, 'held'], [m.duplicates, 'repeats'], [m.badTimes ?? 0, 'time warnings']]),
+        title: 'held: messages waiting right now (no tab, or tags not mapped), counted as messages once they go through\n' +
+               'repeats: message_id already received in the last 10 min, ignored\n' +
+               'time warnings: timestamp unreadable (arrival time used) or over an hour from arrival (used as sent); the log says which',
+      }),
       h('td', { class: 'small', textContent: m.dataSources.map(d => `${d.name} ${d.count.toLocaleString()}`).join(' · ') || '—' })))
   ) : h('div', { class: 'empty', textContent: data.machines.length ? 'No machine matches the search.' : 'No machine has sent anything yet.' }));
 
   view.append(h('h3', { class: 'sub', textContent: 'Connections' }));
   view.append(data.connections.length ? table(
-    ['', 'connection', 'since', 'lines', 'rejected', 'repeats', 'unreadable', 'last line', 'machines'],
+    ['connection', 'since', 'lines', 'issues', 'last line', 'machines'],
     data.connections.map(c => h('tr', {},
-      h('td', {}, h('span', { class: `dot ${c.open ? 'connected' : 'disconnected'}`, title: c.open ? 'open' : 'closed' })),
-      h('td', { class: 'strong', textContent: c.endpoint }),
+      h('td', { class: 'strong' }, h('span', { class: `dot ${c.open ? 'connected' : 'disconnected'}`, title: c.open ? 'open' : 'closed' }), ` ${c.endpoint}`),
       h('td', { textContent: c.open ? localTime(c.connectedAt) : `closed ${ago(c.closedAt)}` }),
       h('td', { class: 'num', textContent: c.lines.toLocaleString(), title: 'Every line received on this connection, including repeats and resends of held messages' }),
-      h('td', { class: c.rejected ? 'num bad' : 'num', textContent: c.rejected.toLocaleString(), title: 'Lines without machine_id or message_id (not used)' }),
-      h('td', { class: c.duplicates ? 'num warn' : 'num', textContent: c.duplicates.toLocaleString(), title: 'Lines ignored: message_id already received in the last 10 min' }),
-      h('td', { class: c.unreadable ? 'num bad' : 'num', textContent: c.unreadable.toLocaleString() }),
+      h('td', {
+        class: c.rejected || c.unreadable ? 'small bad' : c.duplicates ? 'small warn' : 'small',
+        textContent: issues([[c.rejected, 'rejected'], [c.unreadable, 'unreadable'], [c.duplicates, 'repeats']]),
+        title: 'rejected: no machine_id or message_id (not used)\nunreadable: not valid JSON\nrepeats: message_id already received in the last 10 min, ignored',
+      }),
       h('td', { textContent: ago(c.lastLine) }),
       h('td', { class: 'small', textContent: c.machines.join(', ') || '—' })))
   ) : h('div', { class: 'empty', textContent: 'No connection yet.' }));
@@ -685,7 +692,7 @@ function renderFailed(view) {
 
   view.append(h('p', { class: 'section-note', textContent: f.total > f.rows.length
     ? `${f.total.toLocaleString()} rejected, oldest ${f.rows.length} shown.` : `${f.total.toLocaleString()} rejected.` }));
-  view.append(h('table', { class: 'data' },
+  view.append(h('div', { class: 'table-wrap' }, h('table', { class: 'data' },
     h('thead', {}, h('tr', {}, h('th', {}, all), ...['', 'machine', 'group', 'data source', 'event time', 'rejected', 'MES said', ''].map(t => h('th', { textContent: t })))),
     h('tbody', {}, ...rows.flatMap(r => {
       const key = failedKey(r);
@@ -707,7 +714,7 @@ function renderFailed(view) {
           ' · ',
           h('button', { type: 'button', class: 'link', textContent: 'discard', onclick: e => { e.stopPropagation(); failedAction('discard', refs([r])); } })));
       return open ? [tr, h('tr', {}, h('td', { colSpan: 9 }, h('pre', { class: 'json', textContent: open })))] : [tr];
-    }))));
+    })))));
 }
 
 async function loadFailed() {
@@ -784,6 +791,51 @@ function renderLog(view) {
   box.scrollTop = box.scrollHeight;
 }
 
+// Ongoing problems, read from the gateway's own log lines. These are fixed texts in
+// MesForwarder.cs and MqttPublisher*.cs / TwinForwarder.cs: change them together.
+function trackProblem(line) {
+  const text = line.text;
+  if (/^\[gateway\] running:/.test(text)) {
+    // A new run (start or restart) has new MES senders and MQTT clients: they log again if still failing.
+    state.problems.mes.clear();
+    state.problems.mqtt = null;
+    return;
+  }
+  const forwarder = text.match(/^\[forwarder(?: ([^\]]+))?\]/);
+  if (forwarder) {
+    const who = forwarder[1] ?? '';
+    if (/ send failed for | MES returned \d+ /.test(text)) { if (!state.problems.mes.has(who)) state.problems.mes.set(who, line.time); }
+    else if (/ MES reachable again /.test(text)) state.problems.mes.delete(who);
+    return;
+  }
+  if (/^\[mqtt\] connected to /.test(text)) state.problems.mqtt = null;
+  else if (/^\[(mqtt|twin)\] .*(cannot connect|connect failed|broker unreachable|connection dropped)/.test(text)) state.problems.mqtt ??= line.time;
+}
+
+function renderAlerts() {
+  const items = [];
+  const status = state.status;
+  const since = time => new Date(time).toLocaleTimeString();
+  if (state.unreachable)
+    items.push(['bad', 'This page cannot reach the gateway. Is it still running?']);
+  else if (status?.state === 'error')
+    items.push(['bad', `Gateway stopped: ${status.lastError}. It tries again by itself.`]);
+
+  if (state.problems.mes.size) {
+    const first = [...state.problems.mes.values()].sort()[0];
+    const who = [...state.problems.mes.keys()].filter(Boolean);
+    const backlog = status?.stats?.backlog;
+    items.push(['warn', `MES not reachable since ${since(first)}${who.length ? ` (${who.join(', ')})` : ''}. ` +
+      `${backlog > 0 ? `${backlog.toLocaleString()} records wait` : 'Records wait'} in the outbox and are sent when MES is back.`]);
+  }
+  if (state.problems.mqtt)
+    items.push(['warn', `MQTT broker not reachable since ${since(state.problems.mqtt)}: IO / motion data and the keepalive are not published (they are not kept).`]);
+
+  $('alerts').replaceChildren(...items.map(([kind, text]) => h('div', { class: `alert ${kind}` }, text,
+    h('button', { type: 'button', class: 'link', textContent: 'view log', onclick: () => switchView('log') }))));
+  $('alerts').hidden = !items.length;
+}
+
 function updateErrorBadge() {
   const unseen = state.errorCount - state.seenErrors;
   $('errBadge').hidden = unseen <= 0;
@@ -803,10 +855,10 @@ async function pollLogs() {
   }
   state.errorCount = result.errorCount;
 
-  // Pop up the newest new problem (only for lines that arrive while the page is open).
-  const newest = fresh.filter(l => l.isError).pop();
-  if (state.logsLoaded && newest && state.view !== 'log') toast(`Gateway: ${newest.text}`, true);
-  state.logsLoaded = true;
+  // No pop-up per problem line (they repeat every minute while MES or the broker is
+  // down): ongoing problems are one banner each at the top, the badge counts the lines.
+  fresh.forEach(trackProblem);
+  renderAlerts();
 
   if (state.view === 'log') {
     if (fresh.length) {
@@ -1202,6 +1254,32 @@ function renderTimestamp(view) {
   }));
 }
 
+// MQTTConfig / GatewayConfig settings in plain words. The file's own name stays
+// visible under each label: USE_CASE.md and the log use those names.
+// choices: the only values the gateway accepts (a drop-down, not free text).
+const SETTINGS = {
+  // mqtt-config.json
+  brokerAddress: { label: 'MQTT broker address', help: 'IP or name of the broker. In Docker, host.docker.internal is the PC itself.' },
+  brokerPort: { label: 'MQTT broker port', help: 'Usually 1883.' },
+  clientIdSuffix: { label: 'MQTT client name', help: 'The gateway connects as <PC name>_<this>. Two gateways on one broker need different names.' },
+  reconnectCooldownSeconds: { label: 'Reconnect wait (s)', help: 'After a failed connect to the broker, wait this long before trying again.' },
+  area: { label: 'Topic area', help: 'Topics the gateway makes itself start with svi/<area>/.' },
+  keepaliveIntervalSeconds: { label: 'Keepalive every (s)', help: 'The gateway publishes {"alive":true} on svi/<area>/<gateway id>/keepalive.' },
+  motionDeadband: { label: 'Motion: smallest change sent', help: 'A motion value is published again only after it moved at least this much.' },
+  maxPublishRateMs: { label: 'IO / motion: ms between publishes', help: 'At most one publish per topic in this time (50 = 20 per second).' },
+  // machine-config.json
+  gatewayId: { label: 'Gateway id', help: 'Sent to MES in every record (gateway_id) and used in the keepalive topic.' },
+  listenAddress: { label: 'Listen address', help: 'The IP of this PC that machines connect to. 0.0.0.0 = every address (needed in Docker).' },
+  tcpPort: { label: 'Machine TCP port', help: 'Machines connect to listen address : this port.' },
+  dataSource: { label: 'Default data source', help: 'Used for a message that has no data_source.' },
+  timestampsWithoutZone: { label: 'A timestamp without a zone is', choices: [['UTC', 'UTC'], ['local', 'local time of this PC']] },
+  protocolLabel: { label: 'Protocol label', help: 'Written into every MES record (protocol).' },
+  mesUrl: { label: 'MES address (URL)', help: 'Where the records are sent, e.g. http://mes-server/api/v1/machine-events.' },
+  unregisteredMachines: { label: 'Machine without a tab', choices: [['hold', 'hold its data until it gets a tab'], ['shared', 'map it with the Template']] },
+  unmappedTags: { label: 'Tag not in the mapping', choices: [['send', 'send the known tags, leave it out'], ['hold', 'hold the whole message until it is mapped']] },
+  outboxKeepSentDays: { label: 'Keep sent records (days)', help: 'A day file is deleted when it is this many days old and everything in it was sent.' },
+};
+
 // MQTTConfig / MachineConfig: one setting per row.
 function renderForm(view) {
   const key = state.view;
@@ -1210,26 +1288,36 @@ function renderForm(view) {
   let shown = 0;
 
   for (const [name, value] of Object.entries(data)) {
-    if (!matches(`${name} ${typeof value === 'object' ? JSON.stringify(value) : value}`)) continue;
+    const info = SETTINGS[name] ?? {};
+    if (!matches(`${name} ${info.label ?? ''} ${typeof value === 'object' ? JSON.stringify(value) : value}`)) continue;
     shown++;
-    form.append(h('div', { class: 'label', textContent: name }));
+    form.append(h('div', { class: 'label' }, info.label ?? name, info.label ? h('span', { class: 'key', textContent: name }) : null));
 
+    let input;
     if (value !== null && typeof value === 'object') {
-      form.append(h('input', { value: JSON.stringify(value), readOnly: true, title: 'Not editable here; edit the file itself.' }));
+      input = h('input', { value: JSON.stringify(value), readOnly: true, title: 'Not editable here; edit the file itself.' });
+    } else if (info.choices) {
+      // A value from the file in another case (utc) still selects its choice; one the
+      // gateway would refuse stays visible, marked, so it can be corrected.
+      const current = String(value ?? '');
+      const known = info.choices.find(([v]) => v.toLowerCase() === current.trim().toLowerCase());
+      const options = known ? info.choices : [...info.choices, [current, `${current} (not valid)`]];
+      input = select(options, known ? known[0] : current, v => { data[name] = v; markDirty(key); }, info.label);
     } else if (typeof value === 'boolean') {
-      form.append(select([['true', 'true'], ['false', 'false']], String(value), v => { data[name] = v === 'true'; markDirty(key); }, name));
+      input = select([['true', 'true'], ['false', 'false']], String(value), v => { data[name] = v === 'true'; markDirty(key); }, name);
     } else {
       const isNumber = state.numberKeys[key]?.includes(name);
-      form.append(h('input', {
+      input = h('input', {
         ...(isNumber ? { type: 'number', step: 'any' } : {}),
-        value: value ?? '', 'aria-label': name,
+        value: value ?? '', 'aria-label': info.label ?? name,
         oninput: e => {
           const text = e.target.value;
           data[name] = isNumber && text !== '' ? Number(text) : text;
           markDirty(key);
         },
-      }));
+      });
     }
+    form.append(info.help ? h('div', {}, input, h('div', { class: 'help', textContent: info.help })) : input);
   }
 
   view.append(shown ? form : h('div', { class: 'empty', textContent: 'No settings match the search.' }));
@@ -1464,12 +1552,16 @@ async function pollStatus() {
   let status;
   try {
     status = await request('/api/status');
+    state.unreachable = false;
     showStatus(status);
   } catch {
+    state.unreachable = true;
+    renderAlerts();
     $('gwStatus').className = 'gw-status error';
     $('gwText').textContent = 'Cannot reach the gateway.';
     return;
   }
+  renderAlerts(); // gateway stopped / running, and the backlog in the MES line
 
   // Machines sending without a tab, or with tags not mapped yet (data held): keep the alerts current.
   if (status.held > 0 || state.held.length) await loadHeld();
