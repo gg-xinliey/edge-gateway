@@ -36,6 +36,7 @@ public sealed class IntervalSender
     // DataSource "" = the message had no data_source (the configured one is used).
     private readonly ConcurrentDictionary<(string Machine, string DataSource, string Group), GroupState> _states = new();
     private readonly Lazy<Dictionary<string, SavedState>> _saved; // last values from the outbox, read on first use
+    private readonly Lazy<Dictionary<string, long>> _pendingDue;  // latest send_after still waiting per group, ditto
 
     public IntervalSender(Outbox outbox, EnvelopeBuilder envelopes, Func<ConfigSnapshot> config)
     {
@@ -49,6 +50,16 @@ public sealed class IntervalSender
             {
                 Console.WriteLine($"[outbox] last values not read back, the first change of each group is sent as new: {ex.Message}");
                 return new Dictionary<string, SavedState>();
+            }
+        });
+        _pendingDue = new Lazy<Dictionary<string, long>>(() =>
+        {
+            try { return outbox.PendingDueMs(); }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[outbox] waiting send times not read back, the first record of each group may be sent at once " +
+                                  $"(the outbox still keeps each group's order): {ex.Message}");
+                return new Dictionary<string, long>();
             }
         });
     }
@@ -109,8 +120,10 @@ public sealed class IntervalSender
     // saved in the outbox (and the span they had open), if there are any.
     private GroupState Restored((string Machine, string DataSource, string Group) key, ConfigSnapshot config)
     {
-        var state = new GroupState { Stamper = config.TimeStamper };
-        if (!_saved.Value.TryGetValue(SavedState.KeyOf(key.Machine, key.DataSource, key.Group), out var saved))
+        var stateKey = SavedState.KeyOf(key.Machine, key.DataSource, key.Group);
+        // A record still waiting from before the restart: the next one is not due before it (SVI-99).
+        var state = new GroupState { Stamper = config.TimeStamper, NextDueMs = _pendingDue.Value.GetValueOrDefault(stateKey) };
+        if (!_saved.Value.TryGetValue(stateKey, out var saved))
             return state;
 
         foreach (var (name, value) in saved.Values)

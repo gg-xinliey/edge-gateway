@@ -222,6 +222,9 @@ public sealed class Outbox : IAsyncDisposable
     //     restart or before sendEveryMs was made shorter (SVI-99);
     //   * at most a fair share of `limit` per machine: one machine whose rows MES keeps
     //     refusing must not fill the whole read and stop every other machine (SVI-97).
+    // A group not read to its end in a file (a row not due yet, or its machine's share
+    // used up) is not read in newer files either: its rows there must wait for the older
+    // ones (a restart just before midnight, MES down overnight; SVI-99).
     // Across groups the faster group goes first.
     private const int MinShare = 100;
 
@@ -229,6 +232,7 @@ public sealed class Outbox : IAsyncDisposable
     {
         var results = new List<(OutboxKey, Envelope)>();
         var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var held = new HashSet<string?>(); // groups with older rows left in an earlier file
         foreach (var file in PendingFiles())
         {
             using var conn = OpenFile(file);
@@ -243,17 +247,28 @@ public sealed class Outbox : IAsyncDisposable
             var roomParam = cmd.Parameters.Add("$room", SqliteType.Integer);
             foreach (var key in groups)
             {
+                if (held.Contains(key))
+                    continue;
                 var machine = MachineOf(key);
                 var room = share - perMachine.GetValueOrDefault(machine);
                 if (room <= 0)
+                {
+                    held.Add(key);
                     continue;
+                }
                 keyParam.Value = (object?)key ?? DBNull.Value;
                 roomParam.Value = room;
                 var taken = 0;
+                var notDue = false;
                 using (var reader = cmd.ExecuteReader())
                 {
-                    while (reader.Read() && reader.GetInt64(2) <= nowMs) // stops at the group's first row not due yet
+                    while (reader.Read())
                     {
+                        if (reader.GetInt64(2) > nowMs)
+                        {
+                            notDue = true; // the group's first row not due yet: the rest waits behind it
+                            break;
+                        }
                         taken++;
                         var envelope = JsonSerializer.Deserialize<Envelope>(reader.GetString(1));
                         if (envelope is not null)
@@ -261,6 +276,8 @@ public sealed class Outbox : IAsyncDisposable
                     }
                 }
                 perMachine[machine] = perMachine.GetValueOrDefault(machine) + taken;
+                if (notDue || taken == room) // taken == room: maybe more rows left in this file
+                    held.Add(key);
             }
 
             foreach (var (id, envelope) in rows.OrderBy(r => r.Id).Take(limit - results.Count))
@@ -389,6 +406,24 @@ public sealed class Outbox : IAsyncDisposable
             }
         }
         return states;
+    }
+
+    // The latest send_after (UTC ms) per group (state_key) among rows still to send, over
+    // every file. IntervalSender paces a group it restores from it, so after a restart a new
+    // record never gets an earlier send_after than one still waiting (SVI-99).
+    public Dictionary<string, long> PendingDueMs()
+    {
+        var due = new Dictionary<string, long>(StringComparer.Ordinal);
+        foreach (var file in PendingFiles())
+        {
+            using var conn = OpenFile(file);
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "SELECT state_key, MAX(send_after) FROM outbox WHERE sent = 0 AND failed_at IS NULL AND discarded_at IS NULL AND state_key IS NOT NULL GROUP BY state_key;";
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+                due[reader.GetString(0)] = Math.Max(due.GetValueOrDefault(reader.GetString(0)), reader.GetInt64(1));
+        }
+        return due;
     }
 
     public long CountUnsent()

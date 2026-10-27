@@ -94,7 +94,7 @@ Gateway → MQTT, topic `svi/TEST/ASSY-L01-FCT-01/IO/input`:
 **When MES data is sent** (per machine and data group):
 - A message that changes nothing is ignored. So is a message that only changes fields with no MES column (extras such as `components`). MES would get a row that looks the same as the last one.
 - Each change becomes one record: all current values of that group, with timestamps. It is **saved to the outbox file right away**.
-- `sendEveryMs` paces MES per group: the first change after a quiet interval is sent at once; changes within the next `sendEveryMs` wait until it is over, then **all** of them are sent, oldest first. Example with PRODUCTION every 10 s: a change at 10:00:00 goes at once; changes at 10:00:03 and 10:00:07 both go at 10:00:10.
+- `sendEveryMs` paces MES per group: the first change after a quiet interval is sent at once; changes within the next `sendEveryMs` wait until it is over, then **all** of them are sent, oldest first. Example with PRODUCTION every 10 s: a change at 10:00:00 goes at once; changes at 10:00:03 and 10:00:07 both go at 10:00:10. The order inside a group is kept also over a gateway restart, a change of `sendEveryMs`, midnight (a new day file) and a long MES outage: a newer record never reaches MES before an older one of its group.
 - No change, nothing is sent: there are no periodic repeats.
 - Current settings: MACHINE_STATUS every 100 ms, PRODUCTION every 10 s, other groups every 1 s (the default).
 

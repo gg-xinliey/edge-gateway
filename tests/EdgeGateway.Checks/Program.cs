@@ -535,6 +535,104 @@ if (which is "all" or "99")
         $"before the older one is due: [{string.Join(", ", early)}], after: [{string.Join(", ", later)}]");
 }
 
+if (which is "all" or "99")
+{
+    // SVI-99 as reported: TRACEABILITY sendEveryMs 3000. P-A (due now), P-B (due in 3 s), then a
+    // restart (new IntervalSender) or sendEveryMs set to 0, then P-C (due now). MES must get A, B, C.
+    async Task<string> Delivered(Outbox outbox)
+    {
+        var order = new List<string>();
+        for (var i = 0; i < 25; i++)
+        {
+            var rows = outbox.ReadUnsent(100);
+            order.AddRange(rows.Select(r => r.Envelope.payload["product_serial_number"]?.ToString() ?? "?"));
+            if (rows.Count > 0) outbox.MarkSent(rows.Select(r => r.Key));
+            await Task.Delay(200);
+        }
+        return string.Join(", ", order);
+    }
+    foreach (var variant in new[] { "restart", "sendEveryMs 0" })
+    {
+        var (root, json) = TempConfig();
+        File.WriteAllText(Path.Combine(root, "timestamp-rules.json"), """{"TRACEABILITY":{"mode":"SinglePoint","sendEveryMs":3000}}""");
+        var store = new GatewayConfigStore(root, json);
+        var outbox = new Outbox(Path.Combine(root, "outbox"));
+        var sender = new IntervalSender(outbox, new EnvelopeBuilder("TEST", "SRC", "TCP"), () => store.Current);
+        var t = DateTimeOffset.UtcNow;
+        await SendRaw(store, sender, new() { ["product_sn"] = "P-A" }, t);
+        await SendRaw(store, sender, new() { ["product_sn"] = "P-B" }, t.AddSeconds(1));
+        if (variant == "restart")
+            sender = new IntervalSender(outbox, new EnvelopeBuilder("TEST", "SRC", "TCP"), () => store.Current);
+        else
+        {
+            File.WriteAllText(Path.Combine(root, "timestamp-rules.json"), """{"TRACEABILITY":{"mode":"SinglePoint","sendEveryMs":0}}""");
+            store.Reload();
+        }
+        await SendRaw(store, sender, new() { ["product_sn"] = "P-C" }, t.AddSeconds(2));
+        if (variant == "restart")
+        {
+            // Write side: the restarted sender paces P-C from P-B, which still waits (seeded NextDueMs).
+            long DueOf(string sn)
+            {
+                using var c = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={Path.Combine(root, "outbox", DayName(DateTime.Now))};Mode=ReadOnly;Pooling=False");
+                c.Open();
+                using var q = c.CreateCommand();
+                q.CommandText = "SELECT send_after FROM outbox WHERE json_extract(body, '$.payload.product_serial_number') = $sn;";
+                q.Parameters.AddWithValue("$sn", sn);
+                return (long)q.ExecuteScalar()!;
+            }
+            var (dueB, dueC) = (DueOf("P-B"), DueOf("P-C"));
+            Report("SVI-99 after a restart a new record is not due before one still waiting", dueC >= dueB,
+                $"P-B due {dueB}, P-C due {dueC} ({dueC - dueB:+#;-#;0} ms)");
+        }
+        var got = await Delivered(outbox);
+        await outbox.DisposeAsync();
+        Report($"SVI-99 reported case ({variant}): MES gets the group in order", got == "P-A, P-B, P-C", $"MES gets: {got}");
+    }
+
+    // The row not due yet is in yesterday's day file (restart just after midnight): it still holds
+    // back the newer row of its group in today's file.
+    var dir2 = Path.Combine(Path.GetTempPath(), "gw-99", Guid.NewGuid().ToString("N"));
+    var first = new Outbox(dir2);
+    await QueueRow(first, "M1", "PRODUCTION", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + 3000, "older");
+    await first.DisposeAsync();
+    Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+    File.Move(Path.Combine(dir2, DayName(DateTime.Now)), Path.Combine(dir2, DayName(DateTime.Now.AddDays(-1))));
+    var outbox2 = new Outbox(dir2);
+    await QueueRow(outbox2, "M1", "PRODUCTION", 0, "newer");
+    var early2 = outbox2.ReadUnsent(100).Select(r => r.Envelope.payload["v"]?.ToString()).ToList();
+    await Task.Delay(3200);
+    var later2 = outbox2.ReadUnsent(100).Select(r => r.Envelope.payload["v"]?.ToString()).ToList();
+    await outbox2.DisposeAsync();
+    Report("SVI-99 group order kept across day files", early2.Count == 0 && later2.SequenceEqual(new[] { "older", "newer" }),
+        $"before the older one is due: [{string.Join(", ", early2)}], after: [{string.Join(", ", later2)}]");
+
+    // MES down overnight: M1 has 150 rows in yesterday's file (more than its share of one read)
+    // and 10 in today's, M2 has 5. MES must get all of M1's rows in the order they were made.
+    var dir3 = Path.Combine(Path.GetTempPath(), "gw-99", Guid.NewGuid().ToString("N"));
+    var night = new Outbox(dir3);
+    await Task.WhenAll(Enumerable.Range(0, 150).Select(i => QueueRow(night, "M1", "PROCESS", 0, $"y{i}")));
+    await Task.WhenAll(Enumerable.Range(0, 5).Select(i => QueueRow(night, "M2", "PROCESS", 0, $"m{i}")));
+    await night.DisposeAsync();
+    Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+    File.Move(Path.Combine(dir3, DayName(DateTime.Now)), Path.Combine(dir3, DayName(DateTime.Now.AddDays(-1))));
+    var morning = new Outbox(dir3);
+    await Task.WhenAll(Enumerable.Range(0, 10).Select(i => QueueRow(morning, "M1", "PROCESS", 0, $"t{i}")));
+    var m1 = new List<string>();
+    for (var pass = 0; pass < 10; pass++)
+    {
+        var rows = morning.ReadUnsent(200);
+        if (rows.Count == 0) break;
+        m1.AddRange(rows.Where(r => r.Envelope.machine_id == "M1").Select(r => r.Envelope.payload["v"]?.ToString() ?? "?"));
+        morning.MarkSent(rows.Select(r => r.Key));
+    }
+    await morning.DisposeAsync();
+    var want = Enumerable.Range(0, 150).Select(i => $"y{i}").Concat(Enumerable.Range(0, 10).Select(i => $"t{i}")).ToList();
+    var firstWrong = m1.Zip(want).Select((x, i) => (x, i)).FirstOrDefault(p => p.x.First != p.x.Second);
+    Report("SVI-99 overnight backlog over two day files keeps each group's order", m1.SequenceEqual(want),
+        m1.SequenceEqual(want) ? $"{m1.Count} rows in order" : $"{m1.Count} rows; first out of order at #{firstWrong.i}: {firstWrong.x.First} (want {firstWrong.x.Second})");
+}
+
 if (which is "all" or "101")
 {
     // SVI-101: yesterday's file looked done (no unsent rows) just after midnight, then the writer's
