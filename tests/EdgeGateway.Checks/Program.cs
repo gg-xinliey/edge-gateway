@@ -663,6 +663,30 @@ if (which is "all" or "97")
     mes3.Stop(); await outbox3.DisposeAsync(); Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
     Report("SVI-97 machine alone: stuck row moves to failed after the time limit", alone.Failed == 1 && alone.Sent == 2,
         $"failed {alone.Failed} (want 1), sent {alone.Sent} (want 2), waiting {alone.Waiting}");
+
+    // SVI-98 413 (until the real MES codes are known): a row MES keeps answering 413 follows the 500 rule.
+    // Exit 1: another machine delivers meanwhile. Exit 2: the machine is alone, after the time limit.
+    foreach (var withOthers in new[] { true, false })
+    {
+        var port4 = 19900 + Random.Shared.Next(90);
+        var mes4 = FakeMes(port4, body => body.Contains("\"machine_id\":\"BIG\"") && body.Contains("\"v\":0") ? 413 : 200);
+        var dir4 = Path.Combine(Path.GetTempPath(), "gw-97", Guid.NewGuid().ToString("N"));
+        var outbox4 = new Outbox(dir4);
+        await Task.WhenAll(Enumerable.Range(0, 3).Select(i => QueueRow(outbox4, "BIG", "PROCESS", 0, i)));
+        using var stop4 = new CancellationTokenSource();
+        if (!withOthers) Console.WriteLine("      (413 alone waits ~30 s: 5 tries with the growing retry delay)");
+        var forwarder4 = new MesForwarder(new HttpClient { Timeout = TimeSpan.FromSeconds(5) }, $"http://localhost:{port4}/", outbox4,
+            new GatewayStats(), null, stuckLimit: withOthers ? TimeSpan.FromHours(1) : TimeSpan.FromSeconds(5)).RunAsync(stop4.Token);
+        var feed4 = withOthers
+            ? Task.Run(async () => { for (var i = 0; !stop4.IsCancellationRequested && i < 60; i++) { await QueueRow(outbox4, "OTHER", "PROCESS", 0, i); await Task.Delay(1000); } })
+            : Task.CompletedTask;
+        var big = Counts(dir4, "BIG");
+        for (var i = 0; i < 60 && big.Sent < 2; i++) { await Task.Delay(1000); big = Counts(dir4, "BIG"); }
+        stop4.Cancel(); try { await forwarder4; } catch { } try { await feed4; } catch { }
+        mes4.Stop(); await outbox4.DisposeAsync(); Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        Report($"SVI-98 413 row moves to failed {(withOthers ? "while others deliver" : "after the time limit (machine alone)")}",
+            big.Failed == 1 && big.Sent == 2, $"BIG failed {big.Failed} (want 1), sent {big.Sent} (want 2), waiting {big.Waiting}");
+    }
 }
 
 if (which is "all" or "95")

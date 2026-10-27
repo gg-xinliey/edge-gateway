@@ -19,14 +19,14 @@ namespace EdgeGateway.Services;
 //     rows stay and are retried, with a growing delay (2 s, 4 s, 8 s ... 60 s max) so
 //     a down MES is not hammered; back to 2 s after MES takes something again.
 //     404 / 405 mean a wrong mesUrl path or MES being redeployed, not a bad row (SVI-98).
-//     413 may be a proxy / MES size limit set too low: retried too, so a too-large row waits
-//     (and its machine's next rows behind it) until the limit is raised.
+//     413 may be a proxy / MES size limit set too low: retried too. A row that really is too
+//     large is caught by the stuck-row rule below, like a 500.
 //     shortcut: 413 retried until the real MES status codes are known (SVI-53), then decide again.
 //   * MES rejects a row as invalid (any other 4xx): it is moved to failed
 //     messages with MES's answer (not retried, nothing lost), the page alerts,
 //     and the machine's next rows go on. Re-send it after a fix, or discard it
 //     with a reason, on the config page.
-//   * MES answers 500 (not 502/503/504: down or overloaded) for the same row
+//   * MES answers 500 (not 502/503/504: down or overloaded) or 413 for the same row
 //     ServerErrorTries times in a row, and either took other records meanwhile or
 //     kept at it for StuckLimit (10 min): MES fails on that row. It is moved to failed
 //     messages too (alert on the page), so the machine's next rows go on (SVI-97).
@@ -196,7 +196,7 @@ public class MesForwarder
                 return (SendResult.Delivered, null);
 
             var badRow = status is >= 400 and < 500 and not (401 or 403 or 404 or 405 or 407 or 408 or 413 or 429);
-            var failsOnRow = status is >= 500 and not (502 or 503 or 504) ? FailsOnThisRow(envelope.event_id) : null;
+            var failsOnRow = status is 413 or (>= 500 and not (502 or 503 or 504)) ? FailsOnThisRow(envelope.event_id) : null;
             if (badRow || failsOnRow is not null)
             {
                 var body = await response.Content.ReadAsStringAsync(ct);
@@ -230,7 +230,7 @@ public class MesForwarder
         return (SendResult.Retry, null);
     }
 
-    // One more 500 for this row. Returns why it counts as the row's fault (for the failed
+    // One more 500 (or 413) for this row. Returns why it counts as the row's fault (for the failed
     // message), or null to retry: needs ServerErrorTries of them, and MES took a record
     // (any machine) after the first, or the 500s went on for the stuck limit.
     private string? FailsOnThisRow(string eventId)
