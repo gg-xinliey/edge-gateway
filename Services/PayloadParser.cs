@@ -104,7 +104,7 @@ public static class PayloadParser
     // Also used to read saved snapshots back (IntervalSender), so they compare equal.
     internal static object? ParseValue(JsonElement element) => element.ValueKind switch
     {
-        JsonValueKind.Number => element.GetDouble(),
+        JsonValueKind.Number => Number(element),
         JsonValueKind.True => true,
         JsonValueKind.False => false,
         JsonValueKind.Null => null,
@@ -112,6 +112,16 @@ public static class PayloadParser
         JsonValueKind.Array => element.EnumerateArray().Select(ParseValue).ToList(),
         _ => element.GetString()
     };
+
+    // A whole number past 2^53 (serial numbers, counters) does not fit a double exactly:
+    // it is kept as a decimal, so MES gets the same digits and a change of 1 is a change (SVI-100).
+    private static object Number(JsonElement element)
+    {
+        var value = element.GetDouble();
+        return Math.Abs(value) >= 9007199254740992 && element.TryGetDecimal(out var exact) && exact == decimal.Truncate(exact)
+            ? exact
+            : value;
+    }
 
     public static Dictionary<string, object?> ParseCsv(string raw)
     {

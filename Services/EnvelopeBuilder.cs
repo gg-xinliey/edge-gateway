@@ -26,7 +26,7 @@ public class EnvelopeBuilder
     {
         return new Envelope
         {
-            event_id = EventId(messageId, dataGroup),
+            event_id = EventId(machineId, dataSource, messageId, dataGroup),
             gateway_id = _gatewayId,
             machine_id = machineId,
             data_source = string.IsNullOrWhiteSpace(dataSource) ? _dataSource : dataSource,
@@ -45,13 +45,16 @@ public class EnvelopeBuilder
     // adapter, the adapter sends the message again: it then gets the same
     // event_id, and MES (event_id is unique there) can drop the copy.
     // One message gives at most one envelope per group, so they never clash.
-    private static string EventId(string? messageId, string dataGroup)
+    // Two machines (or sources) may use the same message_id: they are two messages,
+    // so their records must not share an event_id (MES would take the second as a resend, SVI-96).
+    // dataSource as the line sent it ("" when none), not the configured default.
+    private static string EventId(string machineId, string? dataSource, string? messageId, string dataGroup)
     {
         if (string.IsNullOrEmpty(messageId))
             return Guid.NewGuid().ToString();
 
         var hash = System.Security.Cryptography.SHA256.HashData(
-            System.Text.Encoding.UTF8.GetBytes(messageId + "\n" + dataGroup));
+            System.Text.Encoding.UTF8.GetBytes(machineId + "\n" + (dataSource?.Trim() ?? "") + "\n" + messageId + "\n" + dataGroup));
         var bytes = hash.AsSpan(0, 16).ToArray();
         bytes[6] = (byte)((bytes[6] & 0x0F) | 0x80); // version 8: name-based, custom hash
         bytes[8] = (byte)((bytes[8] & 0x3F) | 0x80); // RFC 4122 variant

@@ -89,7 +89,7 @@ static class E2ECheck
                 Line? previousLine = null;
                 foreach (var line in mine)
                 {
-                    var id = EventId(line.MessageId, group);
+                    var id = EventId(line.Machine, line.MessageId, group);
                     var hasRecord = records.TryGetValue(id, out var record);
                     if (hasRecord) { used.Add(id); inMes++; }
                     if (!line.Acked)
@@ -201,10 +201,10 @@ static class E2ECheck
         _ => value.GetRawText(),
     };
 
-    // Same as the gateway's EnvelopeBuilder.EventId.
-    private static string EventId(string messageId, string dataGroup)
+    // Same as the gateway's EnvelopeBuilder.EventId (MachineSim sends no data_source: "").
+    private static string EventId(string machine, string messageId, string dataGroup)
     {
-        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(messageId + "\n" + dataGroup));
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(machine + "\n" + "" + "\n" + messageId + "\n" + dataGroup));
         var bytes = hash.AsSpan(0, 16).ToArray();
         bytes[6] = (byte)((bytes[6] & 0x0F) | 0x80);
         bytes[8] = (byte)((bytes[8] & 0x3F) | 0x80);

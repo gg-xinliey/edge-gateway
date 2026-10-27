@@ -93,6 +93,7 @@ public class TimeStamper
         null => false,
         bool b => b,
         double d => d != 0,
+        decimal m => m != 0,
         string s => !(s.Trim() is "" or "0" or "false" or "False" or "FALSE" or "off" or "OFF" or "Off"),
         _ => true
     };

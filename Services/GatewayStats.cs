@@ -14,7 +14,16 @@ public sealed class GatewayStats
     public void MqttPublished() => Interlocked.Increment(ref _mqttPublished);
     public void MqttLost(long count = 1) => Interlocked.Add(ref _mqttLost, count);
     public void MesQueued() => Interlocked.Increment(ref _mesQueued);
-    public void MesDelivered(long count) => Interlocked.Add(ref _mesDelivered, count);
+    public void MesDelivered(long count)
+    {
+        Interlocked.Add(ref _mesDelivered, count);
+        if (count > 0)
+            Interlocked.Exchange(ref _lastDeliveredTicks, DateTimeOffset.UtcNow.UtcTicks);
+    }
+
+    // When MES last took a record from any machine (UTC ticks, 0 = not yet): MES is up.
+    private long _lastDeliveredTicks;
+    public long LastDeliveredTicks => Interlocked.Read(ref _lastDeliveredTicks);
 
     public StatsRates Latest { get; private set; } = new(0, 0, 0, 0, 0, 0, 0, 0, null);
 

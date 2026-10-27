@@ -15,13 +15,18 @@ namespace EdgeGateway.Services;
 //     at its first failure, so a later envelope never overtakes an earlier one.
 //   * While there is a backlog it goes straight to the next pass; when idle
 //     it checks again after `IdleDelay`.
-//   * MES unreachable, timing out (15 s), 5xx, 401/403/407, 408 or 429: the rows
-//     stay and are retried, with a growing delay (2 s, 4 s, 8 s ... 60 s max) so a
-//     down MES is not hammered; back to 2 s after MES takes something again.
+//   * MES unreachable, timing out (15 s), 5xx, 401/403/404/405/407, 408 or 429: the
+//     rows stay and are retried, with a growing delay (2 s, 4 s, 8 s ... 60 s max) so
+//     a down MES is not hammered; back to 2 s after MES takes something again.
+//     404 / 405 mean a wrong mesUrl path or MES being redeployed, not a bad row (SVI-98).
 //   * MES rejects a row as invalid (any other 4xx): it is moved to failed
 //     messages with MES's answer (not retried, nothing lost), the page alerts,
 //     and the machine's next rows go on. Re-send it after a fix, or discard it
 //     with a reason, on the config page.
+//   * MES answers 500 (not 502/503/504: down or overloaded) for the same row
+//     ServerErrorTries times in a row while it takes other records: MES fails on
+//     that row. It is moved to failed messages too, so the machine's next rows go
+//     on (SVI-97). While MES takes nothing, rows only wait.
 public class MesForwarder
 {
     private const int ChunkSize = 2_000;
@@ -30,6 +35,10 @@ public class MesForwarder
     private static readonly TimeSpan FirstRetryDelay = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan MaxRetryDelay = TimeSpan.FromSeconds(60);
     private const int MaxErrorText = 1_000;
+    private const int ServerErrorTries = 5;
+
+    // Rows MES answered 500 for, by event_id: tries in a row and when the first was (UTC ticks).
+    private readonly ConcurrentDictionary<string, (int Tries, long FirstTicks)> _serverErrors = new();
 
     private enum SendResult { Delivered, Retry, Rejected }
 
@@ -111,6 +120,7 @@ public class MesForwarder
                                 Interlocked.Increment(ref retrying);
                                 break; // keep this machine's order: retry from here next pass
                             }
+                            _serverErrors.TryRemove(envelope.event_id, out _);
                             if (result == SendResult.Rejected)
                                 rejected.Add((key, error!)); // set aside, the machine goes on
                             else
@@ -174,19 +184,25 @@ public class MesForwarder
             var status = (int)response.StatusCode;
             if (status == 409) // Conflict: MES already has this event_id (a resend): it is delivered
                 return (SendResult.Delivered, null);
-            if (status is >= 400 and < 500 and not (401 or 403 or 407 or 408 or 429))
+
+            var badRow = status is >= 400 and < 500 and not (401 or 403 or 404 or 405 or 407 or 408 or 429);
+            var failsOnRow = status is >= 500 and not (502 or 503 or 504) && FailsOnThisRow(envelope.event_id);
+            if (badRow || failsOnRow)
             {
                 var body = await response.Content.ReadAsStringAsync(ct);
                 if (body.Length > MaxErrorText)
                     body = body[..MaxErrorText] + "…";
-                var error = $"MES {status} {response.ReasonPhrase}: {body}".Trim();
-                Console.WriteLine($"{_tag} MES rejected {envelope.event_id} ({envelope.machine_id}/{envelope.data_group}) as invalid, " +
-                                  $"moved to failed messages: {error}");
+                var error = (failsOnRow
+                    ? $"MES {status} {response.ReasonPhrase} {ServerErrorTries} times in a row for this record while it took other records: {body}"
+                    : $"MES {status} {response.ReasonPhrase}: {body}").Trim();
+                Console.WriteLine($"{_tag} MES rejected {envelope.event_id} ({envelope.machine_id}/{envelope.data_group}) " +
+                                  $"{(failsOnRow ? "again and again" : "as invalid")}, moved to failed messages: {error}");
                 return (SendResult.Rejected, error);
             }
 
             _problems.Write($"status{status}",
-                $"{_tag} MES returned {status} for {envelope.event_id} ({envelope.machine_id}/{envelope.data_group}) — will retry in {_retryDelay.TotalSeconds:0} s or more");
+                $"{_tag} MES returned {status} for {envelope.event_id} ({envelope.machine_id}/{envelope.data_group}) — will retry in {_retryDelay.TotalSeconds:0} s or more" +
+                (status is 404 or 405 ? " (check mesUrl: MES does not know this address)" : ""));
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -201,6 +217,19 @@ public class MesForwarder
         Interlocked.CompareExchange(ref _downSinceTicks, DateTimeOffset.UtcNow.UtcTicks, 0);
         Interlocked.Increment(ref _triesWhileDown);
         return (SendResult.Retry, null);
+    }
+
+    // One more 500 for this row. True once it had ServerErrorTries of them and MES took a
+    // record (any machine) after the first: then MES is up and fails on this row itself.
+    // Without stats (no view of the other machines) it never counts as the row's fault.
+    private bool FailsOnThisRow(string eventId)
+    {
+        var now = DateTimeOffset.UtcNow.UtcTicks;
+        var entry = _serverErrors.AddOrUpdate(eventId, _ => (1, now), (_, old) => (old.Tries + 1, old.FirstTicks));
+        if (entry.Tries < ServerErrorTries || _stats is null || _stats.LastDeliveredTicks <= entry.FirstTicks)
+            return false;
+        _serverErrors.TryRemove(eventId, out _);
+        return true;
     }
 
     // First delivery after a period of failed sends: one line saying it is over.

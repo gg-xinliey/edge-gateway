@@ -65,10 +65,14 @@ public class DeadbandRateLimiter
         {
             if (v is double d)
                 result[k] = d;
+            else if (v is decimal m)
+                result[k] = (double)m;
             else if (v is Dictionary<string, object?> nested)
                 foreach (var (nk, nv) in nested)
                     if (nv is double nd)
                         result[$"{k}.{nk}"] = nd;
+                    else if (nv is decimal nm)
+                        result[$"{k}.{nk}"] = (double)nm;
         }
         return result;
     }

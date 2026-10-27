@@ -466,5 +466,225 @@ if (which is "all" or "extras")
     await outbox.DisposeAsync();
 }
 
+// ---- Linear SVI-95 ... SVI-101 ----
+
+// One row with its group's state key (machine + data_source + group), as IntervalSender writes it.
+static Task<bool> QueueRow(Outbox outbox, string machine, string group, long sendAfterMs = 0, object? value = null)
+{
+    var saved = new TaskCompletionSource<bool>();
+    var envelope = new Envelope { event_id = Guid.NewGuid().ToString(), machine_id = machine, data_group = group, payload = new() { ["v"] = value } };
+    outbox.Write(envelope, sendAfterMs, () => saved.TrySetResult(true), new SavedState(SavedState.KeyOf(machine, "", group), new(), null));
+    return saved.Task;
+}
+
+// A fake MES on localhost that answers each envelope with status(body).
+static System.Net.HttpListener FakeMes(int port, Func<string, int> status)
+{
+    var mes = new System.Net.HttpListener(); mes.Prefixes.Add($"http://localhost:{port}/"); mes.Start();
+    _ = Task.Run(async () =>
+    {
+        while (mes.IsListening)
+        {
+            try
+            {
+                var c = await mes.GetContextAsync();
+                var body = await new StreamReader(c.Request.InputStream).ReadToEndAsync();
+                c.Response.StatusCode = status(body); c.Response.Close();
+            }
+            catch { break; }
+        }
+    });
+    return mes;
+}
+
+// Rows per state in every day file of an outbox folder, optionally only one machine's.
+static (long Sent, long Failed, long Waiting) Counts(string dir, string? machine = null)
+{
+    long sent = 0, failedRows = 0, waiting = 0;
+    foreach (var file in Directory.GetFiles(dir, "outbox-*.db"))
+    {
+        using var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={file};Mode=ReadOnly;Pooling=False");
+        conn.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT COALESCE(SUM(sent = 1), 0), COALESCE(SUM(sent = 0 AND failed_at IS NOT NULL), 0), COALESCE(SUM(sent = 0 AND failed_at IS NULL AND discarded_at IS NULL), 0) " +
+                          "FROM outbox WHERE $m IS NULL OR json_extract(body, '$.machine_id') = $m;";
+        cmd.Parameters.AddWithValue("$m", (object?)machine ?? DBNull.Value);
+        using var r = cmd.ExecuteReader(); r.Read();
+        sent += r.GetInt64(0); failedRows += r.GetInt64(1); waiting += r.GetInt64(2);
+    }
+    return (sent, failedRows, waiting);
+}
+
+var inv2 = System.Globalization.CultureInfo.InvariantCulture;
+string DayName(DateTime day) => $"outbox-{day.ToString("yyyy-MM-dd", inv2)}.db";
+
+if (which is "all" or "99")
+{
+    // SVI-99: an older row of a group that is not due yet (paced before a restart) holds the
+    // newer rows of that group back, so MES gets them in order.
+    var dir = Path.Combine(Path.GetTempPath(), "gw-99", Guid.NewGuid().ToString("N"));
+    var outbox = new Outbox(dir);
+    var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+    await QueueRow(outbox, "M1", "PRODUCTION", now + 3000, "older");
+    await QueueRow(outbox, "M1", "PRODUCTION", 0, "newer");
+    var early = outbox.ReadUnsent(100).Select(r => r.Envelope.payload["v"]?.ToString()).ToList();
+    await Task.Delay(3200);
+    var later = outbox.ReadUnsent(100).Select(r => r.Envelope.payload["v"]?.ToString()).ToList();
+    await outbox.DisposeAsync();
+    Report("SVI-99 group order kept when an older row is not due yet", early.Count == 0 && later.SequenceEqual(new[] { "older", "newer" }),
+        $"before the older one is due: [{string.Join(", ", early)}], after: [{string.Join(", ", later)}]");
+}
+
+if (which is "all" or "101")
+{
+    // SVI-101: yesterday's file looked done (no unsent rows) just after midnight, then the writer's
+    // last batch for it was committed: those rows must still be read, not skipped until a restart.
+    var dir = Path.Combine(Path.GetTempPath(), "gw-101", Guid.NewGuid().ToString("N"));
+    var first = new Outbox(dir);
+    await QueueRow(first, "M1", "PROCESS");
+    first.MarkSent(first.ReadUnsent(10).Select(r => r.Key));
+    await first.DisposeAsync();
+    Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+    var yesterday = Path.Combine(dir, DayName(DateTime.Now.AddDays(-1)));
+    File.Move(Path.Combine(dir, DayName(DateTime.Now)), yesterday);
+    var outbox = new Outbox(dir);
+    outbox.ReadUnsent(10); // sees yesterday with nothing to send
+    using (var late = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={yesterday};Pooling=False"))
+    {
+        late.Open();
+        using var cmd = late.CreateCommand();
+        cmd.CommandText = "INSERT INTO outbox (event_id, data_group, body, sent, created_at, send_after) VALUES ('late', 'PROCESS', $body, 0, '2026-01-01T00:00:00Z', 0);";
+        cmd.Parameters.AddWithValue("$body", System.Text.Json.JsonSerializer.Serialize(new Envelope { event_id = "late", machine_id = "M1", data_group = "PROCESS" }));
+        cmd.ExecuteNonQuery();
+    }
+    var rows = outbox.ReadUnsent(10).Select(r => r.Envelope.event_id).ToList();
+    await outbox.DisposeAsync();
+    Report("SVI-101 a late batch in yesterday's file is still read", rows.Contains("late"), $"read: [{string.Join(", ", rows)}]");
+}
+
+if (which is "all" or "100")
+{
+    // SVI-100: whole numbers above 2^53 reach MES exactly, and a change between two of them is a change.
+    var (root, json) = TempConfig();
+    var store = new GatewayConfigStore(root, json);
+    var outbox = new Outbox(Path.Combine(root, "outbox"));
+    var sender = new IntervalSender(outbox, new EnvelopeBuilder("TEST", "SRC", "TCP"), () => store.Current);
+    object? Parse(string number) { using var d = System.Text.Json.JsonDocument.Parse($"{{\"product_sn\":{number}}}"); return PayloadParser.Parse(d.RootElement)["product_sn"]; }
+    var t = DateTimeOffset.UtcNow;
+    await SendRaw(store, sender, new() { ["product_sn"] = Parse("9007199254740993") }, t);
+    await SendRaw(store, sender, new() { ["product_sn"] = Parse("9007199254740995") }, t.AddSeconds(1));
+    await Task.Delay(1500);
+    var sent = outbox.ReadUnsent(100).Select(r => System.Text.Json.JsonSerializer.Serialize(r.Envelope.payload["product_serial_number"])).ToList();
+    await outbox.DisposeAsync();
+    Report("SVI-100 integers above 2^53 kept exactly", sent.SequenceEqual(new[] { "9007199254740993", "9007199254740995" }), $"MES gets: [{string.Join(", ", sent)}]");
+}
+
+if (which is "all" or "98")
+{
+    // SVI-98: MES 404 / 405 (wrong mesUrl path, MES being redeployed) is MES's problem, not the row's: retried.
+    var port = 19900 + Random.Shared.Next(90);
+    var mes = FakeMes(port, _ => 404);
+    var dir = Path.Combine(Path.GetTempPath(), "gw-98", Guid.NewGuid().ToString("N"));
+    var outbox = new Outbox(dir);
+    await QueueRow(outbox, "M1", "PROCESS");
+    using var stop = new CancellationTokenSource();
+    var forwarder = new MesForwarder(new HttpClient(), $"http://localhost:{port}/", outbox).RunAsync(stop.Token);
+    await Task.Delay(1500);
+    stop.Cancel(); try { await forwarder; } catch { }
+    mes.Stop(); await outbox.DisposeAsync(); Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+    var c = Counts(dir);
+    Report("SVI-98 MES 404 keeps the row waiting (retried)", c.Waiting == 1 && c.Failed == 0, $"waiting {c.Waiting}, failed {c.Failed}");
+}
+
+if (which is "all" or "97")
+{
+    // SVI-97: MES answers 500 for every row of BAD (2,100 rows, older than everyone else's).
+    // The other machine's rows must still go, and BAD's first row moves to failed messages after
+    // a few tries while MES takes other records, so BAD's next rows go on too.
+    var port = 19900 + Random.Shared.Next(90);
+    var mes = FakeMes(port, body => body.Contains("\"machine_id\":\"BAD\"") ? 500 : 200);
+    var dir = Path.Combine(Path.GetTempPath(), "gw-97", Guid.NewGuid().ToString("N"));
+    var outbox = new Outbox(dir);
+    var stats = new GatewayStats();
+    var writes = Enumerable.Range(0, 2100).Select(i => QueueRow(outbox, "BAD", "PROCESS", 0, i)).ToList();
+    await Task.WhenAll(writes);
+    using var stop = new CancellationTokenSource();
+    var forwarder = new MesForwarder(new HttpClient { Timeout = TimeSpan.FromSeconds(5) }, $"http://localhost:{port}/", outbox, stats).RunAsync(stop.Token);
+    var goodFeed = Task.Run(async () => { for (var i = 0; !stop.IsCancellationRequested && i < 60; i++) { await QueueRow(outbox, "GOOD", "PROCESS", 0, i); await Task.Delay(1000); } });
+    var deadline = DateTime.UtcNow.AddSeconds(50);
+    (long Sent, long Failed, long Waiting) good = default, bad = default;
+    while (DateTime.UtcNow < deadline)
+    {
+        await Task.Delay(1000);
+        good = Counts(dir, "GOOD"); bad = Counts(dir, "BAD");
+        if (good.Sent > 0 && bad.Failed > 0) break;
+    }
+    stop.Cancel(); try { await forwarder; } catch { } try { await goodFeed; } catch { }
+    mes.Stop(); await outbox.DisposeAsync(); Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+    Report("SVI-97 other machines' rows still go while one machine's rows get 5xx", good.Sent > 0, $"GOOD sent {good.Sent}");
+    Report("SVI-97 a row that keeps getting 500 while MES takes others moves to failed", bad.Failed >= 1 && bad.Failed < 2100,
+        $"BAD failed {bad.Failed}, waiting {bad.Waiting} (MES up for others: rows are not all dropped at once)");
+}
+
+if (which is "all" or "95")
+{
+    // SVI-95: one failed write (file locked past the 30 s busy timeout) must not stop saving for good:
+    // with yesterday's file attached, the next try used to fail on "database prev is already in use".
+    var dir = Path.Combine(Path.GetTempPath(), "gw-95", Guid.NewGuid().ToString("N"));
+    var first = new Outbox(dir);
+    await QueueRow(first, "M1", "PROCESS");
+    await first.DisposeAsync();
+    Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+    File.Move(Path.Combine(dir, DayName(DateTime.Now)), Path.Combine(dir, DayName(DateTime.Now.AddDays(-1))));
+    var outbox = new Outbox(dir);
+    await QueueRow(outbox, "M1", "PROCESS"); // today's file made, yesterday's attached
+    var lockFile = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={Path.Combine(dir, DayName(DateTime.Now))};Pooling=False");
+    lockFile.Open();
+    using (var begin = lockFile.CreateCommand()) { begin.CommandText = "BEGIN EXCLUSIVE;"; begin.ExecuteNonQuery(); }
+    Console.WriteLine("      (SVI-95 waits ~35 s: the gateway's write must time out once)");
+    var blocked = QueueRow(outbox, "M1", "PROCESS", 0, "after the lock");
+    await Task.Delay(TimeSpan.FromSeconds(32)); // the writer's busy timeout (30 s) runs out: one failed write
+    using (var end = lockFile.CreateCommand()) { end.CommandText = "ROLLBACK;"; end.ExecuteNonQuery(); }
+    lockFile.Dispose();
+    var savedAfter = await Task.WhenAny(blocked, Task.Delay(TimeSpan.FromSeconds(10))) == blocked;
+    await outbox.DisposeAsync();
+    Report("SVI-95 saving goes on after one failed write", savedAfter, savedAfter ? "saved on the retry" : "still not saved 10 s after the lock was gone");
+}
+
+if (which is "all" or "96")
+{
+    // SVI-96: two machines (or sources) using the same message_id are two messages: both stored, both acked.
+    var (root, json) = TempConfig();
+    var tcp = 19500 + Random.Shared.Next(300);
+    File.WriteAllText(Path.Combine(root, "machine-config.json"),
+        $$"""{"gatewayId":"T","listenAddress":"127.0.0.1","tcpPort":{{tcp}},"mesUrl":"http://127.0.0.1:1/none","unregisteredMachines":"shared","unmappedTags":"send"}""");
+    // broker explicitly local and closed: the built-in default is a real broker
+    File.WriteAllText(Path.Combine(root, "mqtt-config.json"),
+        """{"brokerAddress":"127.0.0.1","brokerPort":1,"clientIdSuffix":"checks","reconnectCooldownSeconds":60,"area":"T","keepaliveIntervalSeconds":60,"motionDeadband":0.01,"maxPublishRateMs":50}""");
+    DataFolder.Use(root);
+    var registry = new MachineRegistry(new GatewayConfigStore(root, json), new UnidentifiedTagTracker(), json);
+    var host = new GatewayHost(registry, json, null, new MessageIdFilter());
+    using var stop = new CancellationTokenSource();
+    var run = host.RunAsync(stop.Token);
+    for (var i = 0; i < 50 && host.State != "running"; i++) await Task.Delay(100);
+    var replies = new List<string?>();
+    using (var c = new System.Net.Sockets.TcpClient())
+    {
+        await c.ConnectAsync("127.0.0.1", tcp);
+        var s = c.GetStream(); s.ReadTimeout = 5000;
+        var w = new StreamWriter(s) { AutoFlush = true, NewLine = "\n" }; var r = new StreamReader(s);
+        foreach (var (machine, source, sn) in new[] { ("M1", "A", "P1"), ("M2", "A", "P2"), ("M1", "B", "P3"), ("M1", "A", "P1") })
+        {
+            await w.WriteLineAsync($$$"""{"message_id":"42","machine_id":"{{{machine}}}","data_source":"{{{source}}}","data":{"product_sn":"{{{sn}}}"}}""");
+            replies.Add(await r.ReadLineAsync());
+        }
+    }
+    stop.Cancel(); try { await run; } catch { }
+    Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+    var stored = Counts(Path.Combine(root, "outbox"));
+    Report("SVI-96 same message_id from another machine / source is stored", stored.Waiting == 3 && replies.All(x => x == "{\"ack\":\"42\"}"),
+        $"rows {stored.Waiting} (want 3: M1/A, M2/A, M1/B; the 4th line is a real repeat), replies: {string.Join(" ", replies)}");
+}
+
 Console.WriteLine(failed == 0 ? "ALL PASS" : $"{failed} FAILED");
 return failed == 0 ? 0 : 1;

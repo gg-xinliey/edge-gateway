@@ -111,7 +111,10 @@ public sealed class Outbox : IAsyncDisposable
                         if (conn is null || connFile != file)
                         {
                             conn?.Dispose(); // closing yesterday's file also folds its WAL back in
-                            conn = OpenFile(file);
+                            // Not pooled: a pooled connection went back to the pool with yesterday's
+                            // file still ATTACHed, and every retry after one failed write then failed
+                            // on "database prev is already in use" (SVI-95).
+                            conn = OpenFile(file, pooled: false);
                             using var durable = conn.CreateCommand();
                             durable.CommandText = "PRAGMA synchronous = FULL;"; // commit = on disk: machines are answered after it
                             durable.ExecuteNonQuery();
@@ -205,9 +208,16 @@ public sealed class Outbox : IAsyncDisposable
 
     // ---- reading / acknowledging (MES forwarder) ----
 
-    // Oldest first across all day files, so a long MES outage drains in order.
-    // Only rows whose send_after has come (a group's sendEveryMs); within one
-    // machine + group that keeps the order, across groups the faster group goes first.
+    // Oldest first across all day files, so a long MES outage drains in order; inside a
+    // file in id order. Per group (machine + data_source + data group = state_key):
+    //   * rows up to the first one whose send_after (sendEveryMs) has not come yet: a newer
+    //     row never overtakes an older one of its group, e.g. one paced before a gateway
+    //     restart or before sendEveryMs was made shorter (SVI-99);
+    //   * at most a fair share of `limit` per machine: one machine whose rows MES keeps
+    //     refusing must not fill the whole read and stop every other machine (SVI-97).
+    // Across groups the faster group goes first.
+    private const int MinShare = 100;
+
     public List<(OutboxKey Key, Envelope Envelope)> ReadUnsent(int limit = 100)
     {
         var results = new List<(OutboxKey, Envelope)>();
@@ -215,31 +225,67 @@ public sealed class Outbox : IAsyncDisposable
         foreach (var file in PendingFiles())
         {
             using var conn = OpenFile(file);
-            using var cmd = conn.CreateCommand();
-            cmd.CommandText = "SELECT id, body FROM outbox WHERE sent = 0 AND failed_at IS NULL AND discarded_at IS NULL AND send_after <= $now ORDER BY id LIMIT $limit;";
-            cmd.Parameters.AddWithValue("$now", nowMs);
-            cmd.Parameters.AddWithValue("$limit", limit - results.Count);
+            var groups = PendingGroups(conn);
+            var share = Math.Max(Math.Min(MinShare, limit), (limit - results.Count) / Math.Max(1, groups.Select(MachineOf).Distinct().Count()));
+            var perMachine = new Dictionary<string, int>();
+            var rows = new List<(long Id, Envelope Envelope)>();
 
-            var found = 0;
-            using (var reader = cmd.ExecuteReader())
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "SELECT id, body, send_after FROM outbox WHERE sent = 0 AND failed_at IS NULL AND discarded_at IS NULL AND state_key IS $key ORDER BY id LIMIT $room;";
+            var keyParam = cmd.Parameters.Add("$key", SqliteType.Text);
+            var roomParam = cmd.Parameters.Add("$room", SqliteType.Integer);
+            foreach (var key in groups)
             {
-                while (reader.Read())
+                var machine = MachineOf(key);
+                var room = share - perMachine.GetValueOrDefault(machine);
+                if (room <= 0)
+                    continue;
+                keyParam.Value = (object?)key ?? DBNull.Value;
+                roomParam.Value = room;
+                var taken = 0;
+                using (var reader = cmd.ExecuteReader())
                 {
-                    found++;
-                    var envelope = JsonSerializer.Deserialize<Envelope>(reader.GetString(1));
-                    if (envelope is not null)
-                        results.Add((new OutboxKey(file, reader.GetInt64(0)), envelope));
+                    while (reader.Read() && reader.GetInt64(2) <= nowMs) // stops at the group's first row not due yet
+                    {
+                        taken++;
+                        var envelope = JsonSerializer.Deserialize<Envelope>(reader.GetString(1));
+                        if (envelope is not null)
+                            rows.Add((reader.GetInt64(0), envelope));
+                    }
                 }
+                perMachine[machine] = perMachine.GetValueOrDefault(machine) + taken;
             }
 
+            foreach (var (id, envelope) in rows.OrderBy(r => r.Id).Take(limit - results.Count))
+                results.Add((new OutboxKey(file, id), envelope));
+
             // Nothing due is not "all delivered": rows may still wait for send_after.
-            if (found == 0 && !HasUnsent(conn))
+            if (rows.Count == 0 && !HasUnsent(conn))
                 MarkDeliveredIfPast(file);
             if (results.Count >= limit)
                 break;
         }
 
         return results;
+    }
+
+    // The groups (state_key; null for rows from before it existed) with rows to send, oldest first.
+    private static List<string?> PendingGroups(SqliteConnection conn)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT state_key FROM outbox WHERE sent = 0 AND failed_at IS NULL AND discarded_at IS NULL GROUP BY state_key ORDER BY MIN(id);";
+        var groups = new List<string?>();
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+            groups.Add(reader.IsDBNull(0) ? null : reader.GetString(0));
+        return groups;
+    }
+
+    // state_key is "machine\ndata_source\ngroup" (SavedState.KeyOf).
+    private static string MachineOf(string? stateKey)
+    {
+        var end = stateKey?.IndexOf('\n') ?? -1;
+        return stateKey is null ? "" : end < 0 ? stateKey : stateKey[..end];
     }
 
     private static bool HasUnsent(SqliteConnection conn)
@@ -420,11 +466,13 @@ public sealed class Outbox : IAsyncDisposable
             return AllFiles().Where(f => !_delivered.Contains(f)).ToList();
     }
 
-    // A past day's file (and the legacy file) gets no new rows, so once it has
-    // no unsent rows it is done.
+    // A file from before yesterday (and the legacy file) gets no new rows, so once it
+    // has no unsent rows it is done. Not yesterday's: just after midnight the writer's
+    // last batch for it may still be on its way, and a file marked done is never read
+    // again until the process restarts (SVI-101).
     private void MarkDeliveredIfPast(string file)
     {
-        if (!TryDayOf(file, out var day) || day < DateTime.Now.Date)
+        if (!TryDayOf(file, out var day) || day < DateTime.Now.Date.AddDays(-1))
             lock (_filesSync)
                 _delivered.Add(file);
     }
@@ -455,9 +503,9 @@ public sealed class Outbox : IAsyncDisposable
             : DateTime.MinValue;
     }
 
-    private SqliteConnection OpenFile(string file)
+    private SqliteConnection OpenFile(string file, bool pooled = true)
     {
-        var conn = new SqliteConnection($"Data Source={Path.Combine(_dir, file)}");
+        var conn = new SqliteConnection($"Data Source={Path.Combine(_dir, file)}{(pooled ? "" : ";Pooling=False")}");
         conn.Open();
 
         // A file counts as initialised only once its schema exists: a reader that opens a
@@ -521,6 +569,9 @@ public sealed class Outbox : IAsyncDisposable
                 }
             }
             cmd.CommandText = "CREATE INDEX IF NOT EXISTS ix_outbox_failed ON outbox (id) WHERE failed_at IS NOT NULL AND discarded_at IS NULL;";
+            cmd.ExecuteNonQuery();
+            // ReadUnsent reads per group (state_key) in id order.
+            cmd.CommandText = "CREATE INDEX IF NOT EXISTS ix_outbox_pending ON outbox (state_key, id) WHERE sent = 0;";
             cmd.ExecuteNonQuery();
         }
     }

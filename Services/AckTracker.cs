@@ -35,12 +35,15 @@ public sealed class AckTracker
     // A MES line with a message_id arrived. Returns its ticket when it must be
     // processed; null when it is a repeat (already answered, or waiting for the
     // first copy's answer): nothing more to do with this line.
-    public Ticket? Begin(string messageId, string sender)
+    // key: what makes it the same message (GatewayHost.RepeatKey: machine, data_source
+    // and message_id); the message_id alone when not given.
+    public Ticket? Begin(string messageId, string sender, string? key = null)
     {
+        key ??= messageId;
         while (true)
         {
-            var mine = new Ticket(this, messageId, sender);
-            var ticket = _inFlight.GetOrAdd(messageId, mine); // one step: a second copy always finds the first
+            var mine = new Ticket(this, key, messageId, sender);
+            var ticket = _inFlight.GetOrAdd(key, mine); // one step: a second copy always finds the first
             if (!ReferenceEquals(ticket, mine))
             {
                 if (ticket.AddWaiter(sender))
@@ -48,7 +51,7 @@ public sealed class AckTracker
                 continue;        // the first copy just finished: look again
             }
 
-            if (_saved.Contains(messageId))
+            if (_saved.Contains(key))
             {
                 mine.Release(); // saved before: ack again, nothing to process
                 return null;
@@ -63,10 +66,12 @@ public sealed class AckTracker
         private readonly List<string> _waiters;
         private int _parts = 1; // the hold, released by Release()
         private bool _finished;
+        private readonly string _key; // in _inFlight and the saved ids; MessageId goes in the replies
 
-        internal Ticket(AckTracker owner, string messageId, string sender)
+        internal Ticket(AckTracker owner, string key, string messageId, string sender)
         {
             _owner = owner;
+            _key = key;
             MessageId = messageId;
             _waiters = new List<string> { sender };
         }
@@ -81,7 +86,7 @@ public sealed class AckTracker
         {
             if (Interlocked.Decrement(ref _parts) == 0)
             {
-                _owner._saved.MarkSaved(MessageId); // before the ticket goes: a later copy then finds it saved
+                _owner._saved.MarkSaved(_key); // before the ticket goes: a later copy then finds it saved
                 Finish(waiter => _owner._replies.Ack(waiter, MessageId));
             }
         }
@@ -118,7 +123,7 @@ public sealed class AckTracker
                 waiters = _waiters.ToArray();
             }
 
-            _owner._inFlight.TryRemove(new KeyValuePair<string, Ticket>(MessageId, this));
+            _owner._inFlight.TryRemove(new KeyValuePair<string, Ticket>(_key, this));
             foreach (var waiter in waiters)
                 reply(waiter);
         }

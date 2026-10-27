@@ -83,7 +83,7 @@ these files, not the project's `Config\` folder.
 
 | Reply | When |
 |---|---|
-| `{"ack":id}` | saved to disk, or nothing changed. A repeated `message_id` gets the first copy's answer |
+| `{"ack":id}` | saved to disk, or nothing changed. A repeated `message_id` (same machine and `data_source`) gets the first copy's answer |
 | `{"nack":id,"reason":...}` | never accepted as sent: no `machine_id`, or not valid JSON |
 | none | no `message_id`, machine has no tab (held), IO / motion line. The adapter sends it again later |
 

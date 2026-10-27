@@ -60,6 +60,15 @@ public sealed class GatewayHost
     // "message_id":"..." in a line that is not valid JSON (for its nack).
     private static readonly System.Text.RegularExpressions.Regex BrokenLineId =
         new("\"message_id\"\\s*:\\s*\"([^\"\\\\]{1,200})\"", System.Text.RegularExpressions.RegexOptions.Compiled);
+    private static readonly System.Text.RegularExpressions.Regex BrokenLineMachine =
+        new("\"machine_id\"\\s*:\\s*\"([^\"\\\\]{1,200})\"", System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    private static readonly System.Text.RegularExpressions.Regex BrokenLineSource =
+        new("\"data_source\"\\s*:\\s*\"([^\"\\\\]{1,200})\"", System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+    // The same message = the same machine, data_source and message_id. Two machines (or
+    // two sources of one machine) may count their message_ids the same way (SVI-96).
+    private static string RepeatKey(string? machineId, string? dataSource, string messageId) =>
+        $"{machineId?.Trim()}\u001f{dataSource?.Trim()}\u001f{messageId}";
 
     public void Restart()
     {
@@ -194,7 +203,8 @@ public sealed class GatewayHost
                 // read, say so, or the adapter resends the same broken line forever.
                 // (Not when that id is already saved: a good copy got its ack.)
                 if (ticket is null && ex is JsonException && BrokenLineId.Match(raw) is { Success: true } id
-                    && !_messageIds.Contains(id.Groups[1].Value))
+                    && !_messageIds.Contains(RepeatKey(BrokenLineMachine.Match(raw).Groups[1].Value,
+                        BrokenLineSource.Match(raw).Groups[1].Value, id.Groups[1].Value)))
                     replies.Nack(sender, id.Groups[1].Value, "not valid JSON");
                 throw;
             }
@@ -210,12 +220,14 @@ public sealed class GatewayHost
                 using var doc = JsonDocument.Parse(raw);
                 var twin = MqttRelay.IsTwinLine(doc.RootElement); // IO/motion: live data, never answered
 
-                // First of all: the same message_id within 10 min = the same line again.
-                // MES lines: answered by the tracker (now, or with the first copy's answer).
+                // First of all: the same message_id (same machine and data_source) within 10 min =
+                // the same line again. MES lines: answered by the tracker (now, or with the first copy's answer).
                 messageId = TopLevelString(doc.RootElement, "message_id");
                 if (messageId is not null)
                 {
-                    var repeat = twin ? !_messageIds.TryAccept(messageId) : (ticket = acks.Begin(messageId, sender)) is null;
+                    var key = RepeatKey(TopLevelString(doc.RootElement, "machine_id") ?? TopLevelString(doc.RootElement, "topic"),
+                        TopLevelString(doc.RootElement, "data_source"), messageId);
+                    var repeat = twin ? !_messageIds.TryAccept(key) : (ticket = acks.Begin(messageId, sender, key)) is null;
                     if (repeat)
                     {
                         Duplicate(sender, TopLevelString(doc.RootElement, "machine_id") ?? MachineFromTopic(doc.RootElement), messageId);
@@ -234,7 +246,8 @@ public sealed class GatewayHost
             {
                 rawTags = PayloadParser.ParseCsv(raw);
                 messageId = PeekString(rawTags, "message_id");
-                if (messageId is not null && (ticket = acks.Begin(messageId, sender)) is null)
+                if (messageId is not null && (ticket = acks.Begin(messageId, sender,
+                        RepeatKey(PeekString(rawTags, "machine_id"), PeekString(rawTags, "data_source"), messageId))) is null)
                 {
                     Duplicate(sender, PeekString(rawTags, "machine_id"), messageId);
                     return;
