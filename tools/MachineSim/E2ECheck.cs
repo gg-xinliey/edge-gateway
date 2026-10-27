@@ -201,10 +201,12 @@ static class E2ECheck
         _ => value.GetRawText(),
     };
 
-    // Same as the gateway's EnvelopeBuilder.EventId (MachineSim sends no data_source: "").
+    // Same as the gateway's EnvelopeBuilder.EventId over GatewayHost.RepeatKey
+    // (machine and data_source in upper case; MachineSim sends no data_source: "").
     private static string EventId(string machine, string messageId, string dataGroup)
     {
-        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(machine + "\n" + "" + "\n" + messageId + "\n" + dataGroup));
+        var key = $"{machine.Trim().ToUpperInvariant()}\u001f\u001f{messageId}";
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(key + "\n" + dataGroup));
         var bytes = hash.AsSpan(0, 16).ToArray();
         bytes[6] = (byte)((bytes[6] & 0x0F) | 0x80);
         bytes[8] = (byte)((bytes[8] & 0x3F) | 0x80);

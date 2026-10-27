@@ -20,13 +20,14 @@ public class EnvelopeBuilder
     // dataSource: the message's own "data_source"; the configured one when it sent none.
     // eventTime: the machine's "timestamp" (arrival time when it sent none).
     // mesColumns: the group's MES table columns (Config/mes-schema.json), or null.
-    // messageId: the incoming message_id; event_id is made from it (see EventId).
+    // messageKey: machine + data_source + message_id of the incoming message (GatewayHost.RepeatKey);
+    // event_id is made from it (see EventId).
     public Envelope Build(string machineId, string dataGroup, Dictionary<string, object?> payload, string? dataSource,
-        DateTimeOffset eventTime, IReadOnlyList<string>? mesColumns, string? messageId = null)
+        DateTimeOffset eventTime, IReadOnlyList<string>? mesColumns, string? messageKey = null)
     {
         return new Envelope
         {
-            event_id = EventId(machineId, dataSource, messageId, dataGroup),
+            event_id = EventId(messageKey, dataGroup),
             gateway_id = _gatewayId,
             machine_id = machineId,
             data_source = string.IsNullOrWhiteSpace(dataSource) ? _dataSource : dataSource,
@@ -47,14 +48,15 @@ public class EnvelopeBuilder
     // One message gives at most one envelope per group, so they never clash.
     // Two machines (or sources) may use the same message_id: they are two messages,
     // so their records must not share an event_id (MES would take the second as a resend, SVI-96).
-    // dataSource as the line sent it ("" when none), not the configured default.
-    private static string EventId(string machineId, string? dataSource, string? messageId, string dataGroup)
+    // From the same key as the repeat check, so what counts as one message is one event_id:
+    // the line's own data_source (MCALARMON / MCALARMOFF both become MCALARM later).
+    private static string EventId(string? messageKey, string dataGroup)
     {
-        if (string.IsNullOrEmpty(messageId))
+        if (string.IsNullOrEmpty(messageKey))
             return Guid.NewGuid().ToString();
 
         var hash = System.Security.Cryptography.SHA256.HashData(
-            System.Text.Encoding.UTF8.GetBytes(machineId + "\n" + (dataSource?.Trim() ?? "") + "\n" + messageId + "\n" + dataGroup));
+            System.Text.Encoding.UTF8.GetBytes(messageKey + "\n" + dataGroup));
         var bytes = hash.AsSpan(0, 16).ToArray();
         bytes[6] = (byte)((bytes[6] & 0x0F) | 0x80); // version 8: name-based, custom hash
         bytes[8] = (byte)((bytes[8] & 0x3F) | 0x80); // RFC 4122 variant

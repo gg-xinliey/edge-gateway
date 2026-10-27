@@ -56,11 +56,12 @@ public sealed class IntervalSender
     // Called by the ingest workers for every MES-bound bucket of a message.
     // dataSource = the message's "data_source": part of the key, so each
     // source has its own snapshot, changes and envelopes.
-    // messageId: becomes the envelope's event_id (with the group).
+    // messageKey: what makes the message unique (GatewayHost.RepeatKey); becomes the
+    // envelope's event_id (with the group).
     // onSaved: runs once the record is on disk.
     // Returns false when nothing changed (no record, onSaved never runs).
     public bool Accept(string machineId, string dataGroup, Dictionary<string, object?> fields, DateTimeOffset? eventTime,
-        string? dataSource = null, string? messageId = null, Action? onSaved = null)
+        string? dataSource = null, string? messageKey = null, Action? onSaved = null)
     {
         var config = _config();
         var source = dataSource?.Trim() ?? "";
@@ -99,7 +100,7 @@ public sealed class IntervalSender
 
         // Lines of one machine come from one connection and one worker, in order,
         // so its records still reach the outbox in the order they were made.
-        _outbox.Write(_envelopes.Build(machineId, dataGroup, record, source, at, MesColumns(config, dataGroup), messageId),
+        _outbox.Write(_envelopes.Build(machineId, dataGroup, record, source, at, MesColumns(config, dataGroup), messageKey),
             sendAfter, onSaved, saved);
         return true;
     }

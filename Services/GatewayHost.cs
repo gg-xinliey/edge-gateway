@@ -67,8 +67,11 @@ public sealed class GatewayHost
 
     // The same message = the same machine, data_source and message_id. Two machines (or
     // two sources of one machine) may count their message_ids the same way (SVI-96).
+    // Machine and source in any case: machines are matched ignoring case, and the drafts
+    // differ (AOI/SPI send lower case, the screw draft upper case).
+    // The record's event_id is made from it too (EnvelopeBuilder.EventId), so the two agree.
     private static string RepeatKey(string? machineId, string? dataSource, string messageId) =>
-        $"{machineId?.Trim()}\u001f{dataSource?.Trim()}\u001f{messageId}";
+        $"{machineId?.Trim().ToUpperInvariant()}\u001f{dataSource?.Trim().ToUpperInvariant()}\u001f{messageId}";
 
     public void Restart()
     {
@@ -214,6 +217,7 @@ public sealed class GatewayHost
         {
             Dictionary<string, object?> rawTags;
             string? messageId;
+            string? messageKey = null; // RepeatKey; null without a message_id
             var text = raw.AsSpan().TrimStart();
             if (text.Length > 0 && text[0] == '{')
             {
@@ -225,7 +229,7 @@ public sealed class GatewayHost
                 messageId = TopLevelString(doc.RootElement, "message_id");
                 if (messageId is not null)
                 {
-                    var key = RepeatKey(TopLevelString(doc.RootElement, "machine_id") ?? TopLevelString(doc.RootElement, "topic"),
+                    var key = messageKey = RepeatKey(TopLevelString(doc.RootElement, "machine_id") ?? TopLevelString(doc.RootElement, "topic"),
                         TopLevelString(doc.RootElement, "data_source"), messageId);
                     var repeat = twin ? !_messageIds.TryAccept(key) : (ticket = acks.Begin(messageId, sender, key)) is null;
                     if (repeat)
@@ -247,7 +251,7 @@ public sealed class GatewayHost
                 rawTags = PayloadParser.ParseCsv(raw);
                 messageId = PeekString(rawTags, "message_id");
                 if (messageId is not null && (ticket = acks.Begin(messageId, sender,
-                        RepeatKey(PeekString(rawTags, "machine_id"), PeekString(rawTags, "data_source"), messageId))) is null)
+                        messageKey = RepeatKey(PeekString(rawTags, "machine_id"), PeekString(rawTags, "data_source"), messageId))) is null)
                 {
                     Duplicate(sender, PeekString(rawTags, "machine_id"), messageId);
                     return;
@@ -375,7 +379,7 @@ public sealed class GatewayHost
 
                 // One part per row; a group with nothing new needs no saving.
                 ticket.AddPart();
-                if (!interval.Accept(machineId, dataGroup, fields, eventTime, dataSource, messageId, ticket.PartDone))
+                if (!interval.Accept(machineId, dataGroup, fields, eventTime, dataSource, messageKey, ticket.PartDone))
                     ticket.PartDone();
             }
 

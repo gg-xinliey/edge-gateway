@@ -678,11 +678,15 @@ if (which is "all" or "95")
 
 if (which is "all" or "96")
 {
-    // SVI-96: two machines (or sources) using the same message_id are two messages: both stored, both acked.
+    // SVI-96: two machines (or sources) using the same message_id are two messages: both reach MES, both acked.
+    // data_source in another case (AOI/SPI drafts lower case, screw draft upper) is the same message.
     var (root, json) = TempConfig();
     var tcp = 19500 + Random.Shared.Next(300);
+    var mesPort = 19900 + Random.Shared.Next(90);
+    var mesBodies = new System.Collections.Concurrent.ConcurrentQueue<string>();
+    using var mes96 = FakeMes(mesPort, body => { mesBodies.Enqueue(body); return 200; });
     File.WriteAllText(Path.Combine(root, "machine-config.json"),
-        $$"""{"gatewayId":"T","listenAddress":"127.0.0.1","tcpPort":{{tcp}},"mesUrl":"http://127.0.0.1:1/none","unregisteredMachines":"shared","unmappedTags":"send"}""");
+        $$"""{"gatewayId":"T","listenAddress":"127.0.0.1","tcpPort":{{tcp}},"mesUrl":"http://localhost:{{mesPort}}/","unregisteredMachines":"shared","unmappedTags":"send"}""");
     // broker explicitly local and closed: the built-in default is a real broker
     File.WriteAllText(Path.Combine(root, "mqtt-config.json"),
         """{"brokerAddress":"127.0.0.1","brokerPort":1,"clientIdSuffix":"checks","reconnectCooldownSeconds":60,"area":"T","keepaliveIntervalSeconds":60,"motionDeadband":0.01,"maxPublishRateMs":50}""");
@@ -698,17 +702,25 @@ if (which is "all" or "96")
         await c.ConnectAsync("127.0.0.1", tcp);
         var s = c.GetStream(); s.ReadTimeout = 5000;
         var w = new StreamWriter(s) { AutoFlush = true, NewLine = "\n" }; var r = new StreamReader(s);
-        foreach (var (machine, source, sn) in new[] { ("M1", "A", "P1"), ("M2", "A", "P2"), ("M1", "B", "P3"), ("M1", "A", "P1") })
+        foreach (var (machine, source, sn) in new[] { ("M1", "spi", "SN-A"), ("M2", "spi", "SN-B"), ("M1", "aoi", "SN-C"), ("M1", "SPI", "SN-A") })
         {
-            await w.WriteLineAsync($$$"""{"message_id":"42","machine_id":"{{{machine}}}","data_source":"{{{source}}}","data":{"product_sn":"{{{sn}}}"}}""");
+            await w.WriteLineAsync($$$"""{"message_id":"1001","machine_id":"{{{machine}}}","data_source":"{{{source}}}","data":{"product_sn":"{{{sn}}}"}}""");
             replies.Add(await r.ReadLineAsync());
         }
     }
+    for (var i = 0; i < 100 && mesBodies.Count < 3; i++) await Task.Delay(100);
+    await Task.Delay(1000); // a 4th record would arrive by now
     stop.Cancel(); try { await run; } catch { }
-    Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-    var stored = Counts(Path.Combine(root, "outbox"));
-    Report("SVI-96 same message_id from another machine / source is stored", stored.Waiting == 3 && replies.All(x => x == "{\"ack\":\"42\"}"),
-        $"rows {stored.Waiting} (want 3: M1/A, M2/A, M1/B; the 4th line is a real repeat), replies: {string.Join(" ", replies)}");
+    mes96.Stop();
+    var atMes = mesBodies.Select(b => System.Text.Json.JsonDocument.Parse(b).RootElement)
+        .Select(e => (Id: e.GetProperty("event_id").GetString(), What: $"{e.GetProperty("machine_id").GetString()}/{e.GetProperty("data_source").GetString()}/{e.GetProperty("payload").GetProperty("product_serial_number").GetString()}"))
+        .ToList();
+    var what = atMes.Select(x => x.What).OrderBy(x => x).ToList();
+    Report("SVI-96 same message_id from another machine / source reaches MES",
+        what.SequenceEqual(new[] { "M1/aoi/SN-C", "M1/spi/SN-A", "M2/spi/SN-B" }) && atMes.Select(x => x.Id).Distinct().Count() == 3
+        && replies.All(x => x == "{\"ack\":\"1001\"}"),
+        $"MES got [{string.Join(", ", what)}] (want M1/aoi/SN-C, M1/spi/SN-A, M2/spi/SN-B; M1/SPI is a repeat), " +
+        $"{atMes.Select(x => x.Id).Distinct().Count()} event_ids, replies: {string.Join(" ", replies)}");
 }
 
 Console.WriteLine(failed == 0 ? "ALL PASS" : $"{failed} FAILED");
