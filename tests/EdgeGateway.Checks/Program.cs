@@ -649,6 +649,31 @@ if (which is "all" or "95")
     var savedAfter = await Task.WhenAny(blocked, Task.Delay(TimeSpan.FromSeconds(10))) == blocked;
     await outbox.DisposeAsync();
     Report("SVI-95 saving goes on after one failed write", savedAfter, savedAfter ? "saved on the retry" : "still not saved 10 s after the lock was gone");
+
+    // SVI-95: a disposed outbox (gateway Restart) whose file stays locked stops its writer instead of
+    // retrying forever next to the new one, and its "not written" line counts the batch in flight.
+    var dir2 = Path.Combine(Path.GetTempPath(), "gw-95", Guid.NewGuid().ToString("N"));
+    var old = new Outbox(dir2);
+    await QueueRow(old, "M1", "PROCESS");
+    var lock2 = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={Path.Combine(dir2, DayName(DateTime.Now))};Pooling=False");
+    lock2.Open();
+    using (var begin = lock2.CreateCommand()) { begin.CommandText = "BEGIN EXCLUSIVE;"; begin.ExecuteNonQuery(); }
+    Console.WriteLine("      (SVI-95 waits ~32 s more: the disposed writer's last try must time out)");
+    _ = QueueRow(old, "M1", "PROCESS", 0, "never written");
+    await Task.Delay(500); // the writer has taken it out of the queue
+    var console = Console.Out; var log = new StringWriter();
+    Console.SetOut(log);
+    await old.DisposeAsync(); // gives up after 10 s
+    Console.SetOut(console);
+    var writer = (Task)typeof(Outbox).GetField("_writer", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(old)!;
+    var stopped = await Task.WhenAny(writer, Task.Delay(TimeSpan.FromSeconds(40))) == writer; // its try in progress runs out first
+    using (var end = lock2.CreateCommand()) { end.CommandText = "ROLLBACK;"; end.ExecuteNonQuery(); }
+    lock2.Dispose();
+    await Task.Delay(1500);
+    var left = Counts(dir2).Waiting;
+    Report("SVI-95 disposed outbox stops retrying and counts the batch in flight",
+        stopped && left == 1 && log.ToString().Contains(": 1 row(s) not written"),
+        $"writer stopped: {stopped}; rows on disk {left} (want 1); line: {log.ToString().Trim()}");
 }
 
 if (which is "all" or "96")

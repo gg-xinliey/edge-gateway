@@ -40,6 +40,8 @@ public sealed class Outbox : IAsyncDisposable
 
     private readonly record struct Item(Envelope Envelope, long SendAfterMs, Action? OnSaved, SavedState? State);
     private readonly Task _writer;
+    private readonly CancellationTokenSource _stop = new(); // DisposeAsync gave up waiting: the writer stops
+    private volatile int _writing; // rows of the batch the writer is storing (no longer counted in Queued)
 
     private readonly object _filesSync = new();
     private readonly object _schemaSync = new(); // one schema creation at a time; see OpenFile
@@ -97,10 +99,11 @@ public sealed class Outbox : IAsyncDisposable
 
         try
         {
-            while (await reader.WaitToReadAsync())
+            while (!_stop.IsCancellationRequested && await reader.WaitToReadAsync())
             {
                 while (batch.Count < MaxBatch && reader.TryRead(out var item))
                     batch.Add(item);
+                _writing = batch.Count;
 
                 // Retry until stored: a full disk or a locked file must not lose envelopes.
                 while (true)
@@ -145,7 +148,10 @@ public sealed class Outbox : IAsyncDisposable
                             Console.WriteLine($"[outbox] write failed, {batch.Count} envelopes kept in memory and retried: {ex.Message}");
                             lastErrorLog = DateTime.Now;
                         }
-                        await Task.Delay(1000);
+                        // Disposed and given up on (not acked, the adapters resend): stop, so a
+                        // Restart does not leave this writer retrying next to the new one (SVI-95).
+                        try { await Task.Delay(1000, _stop.Token); }
+                        catch (OperationCanceledException) { return; }
                     }
                 }
 
@@ -157,6 +163,7 @@ public sealed class Outbox : IAsyncDisposable
                 }
 
                 batch.Clear();
+                _writing = 0;
             }
         }
         finally
@@ -445,7 +452,11 @@ public sealed class Outbox : IAsyncDisposable
         _queue.Writer.TryComplete();
         await Task.WhenAny(_writer, Task.Delay(TimeSpan.FromSeconds(10)));
         if (!_writer.IsCompleted) // never acked, so the adapters send them again
-            Console.WriteLine($"[outbox] {_dir}: {Queued} queued row(s) not written within 10 s (file locked or disk full?); they were not acked, the adapters send them again");
+        {
+            var left = Queued + _writing; // the batch being written is no longer in the queue
+            _stop.Cancel();
+            Console.WriteLine($"[outbox] {_dir}: {left} row(s) not written within 10 s (file locked or disk full?); they were not acked, the adapters send them again");
+        }
     }
 
     // ---- files ----
