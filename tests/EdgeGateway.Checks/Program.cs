@@ -582,8 +582,11 @@ if (which is "all" or "100")
 if (which is "all" or "98")
 {
     // SVI-98: MES 404 / 405 (wrong mesUrl path, MES being redeployed) is MES's problem, not the row's: retried.
+    // 413 too, until the real MES codes are known (a proxy / MES size limit set too low).
+    foreach (var code in new[] { 404, 413 })
+    {
     var port = 19900 + Random.Shared.Next(90);
-    var mes = FakeMes(port, _ => 404);
+    var mes = FakeMes(port, _ => code);
     var dir = Path.Combine(Path.GetTempPath(), "gw-98", Guid.NewGuid().ToString("N"));
     var outbox = new Outbox(dir);
     await QueueRow(outbox, "M1", "PROCESS");
@@ -593,7 +596,8 @@ if (which is "all" or "98")
     stop.Cancel(); try { await forwarder; } catch { }
     mes.Stop(); await outbox.DisposeAsync(); Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
     var c = Counts(dir);
-    Report("SVI-98 MES 404 keeps the row waiting (retried)", c.Waiting == 1 && c.Failed == 0, $"waiting {c.Waiting}, failed {c.Failed}");
+    Report($"SVI-98 MES {code} keeps the row waiting (retried)", c.Waiting == 1 && c.Failed == 0, $"waiting {c.Waiting}, failed {c.Failed}");
+    }
 }
 
 if (which is "all" or "97")

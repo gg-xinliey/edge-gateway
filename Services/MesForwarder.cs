@@ -15,10 +15,13 @@ namespace EdgeGateway.Services;
 //     at its first failure, so a later envelope never overtakes an earlier one.
 //   * While there is a backlog it goes straight to the next pass; when idle
 //     it checks again after `IdleDelay`.
-//   * MES unreachable, timing out (15 s), 5xx, 401/403/404/405/407, 408 or 429: the
+//   * MES unreachable, timing out (15 s), 5xx, 401/403/404/405/407, 408, 413 or 429: the
 //     rows stay and are retried, with a growing delay (2 s, 4 s, 8 s ... 60 s max) so
 //     a down MES is not hammered; back to 2 s after MES takes something again.
 //     404 / 405 mean a wrong mesUrl path or MES being redeployed, not a bad row (SVI-98).
+//     413 may be a proxy / MES size limit set too low: retried too, so a too-large row waits
+//     (and its machine's next rows behind it) until the limit is raised.
+//     shortcut: 413 retried until the real MES status codes are known (SVI-53), then decide again.
 //   * MES rejects a row as invalid (any other 4xx): it is moved to failed
 //     messages with MES's answer (not retried, nothing lost), the page alerts,
 //     and the machine's next rows go on. Re-send it after a fix, or discard it
@@ -192,7 +195,7 @@ public class MesForwarder
             if (status == 409) // Conflict: MES already has this event_id (a resend): it is delivered
                 return (SendResult.Delivered, null);
 
-            var badRow = status is >= 400 and < 500 and not (401 or 403 or 404 or 405 or 407 or 408 or 429);
+            var badRow = status is >= 400 and < 500 and not (401 or 403 or 404 or 405 or 407 or 408 or 413 or 429);
             var failsOnRow = status is >= 500 and not (502 or 503 or 504) ? FailsOnThisRow(envelope.event_id) : null;
             if (badRow || failsOnRow is not null)
             {
@@ -209,7 +212,8 @@ public class MesForwarder
 
             _problems.Write($"status{status}",
                 $"{_tag} MES returned {status} for {envelope.event_id} ({envelope.machine_id}/{envelope.data_group}) — will retry in {_retryDelay.TotalSeconds:0} s or more" +
-                (status is 404 or 405 ? " (check mesUrl: MES does not know this address)" : ""));
+                (status is 404 or 405 ? " (check mesUrl: MES does not know this address)"
+                    : status is 413 ? " (request too large: check the MES / proxy size limit)" : ""));
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
