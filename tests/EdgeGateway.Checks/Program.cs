@@ -624,6 +624,41 @@ if (which is "all" or "97")
     Report("SVI-97 other machines' rows still go while one machine's rows get 5xx", good.Sent > 0, $"GOOD sent {good.Sent}");
     Report("SVI-97 a row that keeps getting 500 while MES takes others moves to failed", bad.Failed >= 1 && bad.Failed < 2100,
         $"BAD failed {bad.Failed}, waiting {bad.Waiting} (MES up for others: rows are not all dropped at once)");
+
+    // SVI-97 as reported: shared outbox, MES 500 for M1, 200 for others. 2,001 M1 rows, then 3 M2 rows:
+    // M2's 3 rows must reach MES within 10 s.
+    var port2 = 19900 + Random.Shared.Next(90);
+    var mes2 = FakeMes(port2, body => body.Contains("\"machine_id\":\"M1\"") ? 500 : 200);
+    var dir2 = Path.Combine(Path.GetTempPath(), "gw-97", Guid.NewGuid().ToString("N"));
+    var outbox2 = new Outbox(dir2);
+    await Task.WhenAll(Enumerable.Range(0, 2001).Select(i => QueueRow(outbox2, "M1", "PROCESS", 0, i)));
+    await Task.WhenAll(Enumerable.Range(0, 3).Select(i => QueueRow(outbox2, "M2", "PROCESS", 0, i)));
+    using var stop2 = new CancellationTokenSource();
+    var forwarder2 = new MesForwarder(new HttpClient { Timeout = TimeSpan.FromSeconds(5) }, $"http://localhost:{port2}/", outbox2, new GatewayStats()).RunAsync(stop2.Token);
+    var m2 = Counts(dir2, "M2");
+    for (var i = 0; i < 10 && m2.Sent < 3; i++) { await Task.Delay(1000); m2 = Counts(dir2, "M2"); }
+    stop2.Cancel(); try { await forwarder2; } catch { }
+    mes2.Stop(); await outbox2.DisposeAsync(); Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+    Report("SVI-97 reported case: 3 M2 rows go behind 2,001 stuck M1 rows", m2.Sent == 3, $"M2 sent {m2.Sent} of 3 within 10 s");
+
+    // SVI-97 default setup: a machine alone in its own outbox, MES 500 on its first row and nothing
+    // else delivered ("MES took others" never comes). After the tries and the stuck limit it moves to
+    // failed messages and the machine's next rows go on.
+    var port3 = 19900 + Random.Shared.Next(90);
+    var mes3 = FakeMes(port3, body => body.Contains("\"v\":0") ? 500 : 200);
+    var dir3 = Path.Combine(Path.GetTempPath(), "gw-97", Guid.NewGuid().ToString("N"));
+    var outbox3 = new Outbox(dir3);
+    await Task.WhenAll(Enumerable.Range(0, 3).Select(i => QueueRow(outbox3, "M1", "PROCESS", 0, i)));
+    using var stop3 = new CancellationTokenSource();
+    Console.WriteLine("      (SVI-97 waits ~30 s: 5 tries with the growing retry delay)");
+    var forwarder3 = new MesForwarder(new HttpClient { Timeout = TimeSpan.FromSeconds(5) }, $"http://localhost:{port3}/", outbox3,
+        new GatewayStats(), "M1", stuckLimit: TimeSpan.FromSeconds(5)).RunAsync(stop3.Token);
+    var alone = Counts(dir3);
+    for (var i = 0; i < 60 && alone.Sent < 2; i++) { await Task.Delay(1000); alone = Counts(dir3); }
+    stop3.Cancel(); try { await forwarder3; } catch { }
+    mes3.Stop(); await outbox3.DisposeAsync(); Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+    Report("SVI-97 machine alone: stuck row moves to failed after the time limit", alone.Failed == 1 && alone.Sent == 2,
+        $"failed {alone.Failed} (want 1), sent {alone.Sent} (want 2), waiting {alone.Waiting}");
 }
 
 if (which is "all" or "95")

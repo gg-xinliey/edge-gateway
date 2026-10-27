@@ -24,9 +24,11 @@ namespace EdgeGateway.Services;
 //     and the machine's next rows go on. Re-send it after a fix, or discard it
 //     with a reason, on the config page.
 //   * MES answers 500 (not 502/503/504: down or overloaded) for the same row
-//     ServerErrorTries times in a row while it takes other records: MES fails on
-//     that row. It is moved to failed messages too, so the machine's next rows go
-//     on (SVI-97). While MES takes nothing, rows only wait.
+//     ServerErrorTries times in a row, and either took other records meanwhile or
+//     kept at it for StuckLimit (10 min): MES fails on that row. It is moved to failed
+//     messages too (alert on the page), so the machine's next rows go on (SVI-97).
+//     The time limit covers a machine alone in its own outbox: nothing else is
+//     delivered there, so "MES took others" never comes.
 public class MesForwarder
 {
     private const int ChunkSize = 2_000;
@@ -36,6 +38,8 @@ public class MesForwarder
     private static readonly TimeSpan MaxRetryDelay = TimeSpan.FromSeconds(60);
     private const int MaxErrorText = 1_000;
     private const int ServerErrorTries = 5;
+    private static readonly TimeSpan DefaultStuckLimit = TimeSpan.FromMinutes(10);
+    private readonly TimeSpan _stuckLimit;
 
     // Rows MES answered 500 for, by event_id: tries in a row and when the first was (UTC ticks).
     private readonly ConcurrentDictionary<string, (int Tries, long FirstTicks)> _serverErrors = new();
@@ -63,8 +67,11 @@ public class MesForwarder
     private readonly string _outboxTag; // "[outbox]" or "[outbox NXT101]"
 
     // label: the machine_id of the machine's own pipeline; null for the shared one.
-    public MesForwarder(HttpClient http, string mesUrl, Outbox outbox, GatewayStats? stats = null, string? label = null)
+    // stuckLimit: see StuckLimit above (checks shorten it).
+    public MesForwarder(HttpClient http, string mesUrl, Outbox outbox, GatewayStats? stats = null, string? label = null,
+        TimeSpan? stuckLimit = null)
     {
+        _stuckLimit = stuckLimit ?? DefaultStuckLimit;
         _http = http;
         _endpoint = new Uri(mesUrl);
         _outbox = outbox;
@@ -186,17 +193,17 @@ public class MesForwarder
                 return (SendResult.Delivered, null);
 
             var badRow = status is >= 400 and < 500 and not (401 or 403 or 404 or 405 or 407 or 408 or 429);
-            var failsOnRow = status is >= 500 and not (502 or 503 or 504) && FailsOnThisRow(envelope.event_id);
-            if (badRow || failsOnRow)
+            var failsOnRow = status is >= 500 and not (502 or 503 or 504) ? FailsOnThisRow(envelope.event_id) : null;
+            if (badRow || failsOnRow is not null)
             {
                 var body = await response.Content.ReadAsStringAsync(ct);
                 if (body.Length > MaxErrorText)
                     body = body[..MaxErrorText] + "…";
-                var error = (failsOnRow
-                    ? $"MES {status} {response.ReasonPhrase} {ServerErrorTries} times in a row for this record while it took other records: {body}"
+                var error = (failsOnRow is not null
+                    ? $"MES {status} {response.ReasonPhrase} {failsOnRow}: {body}"
                     : $"MES {status} {response.ReasonPhrase}: {body}").Trim();
                 Console.WriteLine($"{_tag} MES rejected {envelope.event_id} ({envelope.machine_id}/{envelope.data_group}) " +
-                                  $"{(failsOnRow ? "again and again" : "as invalid")}, moved to failed messages: {error}");
+                                  $"{(failsOnRow is not null ? "again and again" : "as invalid")}, moved to failed messages: {error}");
                 return (SendResult.Rejected, error);
             }
 
@@ -219,17 +226,23 @@ public class MesForwarder
         return (SendResult.Retry, null);
     }
 
-    // One more 500 for this row. True once it had ServerErrorTries of them and MES took a
-    // record (any machine) after the first: then MES is up and fails on this row itself.
-    // Without stats (no view of the other machines) it never counts as the row's fault.
-    private bool FailsOnThisRow(string eventId)
+    // One more 500 for this row. Returns why it counts as the row's fault (for the failed
+    // message), or null to retry: needs ServerErrorTries of them, and MES took a record
+    // (any machine) after the first, or the 500s went on for the stuck limit.
+    private string? FailsOnThisRow(string eventId)
     {
         var now = DateTimeOffset.UtcNow.UtcTicks;
         var entry = _serverErrors.AddOrUpdate(eventId, _ => (1, now), (_, old) => (old.Tries + 1, old.FirstTicks));
-        if (entry.Tries < ServerErrorTries || _stats is null || _stats.LastDeliveredTicks <= entry.FirstTicks)
-            return false;
-        _serverErrors.TryRemove(eventId, out _);
-        return true;
+        if (entry.Tries < ServerErrorTries)
+            return null;
+        var why = _stats is not null && _stats.LastDeliveredTicks > entry.FirstTicks
+            ? $"{entry.Tries} times in a row for this record while it took other records"
+            : now - entry.FirstTicks >= _stuckLimit.Ticks
+                ? $"{entry.Tries} times in a row for this record over {TimeSpan.FromTicks(now - entry.FirstTicks).TotalMinutes:0.#} min"
+                : null;
+        if (why is not null)
+            _serverErrors.TryRemove(eventId, out _);
+        return why;
     }
 
     // First delivery after a period of failed sends: one line saying it is over.
