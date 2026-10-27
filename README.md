@@ -119,6 +119,8 @@ They run while the gateway runs. End-to-end check with MachineSim and the fake M
 - Disk: a day file with a failed row is kept until the row is re-sent or discarded; there is no free-space alarm.
 - Adapters on one PC share one worker: about 10,000 lines/s (Debug build).
 - NXT alarm event names (`MCALARMON` / `MCALARMOFF`) are fixed in the code.
+- Numbers: whole numbers exact up to 28 digits, decimals to ~16 significant digits. Adapters send IDs and
+  serials as strings (USE_CASE.md).
 - Open work: [GitHub issues](https://github.com/svi-automation/edge-gateway/issues).
 
 ## Git

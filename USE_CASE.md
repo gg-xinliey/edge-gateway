@@ -58,6 +58,7 @@ Gateway → MQTT, topic `svi/TEST/ASSY-L01-FCT-01/IO/input`:
 - Each `data_source` is kept apart: the same data group from two data sources (e.g. `mcstatechange` and `mcstartstate`, both with traceability tags) gives **two separate envelopes**, even when they arrive at the same time. Changes, intervals and Span times are tracked per machine + data_source + group.
 - NXT alarms come as two event names, `MCALARMON` and `MCALARMOFF`, with no status tag. When the machine's tab maps `alarm_status`, both become data_source `MCALARM` with `alarm_status` 1 (on) or 0 (off). Then the ALARM record of an alarm going off has the same `alarm_start_time` as its on record, plus `alarm_clear_time`. An off with no on before it gets neither time.
 - **All MES times are sent in UTC with `Z`**, e.g. `2026-10-16T08:25:28.086Z` (`record_timestamp`, start/end times, `publish_timestamp`). MQTT keeps the SpotWelding local format `yyyy-MM-dd HH:mm:ss.fff`. `data_source` is optional: it goes into the envelope's `data_source` (otherwise `dataSource` from machine-config.json is used). None of these three is a data tag.
+- **Send IDs, serial numbers and barcodes as strings** (`"serial":"9007199254740993"`), not as numbers: a string is kept exactly, digit for digit.
 - Any other field is a data tag, mapped by the machine's tab (or set to ignore). An unknown tag never goes to MES (MES has no `UNIDENTIFIED` group): by default the rest of the message goes on without it; with `unmappedTags` = `hold` the whole message is held. See "A tag the mapping doesn't know" below.
 
 **Reply to the adapter** (one JSON line back on the same TCP connection, per MES message):
@@ -84,7 +85,7 @@ Gateway → MQTT, topic `svi/TEST/ASSY-L01-FCT-01/IO/input`:
 ```
 - The envelope has every `machine_events` column the gateway can know. MES fills `id` and `received_at` itself.
 - `event_time` is the machine's `timestamp` (the arrival time when it sent none). `event_id` is made from the `machine_id`, `data_source` (both in upper case, as the line sent them), `message_id` and data group, so it is the same every time that message is sent or resent; MES can drop repeats by `event_id`.
-- Numbers are sent as the machine wrote them; whole numbers above 2^53 (9,007,199,254,740,992) too, digit for digit.
+- Numbers keep their value: whole numbers exactly up to 28 digits (also above 2^53 = 9,007,199,254,740,992); numbers with a decimal point to about 16 significant digits. The written form can change (`1.0` arrives as `1`, `1e3` as `1000`). IDs and serials belong in strings (see above).
 - The payload has **every column of the group's MES table, in the table's order, `null` when not sent**. The columns per group are in `Config\mes-schema.json` (from the MES data dictionary). Edit that file when MES changes a table, then restart.
 - Fields that have no MES column (extra fields, e.g. Nexim's `components`, `cycle_active`) are **not sent to MES**. To send one, add it to the group's MES format (**+ MES field**) once MES has the column.
 - A tag only fills a MES column when its **fieldName in PointMap is the column name** (e.g. `work_order_no`, not `work_order`). Otherwise the column is `null` and the field is not sent.
