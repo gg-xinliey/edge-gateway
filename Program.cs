@@ -74,8 +74,10 @@ async Task RunAsync(CancellationToken stop)
     if (messageIds.Count > 0)
         Console.WriteLine($"[ingest] {messageIds.Count:N0} message_ids from the last {MessageIdFilter.Window.TotalMinutes:0} min loaded (duplicate check)");
 
-    var gateway = new GatewayHost(machines, jsonOptions, traffic, messageIds);
-    var adminServer = new AdminWebServer(adminPort, "wwwroot", machines, gateway, log, jsonOptions, traffic, adminAllIps);
+    // Every line received (time + machine), searchable on General -> Machines, kept 7 days.
+    await using var messageLog = new MessageLog(Path.Combine(DataFolder.Root, "traffic"));
+    var gateway = new GatewayHost(machines, jsonOptions, traffic, messageIds, messageLog);
+    var adminServer = new AdminWebServer(adminPort, "wwwroot", machines, gateway, log, jsonOptions, traffic, adminAllIps, messageLog);
 
     Console.WriteLine("Edge gateway starting — Ctrl+C to stop");
     Console.WriteLine($"Data folder: {DataFolder.Root}");

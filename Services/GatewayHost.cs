@@ -26,10 +26,12 @@ public sealed class GatewayHost
 
     private readonly TrafficRegistry? _traffic;
     private readonly MessageIdFilter _messageIds;
+    private readonly MessageLog? _messageLog;
 
     public GatewayHost(MachineRegistry machines, JsonSerializerOptions jsonOptions, TrafficRegistry? traffic = null,
-        MessageIdFilter? messageIds = null)
+        MessageIdFilter? messageIds = null, MessageLog? messageLog = null)
     {
+        _messageLog = messageLog;
         _machines = machines;
         _configStore = machines.Shared;
         _jsonOptions = jsonOptions;
@@ -203,9 +205,10 @@ public sealed class GatewayHost
         {
             Stats.Received();
             AckTracker.Ticket? ticket = null; // MES lines with a message_id: answered once on disk
+            string? lineMachine = null;       // for the message log; null = the line could not be read
             try
             {
-                Handle(raw, sender, ref ticket);
+                Handle(raw, sender, ref ticket, ref lineMachine);
             }
             catch (Exception ex)
             {
@@ -222,9 +225,13 @@ public sealed class GatewayHost
                     replies.Nack(sender, id.Groups[1].Value, "not valid JSON");
                 throw;
             }
+            finally
+            {
+                _messageLog?.Record(lineMachine ?? "(unreadable)");
+            }
         }
 
-        void Handle(string raw, string sender, ref AckTracker.Ticket? ticket)
+        void Handle(string raw, string sender, ref AckTracker.Ticket? ticket, ref string? lineMachine)
         {
             Dictionary<string, object?> rawTags;
             string? messageId;
@@ -233,6 +240,8 @@ public sealed class GatewayHost
             if (text.Length > 0 && text[0] == '{')
             {
                 using var doc = JsonDocument.Parse(raw);
+                lineMachine = TopLevelString(doc.RootElement, "machine_id")
+                              ?? (TopLevelString(doc.RootElement, "topic") is null ? "(no machine_id)" : MachineFromTopic(doc.RootElement));
                 var twin = MqttRelay.IsTwinLine(doc.RootElement); // IO/motion: live data, never answered
 
                 // First of all: the same message_id (same machine and data_source) within 10 min =
@@ -260,6 +269,7 @@ public sealed class GatewayHost
             else
             {
                 rawTags = PayloadParser.ParseCsv(raw);
+                lineMachine = PeekString(rawTags, "machine_id") ?? "(no machine_id)";
                 messageId = PeekString(rawTags, "message_id");
                 if (messageId is not null && (ticket = acks.Begin(messageId, sender,
                         messageKey = RepeatKey(PeekString(rawTags, "machine_id"), PeekString(rawTags, "data_source"), messageId))) is null)

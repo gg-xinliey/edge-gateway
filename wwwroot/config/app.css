@@ -132,6 +132,10 @@ table.data tr.clickable:hover { background: var(--accent-soft); }
 h3.sub { margin: 18px 0 8px; font-size: 14px; font-weight: 600; }
 .outbox-tools { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
 .outbox-tools input { height: 32px; padding: 0 8px; border: 1px solid #a0a0a0; background: var(--field); width: 170px; }
+.msg-search { align-items: center; }
+.msg-search input[type=time] { width: 110px; }
+.msg-results { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; margin-bottom: 18px; }
+.msg-results .table-wrap { flex: 1 1 260px; }
 pre.json { margin: 0; max-height: 420px; overflow: auto; font: 12px/1.45 Consolas, "Cascadia Mono", monospace; white-space: pre-wrap; word-break: break-word; }
 button.more { margin-top: 10px; }
 

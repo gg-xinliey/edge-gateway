@@ -1115,5 +1115,60 @@ if (which is "all" or "autotab")
         $"LIM tabs created: {autoTabs} (want 19, plus NEXIM-NEW = 20); LIM-20 has a tab: {registry.FolderFor("LIM-20") is not null}");
 }
 
+if (which is "all" or "msglog")
+{
+    // Message log: every line with its time and machine; searched by range and machine; old days deleted.
+    var dir = Path.Combine(Path.GetTempPath(), "gw-msglog", Guid.NewGuid().ToString("N"));
+    await using (var log = new MessageLog(dir))
+    {
+        foreach (var m in new[] { "A", "A", "A", "B" }) log.Record(m);
+        await Task.Delay(1000);
+        var now = DateTime.Now;
+        var all = log.Count(now.AddMinutes(-1), now.AddMinutes(1), null);
+        var onlyA = log.Count(now.AddMinutes(-1), now.AddMinutes(1), "A");
+        var before = log.Count(now.AddMinutes(-30), now.AddMinutes(-10), null);
+        Report("message log: counted per machine, searched by time and machine",
+            all.Total == 4 && all.Machines.Single(x => x.Machine == "A").Count == 3 && all.Hours.Sum(x => x.Count) == 4 && onlyA.Total == 3 && before.Total == 0,
+            $"all {all.Total} (A {all.Machines.FirstOrDefault(x => x.Machine == "A")?.Count}, per hour {all.Hours.Sum(x => x.Count)}); only A {onlyA.Total}; 10-30 min ago {before.Total}");
+
+        string Day(int daysAgo) => Path.Combine(dir, $"traffic-{DateTime.Now.AddDays(-daysAgo).ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture)}.db");
+        File.WriteAllText(Day(8), ""); File.WriteAllText(Day(6), "");
+        log.Purge();
+        Report("message log: days older than 7 are deleted", !File.Exists(Day(8)) && File.Exists(Day(6)), $"8 days old kept: {File.Exists(Day(8))}; 6 days old kept: {File.Exists(Day(6))}");
+    }
+
+    // Through the gateway: a MES line, a motion line (machine from its topic), a line without machine_id
+    // and a broken line are all counted, each under its machine.
+    var (root, json) = TempConfig();
+    var tcp = 19500 + Random.Shared.Next(300);
+    File.WriteAllText(Path.Combine(root, "machine-config.json"),
+        $$"""{"gatewayId":"T","listenAddress":"127.0.0.1","tcpPort":{{tcp}},"mesUrl":"http://127.0.0.1:1/none","unregisteredMachines":"shared","unmappedTags":"send"}""");
+    File.WriteAllText(Path.Combine(root, "mqtt-config.json"),
+        """{"brokerAddress":"127.0.0.1","brokerPort":1,"clientIdSuffix":"checks","reconnectCooldownSeconds":60,"area":"T","keepaliveIntervalSeconds":60,"motionDeadband":0.01,"maxPublishRateMs":50}""");
+    DataFolder.Use(root);
+    var gwLog = new MessageLog(Path.Combine(root, "traffic"));
+    var registry = new MachineRegistry(new GatewayConfigStore(root, json), new UnidentifiedTagTracker(), json);
+    var host = new GatewayHost(registry, json, null, new MessageIdFilter(), gwLog);
+    using var stop = new CancellationTokenSource();
+    var run = host.RunAsync(stop.Token);
+    for (var i = 0; i < 50 && host.State != "running"; i++) await Task.Delay(100);
+    using (var c = new System.Net.Sockets.TcpClient())
+    {
+        await c.ConnectAsync("127.0.0.1", tcp);
+        var w = new StreamWriter(c.GetStream()) { AutoFlush = true, NewLine = "\n" };
+        await w.WriteLineAsync("""{"message_id":"ml-1","machine_id":"M1","data":{"product_sn":"P1"}}""");
+        await w.WriteLineAsync("""{"topic":"svi/T/M2/motion/position","payload":{"timestamp":"2026-10-28 10:00:00.000","x":1}}""");
+        await w.WriteLineAsync("""{"message_id":"ml-3","data":{"x":1}}""");
+        await w.WriteLineAsync("""{"message_id":"ml-4", broken""");
+        await Task.Delay(1500);
+    }
+    stop.Cancel(); try { await run; } catch { }
+    var counted = gwLog.Count(DateTime.Now.AddMinutes(-1), DateTime.Now.AddMinutes(1), null);
+    await gwLog.DisposeAsync();
+    var byMachine = string.Join(", ", counted.Machines.OrderBy(x => x.Machine).Select(x => $"{x.Machine} {x.Count}"));
+    Report("message log: every kind of line counted under its machine",
+        byMachine == "(no machine_id) 1, (unreadable) 1, M1 1, M2 1", $"counted: {byMachine}");
+}
+
 Console.WriteLine(failed == 0 ? "ALL PASS" : $"{failed} FAILED");
 return failed == 0 ? 0 : 1;

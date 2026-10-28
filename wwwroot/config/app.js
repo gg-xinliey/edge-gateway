@@ -520,6 +520,8 @@ function renderMachines(view) {
       h('td', { class: 'small', textContent: m.dataSources.map(d => `${d.name} ${d.count.toLocaleString()}`).join(' · ') || '—' })))
   ) : h('div', { class: 'empty', textContent: data.machines.length ? 'No machine matches the search.' : 'No machine has sent anything yet.' }));
 
+  renderMessageSearch(view, data);
+
   view.append(h('h3', { class: 'sub', textContent: 'Connections' }));
   view.append(data.connections.length ? table(
     ['connection', 'since', 'lines', 'issues', 'last line', 'machines'],
@@ -535,6 +537,38 @@ function renderMachines(view) {
       h('td', { textContent: ago(c.lastLine) }),
       h('td', { class: 'small', textContent: c.machines.join(', ') || '—' })))
   ) : h('div', { class: 'empty', textContent: 'No connection yet.' }));
+}
+
+// Message log: every line received (time + machine), kept 7 days. Search a day, from / to time,
+// all machines or one: total, per machine, per hour. The inputs and the last result live in
+// state, so the Machines view's redraw every 4 s keeps them.
+function renderMessageSearch(view, data) {
+  const s = state.msgSearch ??= { day: new Date().toLocaleDateString('sv'), from: '00:00', to: '23:59', machine: '', result: null, error: '' };
+  const names = [...new Set([...data.machines.map(m => m.machineId), ...state.machineConfigs.map(m => m.machineId)])].sort();
+  const field = (type, key, label) => h('input', { type, value: s[key], 'aria-label': label, oninput: e => { s[key] = e.target.value; } });
+  view.append(h('h3', { class: 'sub', textContent: 'Messages received (kept 7 days)' }),
+    h('div', { class: 'outbox-tools msg-search' },
+      field('date', 'day', 'day'), field('time', 'from', 'from time'), h('span', { textContent: 'to' }), field('time', 'to', 'to time'),
+      select([['', 'all machines'], ...names.map(n => [n, n])], s.machine, v => { s.machine = v; }, 'machine'),
+      h('button', { type: 'button', class: 'primary', textContent: 'Search', onclick: searchMessages })));
+  if (s.error) { view.append(h('p', { class: 'hint', textContent: s.error })); return; }
+  const r = s.result;
+  if (!r) return;
+  view.append(h('p', { class: 'section-note', textContent:
+    `${r.total.toLocaleString()} line(s) on ${s.day}, ${s.from}–${s.to}${s.machine ? ` from ${s.machine}` : ''} · stored days: ${(r.storedBytes / 1048576).toFixed(1)} MB` }));
+  if (!r.total) return;
+  view.append(h('div', { class: 'msg-results' },
+    table(['machine', 'lines'], r.machines.map(m => h('tr', {}, h('td', { textContent: m.machine }), h('td', { class: 'num', textContent: m.count.toLocaleString() })))),
+    table(['hour', 'lines'], r.hours.map(x => h('tr', {},
+      h('td', { textContent: `${x.hour.slice(11, 13)}:00–${x.hour.slice(11, 13)}:59` }), h('td', { class: 'num', textContent: x.count.toLocaleString() }))))));
+}
+
+async function searchMessages() {
+  const s = state.msgSearch;
+  const q = new URLSearchParams({ from: `${s.day}T${s.from}`, to: `${s.day}T${s.to}:59.999`, machine: s.machine });
+  try { s.result = await request(`/api/messages?${q}`); s.error = ''; }
+  catch (e) { s.result = null; s.error = `Not searched: ${e.message}`; }
+  render();
 }
 
 // "own tab" (opens it) for a machine with its own mapping; "held" when it
@@ -564,8 +598,8 @@ async function pollMachines() {
   renderTabs(); // the connection dots in the machine list
   if (state.view === 'machines') await loadMachineConfigs(); // for the mapping column
   if (state.view !== 'machines') return;
-  if (document.activeElement?.tagName === 'SELECT' && $('view').contains(document.activeElement))
-    return; // a dropdown is open or in use: redrawing would close it (#11); next poll catches up
+  if (['SELECT', 'INPUT'].includes(document.activeElement?.tagName) && $('view').contains(document.activeElement))
+    return; // a dropdown or the message search is in use: redrawing would close it (#11); next poll catches up
   const scroll = [window.scrollY, $('view').scrollTop]; // the refresh must not jump the page back up
   render();
   window.scrollTo(0, scroll[0]);

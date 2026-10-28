@@ -231,6 +231,7 @@ Open **http://localhost:5100/config/**. It only opens on the gateway PC itself.
    - **issues** shows only the counters that are not 0 (hover for what each means):
      - **held** (red) = messages waiting right now (no tab, or tags not mapped);
      - **repeats** (orange) = lines ignored because their `message_id` was already received in the last 10 min;
+   - **Messages received (kept 7 days):** every line the gateway received (MES, IO, motion; also repeats and broken lines), stored with its exact time and machine, not its content, in `data\traffic\traffic-<day>.db`. Pick a day, a from and to time, all machines or one, **Search**: the total, a count per machine and per hour, and the size of the stored days. Lines whose machine can't be read count as `(unreadable)` or `(no machine_id)`. Days older than 7 are deleted.
      - **time warnings** (orange) = messages whose `timestamp` couldn't be read (arrival time used) or was more than 1 h from arrival (wrong machine clock, wrong `timestampsWithoutZone`, or an old message resent). The log says which.
    - **data sources** = how many messages came with each `data_source`.
 2. **Connections** lists each TCP connection (open first, plus the last 200 closed ones):

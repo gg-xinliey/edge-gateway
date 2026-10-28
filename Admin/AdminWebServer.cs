@@ -1,5 +1,6 @@
 using EdgeGateway.Models;
 using EdgeGateway.Services;
+using System.Globalization;
 using System.Net;
 using System.Net.Mime;
 using System.Text;
@@ -25,6 +26,7 @@ public sealed class AdminWebServer
     private readonly UnidentifiedTagTracker _unidentified;
     private readonly GatewayLog _log;
     private readonly TrafficRegistry? _traffic;
+    private readonly MessageLog? _messageLog;
     private readonly JsonSerializerOptions _jsonOptions;
     private readonly int _port;
     private readonly bool _allIps; // in a container: listen on every address, check the browser's host name instead
@@ -67,8 +69,10 @@ public sealed class AdminWebServer
         GatewayLog log,
         JsonSerializerOptions jsonOptions,
         TrafficRegistry? traffic = null,
-        bool allIps = false)
+        bool allIps = false,
+        MessageLog? messageLog = null)
     {
+        _messageLog = messageLog;
         _allIps = allIps;
         _log = log;
         _traffic = traffic;
@@ -434,6 +438,21 @@ public sealed class AdminWebServer
         {
             _ = long.TryParse(context.Request.QueryString["after"], out var after);
             await WriteJsonAsync(context.Response, 200, new { lines = _log.Since(after), errorCount = _log.ErrorCount });
+            return;
+        }
+
+        // Message log: how many lines arrived from ?from to ?to (local time, e.g. 2026-10-28T08:00),
+        // all machines or ?machine=, with a count per machine and per hour.
+        if (HttpMethodsEqual(context, "GET") && path.Equals("/api/messages", StringComparison.OrdinalIgnoreCase))
+        {
+            var q = context.Request.QueryString;
+            if (_messageLog is null)
+                await WriteJsonAsync(context.Response, 404, new { error = "The message log is not running." });
+            else if (!DateTime.TryParse(q["from"], CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var from)
+                     || !DateTime.TryParse(q["to"], CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var to) || to <= from)
+                await WriteJsonAsync(context.Response, 400, new { error = "from and to must be times like 2026-10-28T08:00, with to after from." });
+            else
+                await WriteJsonAsync(context.Response, 200, _messageLog.Count(from, to, string.IsNullOrWhiteSpace(q["machine"]) ? null : q["machine"]!.Trim()));
             return;
         }
 
