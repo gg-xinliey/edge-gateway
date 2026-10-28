@@ -358,7 +358,7 @@ public sealed class GatewayHost
             if (unmapped.Count > 0 && AutoMap(store, machineId, unmapped))
             {
                 config = store.Current; // the new mapping applies to this message already
-                unmapped = config.Normalizer.Unmapped(rawTags);
+                unmapped = unmapped.Where(tag => !config.Normalizer.IsMapped(tag)).ToList(); // not Unmapped(): it would count them twice
             }
             if (unmapped.Count > 0)
             {
