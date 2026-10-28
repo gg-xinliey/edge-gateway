@@ -246,14 +246,16 @@ function connectionOf(machineId) {
 }
 
 function renderTabs() {
+  // The machine whose buttons the middle column shows; stays marked while a General view is open.
+  const selected = state.tab === GENERAL ? (state.scope || SHARED) : state.tab;
   const tab = (id, label, opts = {}) => {
     const el = h('div', {
-      class: `tab${state.tab === id ? ' active' : ''}${opts.fixed ? ' fixed' : ''}${opts.extra ? ' ' + opts.extra : ''}`,
+      class: `tab${selected === id ? ' active' : ''}${opts.fixed ? ' fixed' : ''}${opts.extra ? ' ' + opts.extra : ''}`,
       role: 'tab', tabIndex: 0, title: opts.title ?? label,
       onclick: () => switchTab(id),
       onkeydown: e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); switchTab(id); } },
     }, h('span', { class: 'tab-name', textContent: label }));
-    el.setAttribute('aria-selected', String(state.tab === id));
+    el.setAttribute('aria-selected', String(selected === id));
     if (opts.status)
       el.append(h('span', { class: `dot ${opts.status}`, role: 'img', 'aria-label': STATUS_WORDS[opts.status], title: STATUS_WORDS[opts.status] }));
     if (opts.close)
@@ -266,7 +268,6 @@ function renderTabs() {
   };
 
   $('tabs').replaceChildren(...[
-    tab(GENERAL, 'General', { fixed: true, extra: 'general', title: 'Gateway-wide: MQTT, gateway settings, connected machines, log' }),
     tab(SHARED, unmappedFor('').length ? `⚠ ${sharedLabel()}` : sharedLabel(), { fixed: true, extra: unmappedFor('').length ? 'broken' : '', title: holdPolicy() ? 'Template: what "+" copies into a new machine tab. Machines without a tab are held, not mapped with this.' : 'The shared mapping: every machine that has no own tab' }),
     ...state.machineConfigs.map(m => {
       const waiting = unmappedFor(m.machineId);
@@ -373,10 +374,8 @@ function unidentifiedList() {
 // ---------- rendering ----------
 
 function updateNav() {
-  const machineTab = isMachineTab(state.tab);
-  $('tabTitle').textContent = state.tab === GENERAL ? 'General' : state.tab === SHARED ? sharedLabel() : state.tab;
+  $('tabTitle').textContent = state.scope || sharedLabel(); // the machine column's buttons, also while General is open
   document.querySelectorAll('.nav').forEach(button => {
-    button.hidden = (button.dataset.tab === 'machine') !== machineTab;
     button.classList.toggle('active', button.dataset.view === state.view);
     button.querySelector('.dirty')?.remove();
     if (state.dirty.has(button.dataset.view))
@@ -1615,6 +1614,63 @@ async function pollStatus() {
 
 document.querySelectorAll('.nav').forEach(button =>
   button.addEventListener('click', () => switchView(button.dataset.view)));
+
+// ---------- column widths: drag a grip line (or ← / →), double-click for the default ----------
+// Remembered in this browser only (a per-viewer convenience; the page works without it).
+const COLUMN_DEFAULTS = { tabs: 210, side: 210, general: 230 };
+const MIN_COLUMN = 120, MIN_PANEL = 300;
+const columnWidth = col => parseFloat(getComputedStyle($('window')).getPropertyValue(`--w-${col}`)) || COLUMN_DEFAULTS[col];
+
+function setColumn(col, px) {
+  const win = $('window');
+  const fixed = win.clientWidth - $('window').querySelector('.panel').offsetWidth
+    - Object.keys(COLUMN_DEFAULTS).reduce((sum, c) => sum + columnWidth(c), 0); // grips + padding
+  const others = Object.keys(COLUMN_DEFAULTS).filter(c => c !== col).reduce((sum, c) => sum + columnWidth(c), 0);
+  const width = Math.round(Math.max(MIN_COLUMN, Math.min(px, win.clientWidth - fixed - others - MIN_PANEL)));
+  win.style.setProperty(`--w-${col}`, `${width}px`);
+  win.querySelector(`.grip[data-col="${col}"]`).setAttribute('aria-valuenow', String(width));
+}
+
+function saveColumns() {
+  try { localStorage.setItem('gateway.columns', JSON.stringify(Object.fromEntries(Object.keys(COLUMN_DEFAULTS).map(c => [c, columnWidth(c)])))); }
+  catch { /* private window or blocked storage: widths just aren't remembered */ }
+}
+
+try {
+  const saved = JSON.parse(localStorage.getItem('gateway.columns') ?? '{}');
+  for (const col of Object.keys(COLUMN_DEFAULTS))
+    if (Number.isFinite(saved[col])) setColumn(col, saved[col]);
+} catch { /* nothing remembered */ }
+window.addEventListener('resize', () => Object.keys(COLUMN_DEFAULTS).forEach(c => setColumn(c, columnWidth(c))));
+
+document.querySelectorAll('.grip').forEach(grip => {
+  const col = grip.dataset.col;
+  const sign = col === 'general' ? -1 : 1; // General sits right of its grip: dragging left widens it
+  grip.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    grip.setPointerCapture(e.pointerId);
+    const startX = e.clientX, startWidth = columnWidth(col);
+    grip.classList.add('dragging');
+    document.body.classList.add('resizing');
+    const move = ev => setColumn(col, startWidth + sign * (ev.clientX - startX));
+    const up = () => {
+      grip.removeEventListener('pointermove', move);
+      grip.classList.remove('dragging');
+      document.body.classList.remove('resizing');
+      saveColumns();
+    };
+    grip.addEventListener('pointermove', move);
+    grip.addEventListener('pointerup', up, { once: true });
+    grip.addEventListener('pointercancel', up, { once: true });
+  });
+  grip.addEventListener('dblclick', () => { setColumn(col, COLUMN_DEFAULTS[col]); saveColumns(); });
+  grip.addEventListener('keydown', e => {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    e.preventDefault();
+    setColumn(col, columnWidth(col) + (e.key === 'ArrowRight' ? 16 : -16) * sign);
+    saveColumns();
+  });
+});
 
 $('picker').addEventListener('change', async e => {
   const value = e.target.value;

@@ -22,18 +22,25 @@
 body { margin: 0; height: 100vh; background: var(--page); }
 button, input, select { font: inherit; color: inherit; }
 
-/* Full window: three columns (machines | the open tab's buttons | content); only the content scrolls. */
+/* Full window: machines | the machine's buttons | content | General. The grip lines between them
+   resize the columns (widths in --w-*, set by app.js); only the content scrolls. */
 .shell { height: 100vh; }
 
 .window {
   display: grid;
-  grid-template-columns: 210px 210px minmax(0, 1fr);
-  gap: 6px;
+  grid-template-columns: var(--w-tabs, 210px) 8px var(--w-side, 210px) 8px minmax(300px, 1fr) 8px var(--w-general, 230px);
   height: 100%;
   padding: 6px;
   background: var(--window);
 }
 .window > * { min-height: 0; }
+
+/* Grip line between two columns: a short mark, the full height on hover / focus / drag. */
+.grip { position: relative; cursor: col-resize; touch-action: none; }
+.grip::after { content: ""; position: absolute; top: 50%; left: 3px; width: 2px; height: 36px; margin-top: -18px; border-radius: 1px; background: #c4c4c4; }
+.grip:hover::after, .grip:focus-visible::after, .grip.dragging::after { top: 0; height: 100%; margin-top: 0; background: var(--accent); }
+.grip:focus-visible { outline: none; }
+body.resizing { cursor: col-resize; user-select: none; }
 
 /* ---- left column: General | Other machines | one per machine (name, connection dot, ×) | + ----
    One line per machine; a long name is cut with … (full name on hover). The list scrolls by itself. */
@@ -49,8 +56,6 @@ button, input, select { font: inherit; color: inherit; }
 .tab.active { background: var(--accent-soft); border-color: var(--accent); font-weight: 600; }
 .tab .tab-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .tab.fixed { padding-right: 12px; }
-.tab.general { margin-bottom: 8px; }
-.tab.general .tab-name { font-style: italic; }
 .tab.broken .tab-name { color: var(--bad); }
 .tab .dot { flex: none; }
 .tab-x { flex: none; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--muted); font-size: 14px; line-height: 22px; }
@@ -80,7 +85,7 @@ span.bad { color: var(--bad); font-weight: 600; }
 .side { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
 .side h1 { margin: 6px 6px 16px; font-size: 22px; font-weight: 400; }
 .nav {
-  height: 44px;
+  height: 60px;
   flex: none;
   background: #fbfbfb;
   border: 1px solid #d2d2d2;
@@ -172,7 +177,7 @@ button.link { height: auto; padding: 0; border: 0; background: none; color: var(
 select { height: 32px; min-width: 190px; padding: 0 6px; background: var(--field); border: 1px solid #a0a0a0; }
 .hint { font-size: 12px; color: var(--warn); }
 
-.view { flex: 1; overflow: auto; }
+.view { flex: 1; overflow: auto; container-type: inline-size; }
 /* MQTTConfig / MachineConfig have no dropdown: keep the same gap under the search bar */
 .picker-row[hidden] + .view { margin-top: 22px; }
 
@@ -227,11 +232,17 @@ dialog::backdrop { background: rgba(0, 0, 0, .25); }
 .toast.show { opacity: 1; transform: none; }
 .toast.bad { background: var(--bad); }
 
-.nav[hidden] { display: none; }
+
+/* After the .grid rules, so it wins: a narrow content column (columns dragged wide, small screen): labels above their fields. */
+@container (max-width: 560px) {
+  .grid.two, .grid.three, .grid.form, .grid.unid { grid-template-columns: 1fr; }
+  .grid .head { display: none; }
+}
 
 @media (max-width: 720px) {
   body, .shell { height: auto; }
-  .window { grid-template-columns: 1fr; height: auto; min-height: 100vh; }
+  .window { grid-template-columns: 1fr; height: auto; min-height: 100vh; gap: 6px; }
+  .grip { display: none; }
   .panel { overflow: visible; }
   .tabs { flex-direction: row; flex-wrap: wrap; }
   .tab, .tab-add { flex: 1 1 40%; }

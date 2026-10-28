@@ -9,28 +9,19 @@
 </head>
 <body>
   <div class="shell">
-    <div class="window">
-      <!-- Left column, top to bottom: General | Other machines (shared mapping) | one tab per machine (with its connection dot) | + -->
-      <nav class="tabs" id="tabs" role="tablist" aria-label="General settings and machines" aria-orientation="vertical"></nav>
+    <!-- Four columns: machines | the machine's buttons | content | General. Drag the grip lines to resize. -->
+    <div class="window" id="window">
+      <!-- Other machines (shared mapping) | one tab per machine (with its connection dot) | + -->
+      <nav class="tabs" id="tabs" role="tablist" aria-label="Machines" aria-orientation="vertical"></nav>
+      <div class="grip" data-col="tabs" role="separator" aria-orientation="vertical" aria-label="Resize the machine list" tabindex="0"></div>
 
       <aside class="side">
-        <h1 id="tabTitle">General</h1>
-        <!-- General tab -->
-        <button class="nav active" data-view="mqtt-config" data-tab="general">MQTTConfig</button>
-        <button class="nav" data-view="machine-config" data-tab="general">GatewayConfig</button>
-        <button class="nav nav-small" data-view="machines" data-tab="general">Machines</button>
-        <button class="nav nav-small" data-view="failed" data-tab="general">MES failures</button>
-        <button class="nav nav-small" data-view="log" data-tab="general">Log</button>
-        <!-- Machine tabs (and Other machines) -->
-        <button class="nav" data-view="point-map" data-tab="machine" hidden>PointMap</button>
-        <button class="nav" data-view="timestamp-rules" data-tab="machine" hidden>TimeStamp</button>
-        <button class="nav nav-small" data-view="outbox" data-tab="machine" hidden>Outbox</button>
-        <div class="gw-status" id="gwStatus">
-          <span class="dot"></span><span id="gwText">checking gateway…</span>
-          <span id="gwStats" class="gw-stats"></span>
-          <button id="errBadge" class="err-badge" type="button" hidden></button>
-        </div>
+        <h1 id="tabTitle">Other machines</h1>
+        <button class="nav" data-view="point-map">PointMap</button>
+        <button class="nav" data-view="timestamp-rules">TimeStamp</button>
+        <button class="nav" data-view="outbox">Outbox</button>
       </aside>
+      <div class="grip" data-col="side" role="separator" aria-orientation="vertical" aria-label="Resize the machine buttons" tabindex="0"></div>
 
       <main class="panel">
         <!-- Ongoing problems (MES / MQTT unreachable, gateway stopped): one line each, gone when solved -->
@@ -55,6 +46,22 @@
           <button id="saveBtn" class="save" type="button">save</button>
         </div>
       </main>
+      <div class="grip" data-col="general" role="separator" aria-orientation="vertical" aria-label="Resize General" tabindex="0"></div>
+
+      <!-- Gateway-wide settings and views, always on the right -->
+      <aside class="side general-side">
+        <h1>General</h1>
+        <button class="nav active" data-view="mqtt-config">MQTTConfig</button>
+        <button class="nav" data-view="machine-config">GatewayConfig</button>
+        <button class="nav" data-view="machines">Machines</button>
+        <button class="nav" data-view="failed">MES failures</button>
+        <button class="nav" data-view="log">Log</button>
+        <div class="gw-status" id="gwStatus">
+          <span class="dot"></span><span id="gwText">checking gateway…</span>
+          <span id="gwStats" class="gw-stats"></span>
+          <button id="errBadge" class="err-badge" type="button" hidden></button>
+        </div>
+      </aside>
     </div>
   </div>
 
