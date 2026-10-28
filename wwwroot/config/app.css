@@ -19,42 +19,44 @@
 }
 
 * { box-sizing: border-box; }
-body { margin: 0; min-height: 100vh; background: var(--page); }
+body { margin: 0; height: 100vh; background: var(--page); }
 button, input, select { font: inherit; color: inherit; }
 
-.shell { max-width: 1400px; margin: 18px auto 24px; padding: 0 16px; }
+/* Full window: three columns (machines | the open tab's buttons | content); only the content scrolls. */
+.shell { height: 100vh; }
 
 .window {
   display: grid;
-  grid-template-columns: 220px minmax(0, 1fr);
+  grid-template-columns: 210px 210px minmax(0, 1fr);
   gap: 6px;
-  min-height: 600px;
+  height: 100%;
   padding: 6px;
   background: var(--window);
-  border: 1px solid var(--line);
-  box-shadow: 0 2px 12px rgba(0, 0, 0, .08);
 }
+.window > * { min-height: 0; }
 
-/* ---- top tabs, like browser tabs: General | Other machines | one per machine | + ----
-   Full names, wrapping onto more rows: every machine readable, the open tab always in sight. */
-.tabs { position: relative; z-index: 1; display: flex; flex-wrap: wrap; align-items: flex-end; gap: 4px 2px; padding: 0 6px; margin-bottom: -1px; }
+/* ---- left column: General | Other machines | one per machine (name, connection dot, ×) | + ----
+   One line per machine; a long name is cut with … (full name on hover). The list scrolls by itself. */
+.tabs { display: flex; flex-direction: column; gap: 4px; padding: 14px 8px; border: 1px solid var(--line); overflow-y: auto; }
 .tab {
-  display: flex; align-items: center; gap: 6px; flex: 0 0 auto;
-  height: 32px; min-width: 92px; padding: 0 8px 0 14px;
-  background: #d6d6d6; border: 1px solid var(--line); border-bottom: none; border-radius: 8px 8px 0 0;
+  display: flex; align-items: center; gap: 8px; flex: none;
+  height: 36px; padding: 0 6px 0 12px;
+  background: #fbfbfb; border: 1px solid #d2d2d2; border-radius: 4px;
   font-size: 13px; white-space: nowrap; cursor: pointer; user-select: none;
 }
-.tab:hover:not(.active) { background: #e2e2e2; }
-.tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-.tab.active { height: 36px; background: var(--window); font-weight: 600; }
-.tab .tab-name { flex: 1; overflow: hidden; text-overflow: ellipsis; }
-.tab.fixed { padding-right: 14px; }
+.tab:hover:not(.active) { background: #fff; border-color: #9c9c9c; }
+.tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.tab.active { background: var(--accent-soft); border-color: var(--accent); font-weight: 600; }
+.tab .tab-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.tab.fixed { padding-right: 12px; }
+.tab.general { margin-bottom: 8px; }
 .tab.general .tab-name { font-style: italic; }
 .tab.broken .tab-name { color: var(--bad); }
-.tab-x { width: 20px; height: 20px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--muted); font-size: 14px; line-height: 20px; }
-.tab-x:hover { background: #c4c4c4; border: 0; color: var(--bad); }
-.tab-add { flex: none; width: 32px; height: 28px; margin: 0 0 3px 4px; padding: 0; border-radius: 50%; font-size: 18px; line-height: 26px; }
-.tab-alert { flex: none; height: 26px; margin: 0 0 4px 8px; padding: 0 10px; border-color: var(--bad); border-radius: 13px; background: #fdecea; color: var(--bad); font-size: 12px; font-weight: 600; }
+.tab .dot { flex: none; }
+.tab-x { flex: none; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--muted); font-size: 14px; line-height: 22px; }
+.tab-x:hover { background: #e0e0e0; border: 0; color: var(--bad); }
+.tab-add { flex: none; height: 32px; margin-top: 4px; padding: 0; font-size: 18px; line-height: 30px; }
+.tab-alert { flex: none; height: auto; min-height: 30px; padding: 4px 10px; border-color: var(--bad); border-radius: 4px; background: #fdecea; color: var(--bad); font-size: 12px; font-weight: 600; text-align: left; white-space: normal; }
 .tab-alert:hover { background: #fbd9d5; border-color: var(--bad); }
 .held-title { color: var(--bad); }
 .register-cell { white-space: nowrap; }
@@ -75,10 +77,11 @@ span.bad { color: var(--bad); font-weight: 600; }
 .side, .panel { border: 1px solid var(--line); padding: 14px; }
 
 /* ---- left: file buttons ---- */
-.side { display: flex; flex-direction: column; gap: 10px; }
+.side { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
 .side h1 { margin: 6px 6px 16px; font-size: 22px; font-weight: 400; }
 .nav {
-  height: 68px;
+  height: 44px;
+  flex: none;
   background: #fbfbfb;
   border: 1px solid #d2d2d2;
   border-radius: 4px;
@@ -89,7 +92,7 @@ span.bad { color: var(--bad); font-weight: 600; }
 .nav:hover { background: #fff; border-color: #9c9c9c; }
 .nav.active { background: var(--accent-soft); border-color: var(--accent); }
 .nav .dirty { color: var(--warn); font-style: normal; }
-.nav.nav-small { height: 40px; }
+/* Every button here has the same height, whatever it opens. */
 
 .err-badge { display: block; height: auto; margin-top: 6px; padding: 3px 8px; border-color: var(--bad); background: #fdecea; color: var(--bad); font-size: 12px; }
 .err-badge[hidden] { display: none; }
@@ -111,7 +114,7 @@ table.data tr.clickable { cursor: pointer; }
 table.data tr.clickable:hover { background: var(--accent-soft); }
 .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: #9e9e9e; }
 .dot.connected { background: var(--ok); }
-.dot.idle { background: var(--warn); }
+.dot.idle { background: #f2c200; }
 .dot.disconnected { background: #b0b0b0; }
 .dot.disconnected.bad { background: var(--bad); }
 .mqtt-status { margin: 0 0 12px; font-size: 13px; font-weight: 600; }
@@ -138,7 +141,7 @@ button.more { margin-top: 10px; }
 .gw-stats:empty { display: none; }
 
 /* ---- right: search, picker, rows, save ---- */
-.panel { display: flex; flex-direction: column; min-width: 0; }
+.panel { display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
 
 /* Ongoing problems: amber = data is safe and waits, red = the gateway itself is down */
 .alerts { display: grid; gap: 6px; margin-bottom: 12px; }
@@ -227,8 +230,12 @@ dialog::backdrop { background: rgba(0, 0, 0, .25); }
 .nav[hidden] { display: none; }
 
 @media (max-width: 720px) {
-  .shell { margin: 0; padding: 0; }
-  .window { grid-template-columns: 1fr; margin: 0; min-height: 100vh; }
+  body, .shell { height: auto; }
+  .window { grid-template-columns: 1fr; height: auto; min-height: 100vh; }
+  .panel { overflow: visible; }
+  .tabs { flex-direction: row; flex-wrap: wrap; }
+  .tab, .tab-add { flex: 1 1 40%; }
+  .tab-add { margin-top: 0; }
   .side { flex-direction: row; flex-wrap: wrap; }
   .side h1 { width: 100%; margin-bottom: 4px; }
   .nav { flex: 1 1 40%; height: 48px; }

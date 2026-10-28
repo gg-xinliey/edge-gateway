@@ -237,6 +237,14 @@ async function removeMachine(id) {
   toast(holdPolicy() ? `${id}'s tab is closed: its data is held until it gets a tab again.` : `${id} uses the shared mapping again.`);
 }
 
+// The machine's connection, as on the Machines view: connected / idle (no message for 60 s) /
+// disconnected (also: never seen since the gateway started).
+const STATUS_WORDS = { connected: 'connected', idle: 'connected, no message for 60 s', disconnected: 'not connected' };
+function connectionOf(machineId) {
+  const m = state.machines?.machines?.find(x => x.machineId.toLowerCase() === machineId.toLowerCase());
+  return m?.status in STATUS_WORDS ? m.status : 'disconnected';
+}
+
 function renderTabs() {
   const tab = (id, label, opts = {}) => {
     const el = h('div', {
@@ -246,6 +254,8 @@ function renderTabs() {
       onkeydown: e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); switchTab(id); } },
     }, h('span', { class: 'tab-name', textContent: label }));
     el.setAttribute('aria-selected', String(state.tab === id));
+    if (opts.status)
+      el.append(h('span', { class: `dot ${opts.status}`, role: 'img', 'aria-label': STATUS_WORDS[opts.status], title: STATUS_WORDS[opts.status] }));
     if (opts.close)
       el.append(h('button', {
         type: 'button', class: 'tab-x', textContent: '×',
@@ -261,11 +271,12 @@ function renderTabs() {
     ...state.machineConfigs.map(m => {
       const waiting = unmappedFor(m.machineId);
       const alert = !m.readable || waiting.length > 0;
+      const status = connectionOf(m.machineId);
       return tab(m.machineId, alert ? `⚠ ${m.machineId}` : m.machineId, {
-        close: true, extra: alert ? 'broken' : '',
+        close: true, extra: alert ? 'broken' : '', status,
         title: !m.readable ? `${m.machineId}: its files can't be read (${m.error})`
           : waiting.length ? `${m.machineId}: data held, tags not mapped yet: ${[...new Set(waiting.flatMap(u => u.tags))].join(', ')}`
-          : `${m.machineId}: its own mapping and outbox`,
+          : `${m.machineId} (${STATUS_WORDS[status]}): its own mapping and outbox`,
       });
     }),
     h('button', { type: 'button', class: 'tab-add', textContent: '+', title: 'Give a machine its own tab and mapping', 'aria-label': 'Add machine', onclick: addMachine }),
@@ -525,6 +536,7 @@ function guessCopyFrom(machineId) {
 
 async function pollMachines() {
   try { state.machines = await request('/api/machines'); } catch { return; }
+  renderTabs(); // the connection dots in the machine list
   if (state.view === 'machines') await loadMachineConfigs(); // for the mapping column
   if (state.view !== 'machines') return;
   if (document.activeElement?.tagName === 'SELECT' && $('view').contains(document.activeElement))
