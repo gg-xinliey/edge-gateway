@@ -17,6 +17,10 @@ public class MqttOptions
     // with different suffixes don't kick each other off the broker.
     public string ClientIdSuffix { get; set; } = "EdgeGateway";
 
+    // Same keys as MqttConnectionConfig.Username / Password (one broker login for both connections).
+    public string Username { get; set; } = "";
+    public string Password { get; set; } = "";
+
     // Topic prefix for topics the gateway builds itself: svi/<area>/<machine_id>/...
     public string Area { get; set; } = "TEST";
 

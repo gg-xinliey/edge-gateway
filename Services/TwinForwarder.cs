@@ -32,7 +32,7 @@ public class TwinForwarder
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[twin] initial mqtt connect failed: {ex.Message} — will keep retrying");
+            Console.WriteLine($"[twin] initial mqtt connect failed: {MqttPublisherService.Why(ex)} — will keep retrying");
         }
 
         while (!ct.IsCancellationRequested)
@@ -45,7 +45,7 @@ public class TwinForwarder
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"[twin] mqtt reconnect failed: {ex.Message}");
+                    Console.WriteLine($"[twin] mqtt reconnect failed: {MqttPublisherService.Why(ex)}");
                 }
             }
 

@@ -38,6 +38,7 @@ public sealed class MqttPublisher : IAsyncDisposable
     private readonly ConcurrentDictionary<string, bool> _firstPublishLogged = new();
 
     private long _retryAfterTicks;      // UTC ticks; no connect attempts before this
+    private volatile bool _connectFailed; // the last connect attempt failed (none yet = false)
     private long _lastErrorLogTicks;    // keeps the publish-error log from spamming at 50 msg/s
 
     private readonly GatewayStats? _stats;
@@ -54,6 +55,10 @@ public sealed class MqttPublisher : IAsyncDisposable
     }
 
     public bool IsConnected => _client.IsConnected;
+
+    // For the page's MQTT status: it connects only when a line needs it, so "not connected"
+    // alone means nothing; a failed attempt does.
+    public bool ConnectFailed => _connectFailed;
 
     // Queues json for topic as given; MqttRelay has already checked the topic
     // and put the payload in SpotWelding shape. Returns at once.
@@ -123,15 +128,17 @@ public sealed class MqttPublisher : IAsyncDisposable
             if (_client.IsConnected)
                 return true;
 
-            var options = new MqttClientOptionsBuilder()
+            var builder = new MqttClientOptionsBuilder()
                 .WithTcpServer(_config.BrokerAddress, _config.BrokerPort)
                 .WithClientId($"{Environment.MachineName}_{_config.ClientIdSuffix}")
                 .WithCleanSession()
                 .WithTimeout(TimeSpan.FromSeconds(3))
-                .WithKeepAlivePeriod(TimeSpan.FromSeconds(15))
-                .Build();
+                .WithKeepAlivePeriod(TimeSpan.FromSeconds(15));
+            if (!string.IsNullOrEmpty(_config.Username))
+                builder = builder.WithCredentials(_config.Username, _config.Password);
 
-            await _client.ConnectAsync(options, ct);
+            await _client.ConnectAsync(builder.Build(), ct);
+            _connectFailed = false;
             Console.WriteLine($"[mqtt] connected to {_config.BrokerAddress}:{_config.BrokerPort}");
             return true;
         }
@@ -139,8 +146,9 @@ public sealed class MqttPublisher : IAsyncDisposable
         {
             var wait = TimeSpan.FromSeconds(_config.ReconnectCooldownSeconds);
             Interlocked.Exchange(ref _retryAfterTicks, DateTime.UtcNow.Add(wait).Ticks);
+            _connectFailed = true;
             Console.WriteLine(
-                $"[mqtt] cannot connect to {_config.BrokerAddress}:{_config.BrokerPort} ({ex.Message}) " +
+                $"[mqtt] cannot connect to {_config.BrokerAddress}:{_config.BrokerPort} ({MqttPublisherService.Why(ex)}) " +
                 $"- messages are dropped, next try in {wait.TotalSeconds:0}s");
             return false;
         }

@@ -210,6 +210,7 @@ public sealed class AdminWebServer
                 held = _machines.Held.Count,         // machines sending without a tab (data held)
                 unmapped = _machines.Unmapped.Count, // machines whose data is held for tags not mapped yet
                 failed = FailedCount(),              // messages MES rejected as invalid, waiting for re-send / discard
+                mqttConnected = _gateway.MqttConnected, // null while no run is going
                 adminPort = _port,
                 stats = _gateway.Stats.Latest // per-second rates over the last 10 s
             });
@@ -500,6 +501,8 @@ public sealed class AdminWebServer
         {
             var fromFile = File.Exists(filePath) ? JsonNode.Parse(await File.ReadAllTextAsync(filePath)) : null;
             var result = WithDefaults(key, fromFile);
+            if (key.Equals("mqtt-config", StringComparison.OrdinalIgnoreCase))
+                MaskPassword(result);
             if (result is null)
             {
                 await WriteJsonAsync(context.Response, 404, new { error = $"Missing Config/{fileName}" });
@@ -516,6 +519,8 @@ public sealed class AdminWebServer
             {
                 using var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding ?? Encoding.UTF8);
                 var raw = await reader.ReadToEndAsync();
+                if (key.Equals("mqtt-config", StringComparison.OrdinalIgnoreCase))
+                    raw = KeepStoredPassword(raw, filePath);
                 using var document = JsonDocument.Parse(raw);
 
                 // Load it the way the gateway will, before touching the file.
@@ -594,6 +599,35 @@ public sealed class AdminWebServer
 
         await WriteJsonAsync(context.Response, 405, new { error = "Method not allowed" });
     }
+
+    // The MQTT password never goes back to the page: it gets PasswordMask instead, and
+    // saving the mask unchanged keeps the stored password (anyone who can open the page,
+    // in Docker anyone on the network, could otherwise read it).
+    public const string PasswordMask = "••••••••";
+
+    public static void MaskPassword(JsonNode? config)
+    {
+        if (config is JsonObject settings && PasswordKey(settings) is { } name
+            && settings[name] is JsonValue value && value.TryGetValue<string>(out var password) && password.Length > 0)
+            settings[name] = PasswordMask;
+    }
+
+    public static string KeepStoredPassword(string raw, string filePath)
+    {
+        if (JsonNode.Parse(raw) is not JsonObject incoming || PasswordKey(incoming) is not { } name
+            || !(incoming[name] is JsonValue value && value.TryGetValue<string>(out var sent) && sent == PasswordMask))
+            return raw;
+
+        var stored = File.Exists(filePath) && JsonNode.Parse(File.ReadAllText(filePath)) is JsonObject file
+                     && PasswordKey(file) is { } fileName && file[fileName] is JsonValue saved && saved.TryGetValue<string>(out var text)
+            ? text
+            : "";
+        incoming[name] = stored;
+        return incoming.ToJsonString();
+    }
+
+    private static string? PasswordKey(JsonObject settings) =>
+        settings.Select(p => p.Key).FirstOrDefault(k => k.Equals("password", StringComparison.OrdinalIgnoreCase));
 
     // MQTT and machine settings: every setting the gateway reads, with the
     // built-in default where the file leaves it out, so the page can show

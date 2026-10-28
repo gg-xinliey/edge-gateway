@@ -71,7 +71,7 @@ these files, not the project's `Config\` folder.
 | Path | What |
 |---|---|
 | `Config\machine-config.json` | gateway id, listen address + port, MES URL, rules for unknown machines and tags (restart to apply) |
-| `Config\mqtt-config.json` | broker, area, keepalive (restart to apply) |
+| `Config\mqtt-config.json` | broker, port, username / password, area, keepalive (restart to apply) |
 | `Config\machines\<machine_id>\` | each machine tab: `point-map.json` (tag to MES field), `timestamp-rules.json` (applied on save) |
 | `Config\point-map.json`, `timestamp-rules.json` | the Template, copied into new machine tabs |
 | `Config\mes-schema.json` | the MES columns per data group (applied on save) |

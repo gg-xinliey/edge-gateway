@@ -919,5 +919,71 @@ if (which is "all" or "stuck")
     Report("settings: forwarder uses mesStuckRowTries", big.Failed == 1 && tries == 2, $"failed {big.Failed} (want 1) after {tries} tries (want 2)");
 }
 
+if (which is "all" or "mqtt")
+{
+    // MQTT broker login: a local test broker (this PC only) that wants username gw / password secret.
+    var port = 19900 + Random.Shared.Next(90);
+    var broker = new MQTTnet.MqttFactory().CreateMqttServer(new MQTTnet.Server.MqttServerOptionsBuilder()
+        .WithDefaultEndpoint().WithDefaultEndpointBoundIPAddress(System.Net.IPAddress.Loopback).WithDefaultEndpointPort(port).Build());
+    broker.ValidatingConnectionAsync += e =>
+    {
+        if (e.UserName != "gw" || e.Password != "secret")
+            e.ReasonCode = MQTTnet.Protocol.MqttConnectReasonCode.BadUserNameOrPassword;
+        return Task.CompletedTask;
+    };
+    await broker.StartAsync();
+
+    // Twin connection (connects at start, keepalive).
+    async Task<(bool Connected, string Error)> Twin(string password)
+    {
+        var twin = new MqttPublisherService(new MqttOptions { BrokerAddress = "127.0.0.1", BrokerPort = port, Username = "gw", Password = password }, $"checks-twin-{password}");
+        try { await twin.ConnectAsync(); return (twin.IsConnected, ""); }
+        catch (Exception ex) { return (false, MqttPublisherService.Why(ex)); }
+        finally { try { await twin.DisconnectAsync(); } catch { } }
+    }
+    var good = await Twin("secret");
+    var bad = await Twin("wrong");
+    Report("mqtt: twin connection logs in with username / password", good.Connected, $"connected: {good.Connected} {good.Error}");
+    Report("mqtt: a refused login says so", !bad.Connected && bad.Error.Contains("refused the login"), $"connected: {bad.Connected}; error: {bad.Error}");
+
+    // Relay connection (connects when a line needs it): its failed attempt counts for the page's status.
+    async Task<(bool Connected, bool Failed)> Relay(string password)
+    {
+        await using var relay = new MqttPublisher(new MqttConnectionConfig
+            { BrokerAddress = "127.0.0.1", BrokerPort = port, ClientIdSuffix = $"checks-relay-{password}", Username = "gw", Password = password, ReconnectCooldownSeconds = 60 });
+        var before = relay.ConnectFailed;
+        relay.Enqueue("checks/IO/input", "{}");
+        for (var i = 0; i < 50 && !relay.IsConnected && !relay.ConnectFailed; i++) await Task.Delay(100);
+        return (relay.IsConnected, relay.ConnectFailed && !before);
+    }
+    var relayGood = await Relay("secret");
+    var relayBad = await Relay("wrong");
+    Report("mqtt: relay logs in; a refused login counts as failed", relayGood.Connected && !relayGood.Failed && !relayBad.Connected && relayBad.Failed,
+        $"right login: connected {relayGood.Connected}, failed {relayGood.Failed}; wrong login: connected {relayBad.Connected}, failed {relayBad.Failed}");
+    await broker.StopAsync(new MQTTnet.Server.MqttServerStopOptions());
+    broker.Dispose();
+
+    // The config page never gets the password back; saving the mask keeps the stored one.
+    var file = Path.Combine(Path.GetTempPath(), $"gw-mqtt-{Guid.NewGuid():N}.json");
+    File.WriteAllText(file, """{"brokerAddress":"b","password":"secret"}""");
+    var shown = System.Text.Json.Nodes.JsonNode.Parse("""{"brokerAddress":"b","password":"secret"}""");
+    EdgeGateway.Admin.AdminWebServer.MaskPassword(shown);
+    var none = System.Text.Json.Nodes.JsonNode.Parse("""{"password":""}""");
+    EdgeGateway.Admin.AdminWebServer.MaskPassword(none);
+    string Saved(string sent) => System.Text.Json.Nodes.JsonNode.Parse(
+        EdgeGateway.Admin.AdminWebServer.KeepStoredPassword($$"""{"brokerAddress":"b","password":"{{sent}}"}""", file))!["password"]!.GetValue<string>();
+    var cases = new[]
+    {
+        ("page gets", shown!["password"]!.GetValue<string>(), EdgeGateway.Admin.AdminWebServer.PasswordMask),
+        ("no password shows", none!["password"]!.GetValue<string>(), ""),
+        ("save with mask keeps", Saved(EdgeGateway.Admin.AdminWebServer.PasswordMask), "secret"),
+        ("save new replaces", Saved("new"), "new"),
+        ("save empty removes", Saved(""), ""),
+    };
+    File.Delete(file);
+    var wrong = cases.Where(c => c.Item2 != c.Item3).Select(c => $"{c.Item1}: {c.Item2} (want {c.Item3})").ToList();
+    Report("mqtt: password never sent to the page, kept on save", wrong.Count == 0, wrong.Count == 0 ? $"{cases.Length} cases as expected" : string.Join("; ", wrong));
+}
+
 Console.WriteLine(failed == 0 ? "ALL PASS" : $"{failed} FAILED");
 return failed == 0 ? 0 : 1;

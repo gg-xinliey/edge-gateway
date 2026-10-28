@@ -19,4 +19,9 @@ public class MqttConnectionConfig
     // After a failed connect, wait this long before trying again.
     // Messages that arrive in the meantime are dropped, not queued.
     public int ReconnectCooldownSeconds { get; set; } = 5;
+
+    // Broker login. Empty username = connect without one. Plain MQTT (no TLS): both
+    // cross the network unencrypted. The config page never gets the password back.
+    public string Username { get; set; } = "";
+    public string Password { get; set; } = "";
 }

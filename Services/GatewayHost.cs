@@ -52,6 +52,12 @@ public sealed class GatewayHost
 
     // Throughput; sampled every StatsEvery into a [stats] line and /api/status.
     public GatewayStats Stats { get; } = new();
+
+    // MQTT for the config page: the twin connection is up (it connects at start and sends the
+    // keepalive) and the relay's last connect did not fail (it connects only when an IO /
+    // motion line needs it). null = no run going.
+    private volatile Func<bool>? _mqttConnected;
+    public bool? MqttConnected => _mqttConnected?.Invoke();
     private static readonly TimeSpan StatsEvery = TimeSpan.FromSeconds(10);
 
     // A machine timestamp further than this from arrival is warned about.
@@ -139,6 +145,7 @@ public sealed class GatewayHost
         var mqttPublisher = new MqttPublisherService(mqttOptions);
         var twinForwarder = new TwinForwarder(mqttPublisher, mqttOptions, machine.GatewayId); // its keepalive: the gateway's own
         await using var mqttRelay = new MqttRelay(relayConfig, Stats);
+        _mqttConnected = () => mqttPublisher.IsConnected && !mqttRelay.ConnectFailed;
 
         // 16 parallel sends; a hung MES must not hold a slot for the default 100 s.
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
@@ -502,6 +509,7 @@ public sealed class GatewayHost
             foreach (var pipeline in created)
                 await pipeline.DisposeAsync();
 
+            _mqttConnected = null;
             try { await mqttPublisher.DisconnectAsync(); }
             catch { /* shutting this run down anyway */ }
         }

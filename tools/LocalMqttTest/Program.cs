@@ -24,6 +24,7 @@ using MQTTnet.Server;
 // dotnet run -- --hold 10 -> no menu; keeps broker + gateway up for 10 minutes
 //                            (for testing the config page), then stops
 // dotnet run -- --broker  -> only the local broker on 127.0.0.1:1883, prints every message
+//                            (add --login user:pass to make it want a username / password)
 // dotnet run -- --load 5000 60 50
 //                         -> load test: 50 machines, 5000 msg/s total, 60 s
 //                            (+10 s drain), fake MES on :15000, results in .\load-results
@@ -60,6 +61,19 @@ server.ClientConnectedAsync += e =>
     Write(ConsoleColor.DarkCyan, $"[broker] client connected: {e.ClientId}");
     return Task.CompletedTask;
 };
+
+// --login user:pass: the broker wants this username / password (like the new production broker).
+var loginArg = Array.IndexOf(args, "--login");
+if (loginArg >= 0 && loginArg + 1 < args.Length && args[loginArg + 1].Split(':', 2) is [var loginUser, var loginPass])
+    server.ValidatingConnectionAsync += e =>
+    {
+        if (e.UserName != loginUser || e.Password != loginPass)
+        {
+            e.ReasonCode = MQTTnet.Protocol.MqttConnectReasonCode.BadUserNameOrPassword;
+            Write(ConsoleColor.Red, $"[broker] login refused: {e.ClientId} ({e.UserName})");
+        }
+        return Task.CompletedTask;
+    };
 var printed = new Dictionary<string, (DateTime Last, long Skipped)>();
 server.InterceptingPublishAsync += e =>
 {

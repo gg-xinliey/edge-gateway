@@ -116,6 +116,8 @@ public static class ConfigValidator
             return "clientIdSuffix is empty.";
         if (relay.ReconnectCooldownSeconds < 0)
             return "reconnectCooldownSeconds cannot be negative.";
+        if (string.IsNullOrEmpty(relay.Username) && !string.IsNullOrEmpty(relay.Password))
+            return "password is set but username is empty (MQTT needs a username with a password).";
         if (string.IsNullOrWhiteSpace(options.Area))
             return "area is empty.";
         if (options.KeepaliveIntervalSeconds < 1)

@@ -798,7 +798,6 @@ function trackProblem(line) {
   if (/^\[gateway\] running:/.test(text)) {
     // A new run (start or restart) has new MES senders and MQTT clients: they log again if still failing.
     state.problems.mes.clear();
-    state.problems.mqtt = null;
     return;
   }
   const forwarder = text.match(/^\[forwarder(?: ([^\]]+))?\]/);
@@ -808,8 +807,6 @@ function trackProblem(line) {
     else if (/ MES reachable again /.test(text)) state.problems.mes.delete(who);
     return;
   }
-  if (/^\[mqtt\] connected to /.test(text)) state.problems.mqtt = null;
-  else if (/^\[(mqtt|twin)\] .*(cannot connect|connect failed|broker unreachable|connection dropped)/.test(text)) state.problems.mqtt ??= line.time;
 }
 
 function renderAlerts() {
@@ -1263,6 +1260,8 @@ const SETTINGS = {
   brokerPort: { label: 'MQTT broker port', help: 'Usually 1883.' },
   clientIdSuffix: { label: 'MQTT client name', help: 'The gateway connects as <PC name>_<this>. Two gateways on one broker need different names.' },
   reconnectCooldownSeconds: { label: 'Reconnect wait (s)', help: 'After a failed connect to the broker, wait this long before trying again.' },
+  username: { label: 'MQTT username', help: 'Login for the broker. Empty = connect without a login.' },
+  password: { label: 'MQTT password', secret: true, help: 'Never shown: dots mean a password is saved. Type a new one to replace it, clear the field to remove it. Sent without encryption (plain MQTT).' },
   area: { label: 'Topic area', help: 'Topics the gateway makes itself start with svi/<area>/.' },
   keepaliveIntervalSeconds: { label: 'Keepalive every (s)', help: 'The gateway publishes {"alive":true} on svi/<area>/<gateway id>/keepalive.' },
   motionDeadband: { label: 'Motion: smallest change sent', help: 'A motion value is published again only after it moved at least this much.' },
@@ -1311,6 +1310,7 @@ function renderForm(view) {
       const isNumber = state.numberKeys[key]?.includes(name);
       input = h('input', {
         ...(isNumber ? { type: 'number', step: 'any' } : {}),
+        ...(info.secret ? { type: 'password', autocomplete: 'new-password' } : {}),
         value: value ?? '', 'aria-label': info.label ?? name,
         oninput: e => {
           const text = e.target.value;
@@ -1322,7 +1322,18 @@ function renderForm(view) {
     form.append(info.help ? h('div', {}, input, h('div', { class: 'help', textContent: info.help })) : input);
   }
 
+  if (key === 'mqtt-config') view.append(h('div', { class: 'mqtt-status', id: 'mqttState' }));
   view.append(shown ? form : h('div', { class: 'empty', textContent: 'No settings match the search.' }));
+  showMqttState();
+}
+
+// MQTTConfig: the broker connection right now (from the gateway, not from the log).
+function showMqttState() {
+  const el = $('mqttState');
+  const connected = state.status?.mqttConnected;
+  if (!el) return;
+  el.replaceChildren(h('span', { class: `dot ${connected ? 'connected' : 'disconnected bad'}` }),
+    connected == null ? ' MQTT: unknown (gateway not running)' : connected ? ' MQTT: connected' : ' MQTT: disconnected');
 }
 
 // ---------- actions ----------
@@ -1531,6 +1542,9 @@ async function restartGateway() {
 
 function showStatus(status) {
   state.status = status;
+  // The MQTT banner follows the real connection (mqttConnected), not log lines.
+  state.problems.mqtt = status.mqttConnected === false ? (state.problems.mqtt ?? new Date().toISOString()) : null;
+  showMqttState();
   $('gwStatus').className = `gw-status ${status.state}`;
   const since = status.startedAt ? new Date(status.startedAt).toLocaleTimeString() : '';
   $('gwText').textContent =

@@ -42,6 +42,12 @@ public class MqttPublisherService : IMqttPublisher
         };
     }
 
+    // A failed connect for the log: a refused login says so, it is not the network.
+    public static string Why(Exception ex) =>
+        ex is MQTTnet.Adapter.MqttConnectingFailedException { ResultCode: MqttClientConnectResultCode.BadUserNameOrPassword or MqttClientConnectResultCode.NotAuthorized }
+            ? $"broker refused the login (check username / password): {ex.Message}"
+            : ex.Message;
+
     public async Task ConnectAsync(CancellationToken ct = default)
     {
         await _connectGate.WaitAsync(ct);
@@ -61,14 +67,15 @@ public class MqttPublisherService : IMqttPublisher
         if (_client.IsConnected)
             return;
 
-        var clientOptions = new MqttClientOptionsBuilder()
+        var builder = new MqttClientOptionsBuilder()
             .WithTcpServer(_options.BrokerAddress, _options.BrokerPort)
             .WithClientId(_clientId)
             .WithCleanSession()
-            .WithTimeout(TimeSpan.FromSeconds(5))
-            .Build();
+            .WithTimeout(TimeSpan.FromSeconds(5));
+        if (!string.IsNullOrEmpty(_options.Username))
+            builder = builder.WithCredentials(_options.Username, _options.Password);
 
-        await _client.ConnectAsync(clientOptions, ct);
+        await _client.ConnectAsync(builder.Build(), ct);
         Console.WriteLine($"[mqtt] connected to {_options.BrokerAddress}:{_options.BrokerPort}");
     }
 
@@ -87,7 +94,7 @@ public class MqttPublisherService : IMqttPublisher
             {
                 // Best effort: this message is simply lost, per slide 10 — the
                 // next publish on this topic replaces it. No retry, no outbox.
-                _problems.Write("unreachable", $"[mqtt] publish skipped, broker unreachable: {ex.Message}");
+                _problems.Write("unreachable", $"[mqtt] publish skipped, broker unreachable: {Why(ex)}");
                 return;
             }
             finally

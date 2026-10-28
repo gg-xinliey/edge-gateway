@@ -53,6 +53,8 @@ public sealed class MqttRelay : IAsyncDisposable
         _publisher = new MqttPublisher(config, stats);
     }
 
+    public bool ConnectFailed => _publisher.ConnectFailed;
+
     // true  = it was a twin line; it has been handed to MQTT (or dropped), MES must skip it.
     // false = not ours; give it to the MES pipeline.
     // Never throws and never waits for the broker.
