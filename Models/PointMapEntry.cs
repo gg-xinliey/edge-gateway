@@ -15,4 +15,10 @@ public class PointMapEntry
     // The exact field name the Data Dictionary expects inside "payload".
     public string FieldName
     { get; set; } = "";
+
+    // Set by name matching (NameMatcher): the entry was added automatically, with this
+    // score; nobody has checked it yet. A person saving or changing it on the config
+    // page removes the mark. null = set by a person.
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public double? Auto { get; set; }
 }

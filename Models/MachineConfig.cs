@@ -54,4 +54,13 @@ public class MachineConfig
     // (MesForwarder). Read at start: applied by Restart Gateway.
     public int MesStuckRowTries { get; set; } = 5;
     public int MesStuckRowMinutes { get; set; } = 10;
+
+    // Name matching for tags the point map doesn't know (NameMatcher): a tag that matches
+    // one MES column at least this well (0.5-1, 1 = the same name) is mapped automatically,
+    // marked "auto" in the point map; below it, or when the column is ambiguous or already
+    // filled, it is only suggested on the Unidentified list. Read at start (Restart Gateway).
+    public double NameMatchThreshold { get; set; } = 0.9;
+
+    // Words that mean the same in tag names: "short=long", comma-separated.
+    public string NameMatchSynonyms { get; set; } = "qty=quantity, sn=serial number, temp=temperature, pcs=quantity";
 }

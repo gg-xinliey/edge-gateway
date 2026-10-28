@@ -157,6 +157,11 @@ public static class ConfigValidator
             return "mesStuckRowTries must be at least 1.";
         if (machine.MesStuckRowMinutes is < 1 or > 10)
             return "mesStuckRowMinutes must be between 1 and 10.";
+        if (machine.NameMatchThreshold is < 0.5 or > 1)
+            return "nameMatchThreshold must be between 0.5 and 1.";
+        foreach (var item in (machine.NameMatchSynonyms ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            if (!System.Text.RegularExpressions.Regex.IsMatch(item, @"^[A-Za-z0-9]+\s*=\s*[A-Za-z0-9 ]*[A-Za-z0-9]$"))
+                return $"nameMatchSynonyms: '{item}' must be short=long, e.g. qty=quantity (letters, digits, spaces).";
         if (machine.TimestampsWithoutZone.Trim().ToLowerInvariant() is not ("utc" or "local"))
             return "timestampsWithoutZone must be UTC or local.";
 

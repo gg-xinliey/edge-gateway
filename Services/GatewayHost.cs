@@ -355,6 +355,11 @@ public sealed class GatewayHost
             }
 
             var unmapped = config.Normalizer.Unmapped(rawTags);
+            if (unmapped.Count > 0 && AutoMap(store, machineId, unmapped))
+            {
+                config = store.Current; // the new mapping applies to this message already
+                unmapped = config.Normalizer.Unmapped(rawTags);
+            }
             if (unmapped.Count > 0)
             {
                 if (machine.HoldUnmappedTags)
@@ -413,6 +418,36 @@ public sealed class GatewayHost
             _traffic?.Held(machineId, sender, ticket.MessageId);
             held.Write($"held|{machineId}",
                 $"[ingest] {machineId} {why}: its data cannot be used until it has a tab on the config page (held: not processed, not answered, the adapter keeps it)");
+        }
+
+        // Unknown tags whose name matches one MES column well enough (nameMatchThreshold) and
+        // without a conflict go into this mapping's point map, marked auto. The others stay
+        // on the Unidentified list, where the page shows the match as a suggestion.
+        var synonyms = NameMatcher.ParseSynonyms(machine.NameMatchSynonyms);
+        bool AutoMap(GatewayConfigStore store, string machineId, List<string> unmapped)
+        {
+            var added = false;
+            foreach (var tag in unmapped)
+            {
+                var current = store.Current;
+                var match = NameMatcher.Best(tag, current.MesColumns, synonyms, current.PointMap);
+                if (match is null || match.Conflict is not null || match.Score < machine.NameMatchThreshold)
+                    continue;
+                try
+                {
+                    if (!store.AddPointMapEntry(new PointMapEntry { Tag = tag, DataGroup = match.Group, FieldName = match.Field, Auto = match.Score }))
+                        continue;
+                    added = true;
+                    Console.WriteLine($"[mapping] {machineId}: tag {tag} auto-mapped to {match.Group} / {match.Field} (name match {match.Score:0.00}), " +
+                                      $"on the {store.Label ?? "shared"} mapping: check it on the config page (PointMap, marked auto)");
+                }
+                catch (Exception ex)
+                {
+                    // Not mapped: the tag stays unidentified, as without name matching.
+                    Console.WriteLine($"[mapping] {machineId}: tag {tag} not auto-mapped, point-map.json could not be written: {ex.Message}");
+                }
+            }
+            return added;
         }
 
         var heldUnmapped = new ThrottledLog(TimeSpan.FromSeconds(60));

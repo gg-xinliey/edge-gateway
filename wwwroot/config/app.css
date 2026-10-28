@@ -188,7 +188,11 @@ select { height: 32px; min-width: 190px; padding: 0 6px; background: var(--field
 .grid.form .label { padding-top: 6px; }
 .grid.form .label .key { display: block; margin-top: 2px; font: 11px Consolas, "Cascadia Mono", monospace; color: var(--muted); }
 .grid.form .help { margin-top: 4px; font-size: 12px; color: var(--muted); }
-.grid.unid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 160px minmax(0, 1fr); max-width: none; }
+.grid.unid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 160px minmax(0, 1fr) minmax(0, 1.2fr); max-width: none; }
+.suggest-cell { font-size: 12px; line-height: 1.4; }
+.suggest-cell .field-note { display: block; margin-left: 0; }
+.suggest-cell .link { margin-left: 6px; }
+.auto-mark { height: 20px; margin-left: 8px; padding: 0 6px; border-color: #e0a84a; border-radius: 10px; background: #fff4e0; color: #6b4000; font: 600 11px "Segoe UI", Tahoma, sans-serif; }
 .grid .head { padding-left: 4px; font-size: 15px; }
 .grid .label { padding-left: 4px; }
 .grid .group-tag { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -946,13 +946,21 @@ function renderGroupFields(view, group, withTitle) {
       h('div', { class: 'head', textContent: 'incoming tag (several: comma-separated)' }),
       h('div'));
     for (const column of columns) {
-      const tags = state.data['point-map'].filter(r => r.dataGroup === group && r.fieldName === column).map(r => r.tag);
+      const rows = state.data['point-map'].filter(r => r.dataGroup === group && r.fieldName === column);
+      const tags = rows.map(r => r.tag);
       if (!matches(`${column} ${tags.join(' ')} ${group}`)) continue;
       shown++;
       const byRule = filled.has(column);
+      // Mapped automatically by name matching and not checked yet: ✓ confirms it (save to keep).
+      const auto = rows.filter(r => r.auto != null);
       grid.append(
         h('div', { class: 'field-label', title: byRule ? 'The TimeStamp rule fills this field; a tag is optional.' : `MES column ${column}` },
-          column, byRule ? h('span', { class: 'field-note', textContent: 'set by TimeStamp rule' }) : null),
+          column, byRule ? h('span', { class: 'field-note', textContent: 'set by TimeStamp rule' }) : null,
+          auto.length ? h('button', {
+            type: 'button', class: 'auto-mark', textContent: `auto ${Math.max(...auto.map(r => r.auto)).toFixed(2)} ✓`,
+            title: `Mapped automatically by name matching (${auto.map(r => `${r.tag}: ${r.auto}`).join(', ')}). Click to confirm it, then save.`,
+            onclick: () => { auto.forEach(r => delete r.auto); markDirty('point-map'); render(); },
+          }) : null),
         h('input', {
           value: tags.join(', '), 'aria-label': `incoming tag for ${column}`,
           placeholder: byRule ? 'optional' : 'no tag: sent as null',
@@ -1166,7 +1174,7 @@ function renderUnidentified(view, unid, groups) {
   }
 
   const grid = h('div', { class: 'grid unid' },
-    ...['incoming tag', 'last value', 'group', 'field (MES column or extra)'].map(text => h('div', { class: 'head', textContent: text })));
+    ...['incoming tag', 'last value', 'group', 'field (MES column or extra)', 'name match'].map(text => h('div', { class: 'head', textContent: text })));
 
   for (const u of list) {
     const edit = state.unidEdits[u.tag] ??= { dataGroup: '', fieldName: '' };
@@ -1175,12 +1183,20 @@ function renderUnidentified(view, unid, groups) {
       oninput: e => { edit.fieldName = e.target.value; markDirty('point-map'); },
     });
     field.setAttribute('list', `mes-${edit.dataGroup}`); // suggests the group's MES columns
+    // Best MES column by name (gateway's NameMatcher); "use" fills group + field, save confirms.
+    const s = u.suggestion;
+    const suggestion = s ? h('div', { class: 'suggest-cell', title: s.conflict ? `Not mapped automatically: ${s.conflict}` : 'Below the auto-map score' },
+      h('span', { textContent: `${s.group} / ${s.field} (${s.score.toFixed(2)})` }),
+      s.conflict ? h('span', { class: 'field-note', textContent: s.conflict }) : null,
+      h('button', { type: 'button', class: 'link', textContent: 'use', onclick: () => {
+        edit.dataGroup = s.group; edit.fieldName = s.field; markDirty('point-map'); render();
+      } })) : h('div', { class: 'value-cell', textContent: '—' });
     grid.append(
       h('input', { value: u.tag, readOnly: true, 'aria-label': 'incoming tag' }),
       h('div', { class: 'value-cell', textContent: `${u.lastValue}   ×${u.count}`, title: `last seen ${new Date(u.lastSeen).toLocaleString()}` }),
       select([['', '— pick —'], [IGNORED, 'ignore (never sent)'], ...groups.filter(g => g !== IGNORED && g !== 'UNIDENTIFIED').map(g => [g, g])], edit.dataGroup,
         v => { edit.dataGroup = v; field.setAttribute('list', `mes-${v}`); markDirty('point-map'); }, 'group'),
-      field);
+      field, suggestion);
   }
 
   view.append(grid,
@@ -1289,6 +1305,8 @@ const SETTINGS = {
   unmappedTags: { label: 'Tag not in the mapping', choices: [['send', 'send the known tags, leave it out'], ['hold', 'hold the whole message until it is mapped']] },
   outboxKeepSentDays: { label: 'Keep sent records (days)', help: 'A day file is deleted when it is this many days old and everything in it was sent.' },
   mesStuckRowTries: { label: 'MES: tries before a stuck record moves to failed', help: 'A record MES keeps answering 500 or 413 moves to failed messages after this many tries in a row, once MES took other records meanwhile. At least 1. Applied on Restart Gateway.' },
+  nameMatchThreshold: { label: 'Name matching: auto-map from score', help: 'An unknown tag whose name matches one MES column at least this well (0.5 to 1; 1 = the same name) is mapped automatically and marked "auto" in PointMap. Lower scores, or a column in several groups or already filled, are only suggested (Unidentified). Applied on Restart Gateway.' },
+  nameMatchSynonyms: { label: 'Name matching: words that mean the same', help: 'short=long, comma-separated, e.g. qty=quantity, sn=serial number. Used to compare tag names with MES columns. Applied on Restart Gateway.' },
   mesStuckRowMinutes: { label: 'MES: minutes before a stuck record moves to failed (when nothing else is sent)', help: 'Same, when MES took nothing else meanwhile (e.g. one machine alone). 1 to 10. Applied on Restart Gateway.' },
 };
 
@@ -1397,7 +1415,7 @@ function buildBody(key) {
 
   if (key === 'point-map') {
     const rows = data
-      .map(r => ({ tag: (r.tag ?? '').trim(), dataGroup: r.dataGroup, fieldName: (r.fieldName ?? '').trim() }))
+      .map(r => ({ tag: (r.tag ?? '').trim(), dataGroup: r.dataGroup, fieldName: (r.fieldName ?? '').trim(), ...(r.auto != null ? { auto: r.auto } : {}) }))
       .filter(r => r.tag || r.fieldName);
 
     for (const [tag, edit] of Object.entries(state.unidEdits)) {

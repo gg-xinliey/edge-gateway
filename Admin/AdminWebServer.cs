@@ -421,10 +421,16 @@ public sealed class AdminWebServer
         {
             var id = MachineParam(context);
             var tracker = id is null ? _unidentified : _machines.UnidentifiedFor(id);
+            var config = (id is null ? _configStore : _machines.StoreFor(id))?.Current;
+            var synonyms = NameMatcher.ParseSynonyms(_gateway.Machine.NameMatchSynonyms);
             if (tracker is null)
                 await WriteJsonAsync(context.Response, 404, new { error = $"{id} has no own mapping." });
-            else
-                await WriteJsonAsync(context.Response, 200, tracker.Snapshot());
+            else // each with its best MES column by name, for the page to suggest
+                await WriteJsonAsync(context.Response, 200, tracker.Snapshot().Select(u => new
+                {
+                    u.Tag, u.LastValue, u.Count, u.FirstSeen, u.LastSeen,
+                    suggestion = config is null ? null : NameMatcher.Best(u.Tag, config.MesColumns, synonyms, config.PointMap),
+                }));
             return;
         }
 

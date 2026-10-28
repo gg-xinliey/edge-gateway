@@ -985,5 +985,77 @@ if (which is "all" or "mqtt")
     Report("mqtt: password never sent to the page, kept on save", wrong.Count == 0, wrong.Count == 0 ? $"{cases.Length} cases as expected" : string.Join("; ", wrong));
 }
 
+if (which is "all" or "namematch")
+{
+    // Name matching: which MES column a tag the point map doesn't know matches, and when it is automatic.
+    var columns = new Dictionary<string, IReadOnlyList<string>>
+    {
+        ["PRODUCTION"] = new[] { "good_quantity", "ng_quantity", "station_id" },
+        ["OPERATOR"] = new[] { "operator_id", "station_id" },
+        ["ALARM"] = new[] { "alarm_code", "alarm_status" },
+        ["PROCESS"] = new[] { "actual_value" },
+    };
+    var synonyms = NameMatcher.ParseSynonyms(new MachineConfig().NameMatchSynonyms);
+    var filled = new List<PointMapEntry> { new() { Tag = "ALM", DataGroup = "ALARM", FieldName = "alarm_code" } };
+    string Case(string tag)
+    {
+        var m = NameMatcher.Best(tag, columns, synonyms, filled)!;
+        var auto = m.Conflict is null && m.Score >= 0.9;
+        return $"{tag} -> {m.Group}/{m.Field} {m.Score:0.00} {(auto ? "auto" : "ask")}";
+    }
+    var want = new[]
+    {
+        "GOOD_QTY -> PRODUCTION/good_quantity 1.00 auto",   // synonym qty = quantity
+        "goodQty -> PRODUCTION/good_quantity 1.00 auto",    // camelCase
+        "NG_QTY -> PRODUCTION/ng_quantity 1.00 auto",
+        "station_id -> PRODUCTION/station_id 1.00 ask",     // column in two groups
+        "ALARM_CODE -> ALARM/alarm_code 1.00 ask",          // already filled by ALM
+        "alarm_state -> ALARM/alarm_status 0.83 ask",       // below the threshold
+    };
+    var got = want.Select(w => Case(w[..w.IndexOf(' ')])).ToList();
+    var wrongCases = got.Where((g, i) => g != want[i]).ToList();
+    Report("name match: score, synonyms, ambiguous and filled columns", wrongCases.Count == 0,
+        wrongCases.Count == 0 ? $"{want.Length} cases as expected" : string.Join("; ", wrongCases));
+
+    // Through the gateway: an unknown GOOD_QTY is mapped automatically (marked auto) and this very message
+    // reaches MES with good_quantity; TORQUE_1 (no good match) stays unmapped.
+    var (root, json) = TempConfig();
+    File.WriteAllText(Path.Combine(root, "mes-schema.json"), """{"PRODUCTION":["good_quantity","ng_quantity"],"PROCESS":["actual_value"]}""");
+    File.WriteAllText(Path.Combine(root, "point-map.json"), """[{"tag":"NG","dataGroup":"PRODUCTION","fieldName":"ng_quantity"}]""");
+    var tcp = 19500 + Random.Shared.Next(300);
+    var mesPort = 19900 + Random.Shared.Next(90);
+    var bodies = new System.Collections.Concurrent.ConcurrentQueue<string>();
+    using var mes = FakeMes(mesPort, body => { bodies.Enqueue(body); return 200; });
+    File.WriteAllText(Path.Combine(root, "machine-config.json"),
+        $$"""{"gatewayId":"T","listenAddress":"127.0.0.1","tcpPort":{{tcp}},"mesUrl":"http://localhost:{{mesPort}}/","unregisteredMachines":"shared","unmappedTags":"send"}""");
+    File.WriteAllText(Path.Combine(root, "mqtt-config.json"),
+        """{"brokerAddress":"127.0.0.1","brokerPort":1,"clientIdSuffix":"checks","reconnectCooldownSeconds":60,"area":"T","keepaliveIntervalSeconds":60,"motionDeadband":0.01,"maxPublishRateMs":50}""");
+    DataFolder.Use(root);
+    var registry = new MachineRegistry(new GatewayConfigStore(root, json), new UnidentifiedTagTracker(), json);
+    var host = new GatewayHost(registry, json, null, new MessageIdFilter());
+    using var stop = new CancellationTokenSource();
+    var run = host.RunAsync(stop.Token);
+    for (var i = 0; i < 50 && host.State != "running"; i++) await Task.Delay(100);
+    string? reply;
+    using (var c = new System.Net.Sockets.TcpClient())
+    {
+        await c.ConnectAsync("127.0.0.1", tcp);
+        var s = c.GetStream(); s.ReadTimeout = 5000;
+        var w = new StreamWriter(s) { AutoFlush = true, NewLine = "\n" };
+        await w.WriteLineAsync("""{"message_id":"nm-1","machine_id":"M1","data":{"GOOD_QTY":5,"TORQUE_1":1.5}}""");
+        reply = await new StreamReader(s).ReadLineAsync();
+    }
+    for (var i = 0; i < 50 && bodies.IsEmpty; i++) await Task.Delay(100);
+    stop.Cancel(); try { await run; } catch { }
+    mes.Stop();
+    var map = System.Text.Json.JsonSerializer.Deserialize<List<PointMapEntry>>(File.ReadAllText(Path.Combine(root, "point-map.json")), json)!;
+    var autoEntry = map.FirstOrDefault(p => p.Tag == "GOOD_QTY");
+    var sentGood = bodies.Select(b => System.Text.Json.JsonDocument.Parse(b).RootElement.GetProperty("payload"))
+        .Any(p => p.TryGetProperty("good_quantity", out var v) && v.ValueKind == System.Text.Json.JsonValueKind.Number && v.GetDouble() == 5);
+    Report("name match: unknown tag auto-mapped, marked, and sent in the same message",
+        autoEntry is { DataGroup: "PRODUCTION", FieldName: "good_quantity", Auto: 1.0 } && sentGood && map.All(p => p.Tag != "TORQUE_1") && reply == "{\"ack\":\"nm-1\"}",
+        $"point map: {string.Join(", ", map.Select(p => $"{p.Tag}->{p.FieldName}{(p.Auto is { } a ? $" (auto {a})" : "")}"))}; MES got good_quantity 5: {sentGood}; reply {reply}");
+}
+
 Console.WriteLine(failed == 0 ? "ALL PASS" : $"{failed} FAILED");
 return failed == 0 ? 0 : 1;
