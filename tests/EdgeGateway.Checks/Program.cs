@@ -1057,5 +1057,63 @@ if (which is "all" or "namematch")
         $"point map: {string.Join(", ", map.Select(p => $"{p.Tag}->{p.FieldName}{(p.Auto is { } a ? $" (auto {a})" : "")}"))}; MES got good_quantity 5: {sentGood}; reply {reply}");
 }
 
+if (which is "all" or "autotab")
+{
+    // Similar machines: same name before the first "-", else the name without trailing digits.
+    var families = new[] { ("NEXIM-08c4-aa", "nexim"), ("NEXIM-1", "nexim"), ("LINE01_NXT101", "line01_nxt"), ("NXT105", "nxt"), ("AOI", "aoi") };
+    var wrongFamily = families.Where(f => MachineRegistry.Family(f.Item1) != f.Item2).Select(f => $"{f.Item1} -> {MachineRegistry.Family(f.Item1)}").ToList();
+    Report("auto tab: similar-machine rule", wrongFamily.Count == 0, wrongFamily.Count == 0 ? $"{families.Length} names as expected" : string.Join("; ", wrongFamily));
+
+    // A machine without a tab (hold mode) gets one on its first message, copied from a confirmed similar tab;
+    // its message is processed. After 20 automatic tabs in an hour, new machines are held again.
+    var (root, json) = TempConfig();
+    var tcp = 19500 + Random.Shared.Next(300);
+    var mesPort = 19900 + Random.Shared.Next(90);
+    var bodies = new System.Collections.Concurrent.ConcurrentQueue<string>();
+    using var mes = FakeMes(mesPort, body => { bodies.Enqueue(body); return 200; });
+    File.WriteAllText(Path.Combine(root, "machine-config.json"),
+        $$"""{"gatewayId":"T","listenAddress":"127.0.0.1","tcpPort":{{tcp}},"mesUrl":"http://localhost:{{mesPort}}/","unregisteredMachines":"hold","unmappedTags":"send"}""");
+    File.WriteAllText(Path.Combine(root, "mqtt-config.json"),
+        """{"brokerAddress":"127.0.0.1","brokerPort":1,"clientIdSuffix":"checks","reconnectCooldownSeconds":60,"area":"T","keepaliveIntervalSeconds":60,"motionDeadband":0.01,"maxPublishRateMs":50}""");
+    DataFolder.Use(root);
+    var registry = new MachineRegistry(new GatewayConfigStore(root, json), new UnidentifiedTagTracker(), json);
+    // the confirmed model tab: its own tag for machine_status, unlike the template's
+    registry.Create("NEXIM-MODEL", null);
+    File.WriteAllText(Path.Combine(registry.FolderFor("NEXIM-MODEL")!, "point-map.json"), """[{"tag":"STATE_CODE","dataGroup":"MACHINE_STATUS","fieldName":"machine_status"}]""");
+    registry.Reload("NEXIM-MODEL");
+    registry.CreateAuto("NEXIM-OLDAUTO", null); // an unchecked automatic one: not the copy source
+    var host = new GatewayHost(registry, json, null, new MessageIdFilter());
+    using var stop = new CancellationTokenSource();
+    var run = host.RunAsync(stop.Token);
+    for (var i = 0; i < 50 && host.State != "running"; i++) await Task.Delay(100);
+    var replies = new List<string?>();
+    using (var c = new System.Net.Sockets.TcpClient())
+    {
+        await c.ConnectAsync("127.0.0.1", tcp);
+        var s = c.GetStream(); s.ReadTimeout = 3000;
+        var w = new StreamWriter(s) { AutoFlush = true, NewLine = "\n" }; var r = new StreamReader(s);
+        await w.WriteLineAsync("""{"message_id":"at-1","machine_id":"NEXIM-NEW","data":{"STATE_CODE":"RUN"}}""");
+        replies.Add(await r.ReadLineAsync());
+        for (var i = 1; i <= 20; i++) // 19 more fit in this hour's 20, the 20th of these is held
+            await w.WriteLineAsync($$$"""{"message_id":"lim-{{{i}}}","machine_id":"LIM-{{{i}}}","data":{"x":1}}""");
+        for (var i = 0; i < 19; i++) { try { replies.Add(await r.ReadLineAsync()); } catch (IOException) { break; } }
+        await Task.Delay(500);
+    }
+    for (var i = 0; i < 50 && !bodies.Any(b => b.Contains("NEXIM-NEW")); i++) await Task.Delay(100);
+    stop.Cancel(); try { await run; } catch { }
+    mes.Stop();
+    var copied = registry.AutoCopiedFrom("NEXIM-NEW");
+    var newMap = File.ReadAllText(Path.Combine(registry.FolderFor("NEXIM-NEW") ?? root, "point-map.json"));
+    var sentRun = bodies.Any(b => b.Contains("\"NEXIM-NEW\"") && b.Contains("\"machine_status\":\"RUN\""));
+    Report("auto tab: new machine gets a copy of a confirmed similar tab, message processed",
+        copied == "NEXIM-MODEL" && newMap.Contains("STATE_CODE") && sentRun && replies.FirstOrDefault() == "{\"ack\":\"at-1\"}",
+        $"copied from {copied ?? "(no auto tab)"} (want NEXIM-MODEL); MES got machine_status RUN: {sentRun}; reply {replies.FirstOrDefault()}");
+    var autoTabs = registry.Ids.Count(id => id.StartsWith("LIM-") && registry.IsAuto(id));
+    var heldLast = registry.Held.ConnectionOf("LIM-20") is not null || registry.FolderFor("LIM-20") is null;
+    Report("auto tab: at most 20 automatic tabs per hour, then held",
+        autoTabs == 19 && registry.FolderFor("LIM-20") is null && heldLast,
+        $"LIM tabs created: {autoTabs} (want 19, plus NEXIM-NEW = 20); LIM-20 has a tab: {registry.FolderFor("LIM-20") is not null}");
+}
+
 Console.WriteLine(failed == 0 ? "ALL PASS" : $"{failed} FAILED");
 return failed == 0 ? 0 : 1;

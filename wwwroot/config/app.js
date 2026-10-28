@@ -24,6 +24,7 @@ const state = {
   lastView: { general: 'mqtt-config', machine: 'point-map' }, // reopened when coming back to that kind of tab
   view: 'mqtt-config',
   data: {},                 // file key -> data as loaded / being edited
+  saved: {},                // PointMap / TimeStamp as last loaded or saved: what a save changed is copied to other machines
   numberKeys: {},           // file key -> keys that must stay numbers (form views)
   dirty: new Set(),         // file keys with unsaved edits
   group: { 'point-map': null, 'timestamp-rules': null },
@@ -144,6 +145,7 @@ async function loadMesSchema() {
 async function loadFile(key) {
   const data = await request(`/api/config/${key}${scopeQuery(key)}`);
   state.data[key] = data;
+  if (MAPPING.has(key)) state.saved[key] = structuredClone(data);
   if (!Array.isArray(data))
     state.numberKeys[key] = Object.entries(data).filter(([, v]) => typeof v === 'number').map(([k]) => k);
 }
@@ -256,6 +258,8 @@ function renderTabs() {
       onkeydown: e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); switchTab(id); } },
     }, h('span', { class: 'tab-name', textContent: label }));
     el.setAttribute('aria-selected', String(selected === id));
+    if (opts.auto)
+      el.append(h('span', { class: 'tab-auto', textContent: 'auto', title: 'Tab created automatically: check it, then confirm it on its PointMap' }));
     if (opts.status)
       el.append(h('span', { class: `dot ${opts.status}`, role: 'img', 'aria-label': STATUS_WORDS[opts.status], title: STATUS_WORDS[opts.status] }));
     if (opts.close)
@@ -268,13 +272,14 @@ function renderTabs() {
   };
 
   $('tabs').replaceChildren(...[
+    h('h1', { class: 'tabs-title', textContent: 'Machines' }),
     tab(SHARED, unmappedFor('').length ? `⚠ ${sharedLabel()}` : sharedLabel(), { fixed: true, extra: unmappedFor('').length ? 'broken' : '', title: holdPolicy() ? 'Template: what "+" copies into a new machine tab. Machines without a tab are held, not mapped with this.' : 'The shared mapping: every machine that has no own tab' }),
     ...state.machineConfigs.map(m => {
       const waiting = unmappedFor(m.machineId);
       const alert = !m.readable || waiting.length > 0;
       const status = connectionOf(m.machineId);
       return tab(m.machineId, alert ? `⚠ ${m.machineId}` : m.machineId, {
-        close: true, extra: alert ? 'broken' : '', status,
+        close: true, extra: alert ? 'broken' : '', status, auto: m.autoCopiedFrom != null,
         title: !m.readable ? `${m.machineId}: its files can't be read (${m.error})`
           : waiting.length ? `${m.machineId}: data held, tags not mapped yet: ${[...new Set(waiting.flatMap(u => u.tags))].join(', ')}`
           : `${m.machineId} (${STATUS_WORDS[status]}): its own mapping and outbox`,
@@ -340,8 +345,15 @@ function renderScopeHint() {
   const machineTab = isMachineTab(state.tab);
   const broken = machineTab && state.machineConfigs.find(m => m.machineId === state.scope && !m.readable);
   const waiting = machineTab ? unmappedFor(state.scope) : [];
+  const auto = machineTab && state.tab !== SHARED ? state.machineConfigs.find(m => m.machineId === state.scope && m.autoCopiedFrom != null) : null;
   hint.replaceChildren();
-  hint.hidden = !broken && !waiting.length;
+  hint.classList.toggle('info', !!auto && !broken && !waiting.length);
+  hint.hidden = !broken && !waiting.length && !auto;
+  if (auto && !broken && !waiting.length) {
+    hint.append(`${auto.machineId}'s tab was created automatically, as a copy of ${auto.autoCopiedFrom || 'the Template'}. Check its mapping, then `,
+      h('button', { type: 'button', class: 'link', textContent: '✓ confirm', onclick: () => confirmAutoTab(auto.machineId) }), '.');
+    return;
+  }
   if (broken) {
     hint.append(`${broken.machineId}'s files can't be read, so its lines are held until they are fixed: ${broken.error}`);
     return;
@@ -353,6 +365,14 @@ function renderScopeHint() {
     `Held: ${lines.toLocaleString()} message(s) from ${waiting.map(u => u.machineId).join(', ')}, because this mapping doesn't know: ${tags.join(', ')}. ` +
     'Map each one or set it to ignore, then save: the held messages are sent again. ',
     h('button', { type: 'button', class: 'link', textContent: 'show them', onclick: () => { state.group['point-map'] = UNID; switchView('point-map'); } }));
+}
+
+async function confirmAutoTab(id) {
+  try { await request(`/api/machine-configs/confirm?machine=${encodeURIComponent(id)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); }
+  catch (e) { toast(`Not confirmed: ${e.message}`, true); return; }
+  await loadMachineConfigs();
+  render();
+  toast(`${id}'s tab is confirmed.`);
 }
 
 function pointMapGroups() {
@@ -526,11 +546,17 @@ function ownTabLink(machineId) {
   return holdPolicy() ? 'no tab' : 'shared';
 }
 
-// A machine named like an existing tab (NXT103 next to NXT101) most likely
-// is the same model: suggest copying that tab. Else the template.
+// Machines of one kind: the same name before the first "-" (NEXIM-…), or, without a "-",
+// the same name without its trailing digits (NXT101 ~ NXT105). The gateway uses the same
+// rule (MachineRegistry.Family) for tabs it creates by itself.
+const familyOf = id => (id.includes('-') ? id.slice(0, id.indexOf('-')) : id.replace(/\d+$/, '')).toLowerCase();
+
+// A machine named like an existing tab most likely is the same model: suggest copying
+// that tab (a confirmed one first). Else the template.
 function guessCopyFrom(machineId) {
-  const stem = machineId.replace(/\d+$/, '').toLowerCase();
-  return state.machineConfigs.find(c => c.readable && stem && c.machineId.replace(/\d+$/, '').toLowerCase() === stem)?.machineId ?? '';
+  const family = familyOf(machineId);
+  const same = state.machineConfigs.filter(c => c.readable && family && familyOf(c.machineId) === family);
+  return (same.find(c => c.autoCopiedFrom == null) ?? same[0])?.machineId ?? '';
 }
 
 async function pollMachines() {
@@ -944,7 +970,7 @@ function renderGroupFields(view, group, withTitle) {
     const grid = h('div', { class: 'grid mes' },
       h('div', { class: 'head', textContent: 'MES field' }),
       h('div', { class: 'head', textContent: 'incoming tag (several: comma-separated)' }),
-      h('div'));
+      h('div', { class: 'head' })); // a head too: hidden with the others in a narrow column, or every row shifts a cell
     for (const column of columns) {
       const rows = state.data['point-map'].filter(r => r.dataGroup === group && r.fieldName === column);
       const tags = rows.map(r => r.tag);
@@ -967,10 +993,11 @@ function renderGroupFields(view, group, withTitle) {
           // on change (leaving the box), so typing a comma doesn't redraw the list
           onchange: e => setFieldTags(group, column, e.target.value),
         }),
-        h('button', {
-          class: 'row-x', type: 'button', textContent: '×', title: `Remove ${column} from the MES format (all machines)`,
-          onclick: () => removeMesField(group, column),
-        }));
+        tags.length ? h('button', {
+          class: 'row-x', type: 'button', textContent: '×',
+          title: `Take ${tags.join(', ')} off ${column} on this tab: it becomes an extra field (not sent). ${column} itself stays.`,
+          onclick: () => clearFieldTags(group, column, columns),
+        }) : h('div'));
     }
     if (shown || !searching) section.append(grid);
     if (!searching)
@@ -985,7 +1012,7 @@ function renderGroupFields(view, group, withTitle) {
   const extraGrid = h('div', { class: 'grid two' },
     h('div', { class: 'head', textContent: 'incoming tag' }),
     h('div', { class: 'head', textContent: columns ? 'assign it' : 'fieldName' }),
-    h('div'));
+    h('div', { class: 'head' }));
   let extras = 0;
   for (const row of state.data['point-map']) {
     if (row.dataGroup !== group || (columns ?? []).includes(row.fieldName)) continue;
@@ -1043,10 +1070,16 @@ function addMesField(group) {
   render();
 }
 
-function removeMesField(group, column) {
-  if (!confirm(`Remove ${column} from the MES format of ${group}? Every machine stops sending it as a MES column (tags mapped to it here become extra fields). It takes effect when you save.`)) return;
-  state.mesSchema[group] = state.mesSchema[group].filter(c => c !== column);
-  state.mesDirty = true;
+// × on a MES field: its tag(s) go back to extra fields, named after the tag (not sent),
+// ready to "assign it" again. The MES field stays: it is part of the MES format, shared by
+// every machine, and the page never removes one (edit Config/mes-schema.json for that).
+function clearFieldTags(group, column, columns) {
+  for (const row of state.data['point-map'].filter(r => r.dataGroup === group && r.fieldName === column)) {
+    let name = row.tag.toLowerCase().replace(/[^a-z0-9_]+/g, '_');
+    if (columns.includes(name)) name += '_extra'; // named like a MES field it would still go there
+    row.fieldName = name;
+    delete row.auto;
+  }
   markDirty('point-map');
   render();
 }
@@ -1492,6 +1525,11 @@ async function save() {
     }
   }
 
+  // On a machine tab: this machine only, similar machines, or all (only what changed is copied).
+  const changes = MAPPING.has(key) && state.scope && state.saved[key] ? mappingChanges(key, state.saved[key], body) : null;
+  const targets = changes?.count ? await chooseSaveScope(changes.count) : [];
+  if (targets === null) return; // cancelled
+
   let result;
   try {
     result = await request(`/api/config/${key}${scopeQuery(key)}`, {
@@ -1505,6 +1543,8 @@ async function save() {
   }
 
   state.data[key] = body;
+  if (MAPPING.has(key)) state.saved[key] = structuredClone(body);
+  if (targets.length) await applyToOthers(key, changes, targets);
   state.dirty.delete(key);
   if (key === 'point-map') {
     state.unidEdits = {};
@@ -1517,6 +1557,76 @@ async function save() {
     await loadUnmapped();
   }
   askRestart(result.restartToApply);
+}
+
+// What a save of PointMap / TimeStamp changed, so that only this is copied to other machines.
+// PointMap by tag: rows added or moved (set) and tags taken out (removed). TimeStamp by group.
+function mappingChanges(key, before, after) {
+  if (key === 'point-map') {
+    const old = new Map(before.map(r => [r.tag.toLowerCase(), r]));
+    const now = new Set(after.map(r => r.tag.toLowerCase()));
+    const set = after.filter(r => { const o = old.get(r.tag.toLowerCase()); return !o || o.dataGroup !== r.dataGroup || o.fieldName !== r.fieldName; });
+    const removed = before.filter(r => !now.has(r.tag.toLowerCase())).map(r => r.tag);
+    return { set, removed, count: set.length + removed.length };
+  }
+  const set = Object.entries(after).filter(([g, rule]) => JSON.stringify(rule) !== JSON.stringify(before[g]));
+  const removed = Object.keys(before).filter(g => !(g in after));
+  return { set, removed, count: set.length + removed.length };
+}
+
+// Another machine's PointMap / TimeStamp with these changes; its other rows stay as they are.
+function applyChanges(key, data, changes) {
+  if (key === 'point-map') {
+    const drop = new Set([...changes.removed, ...changes.set.map(r => r.tag)].map(t => t.toLowerCase()));
+    return [...data.filter(r => !drop.has(r.tag.toLowerCase())),
+      ...changes.set.map(({ tag, dataGroup, fieldName }) => ({ tag, dataGroup, fieldName }))];
+  }
+  const next = { ...data };
+  for (const g of changes.removed) delete next[g];
+  for (const [g, rule] of changes.set) next[g] = rule;
+  return next;
+}
+
+// Asks where a save on a machine tab goes. Resolves to the other mappings to change too
+// (machine ids; '' = the Template): [] = this machine only, null = cancelled.
+function chooseSaveScope(count) {
+  const me = state.scope;
+  const others = state.machineConfigs.filter(m => m.readable && m.machineId !== me).map(m => m.machineId);
+  const similar = others.filter(id => familyOf(id) === familyOf(me));
+  const names = list => list.length > 8 ? `${list.slice(0, 8).join(', ')} … (+${list.length - 8} more)` : list.join(', ');
+  return new Promise(resolve => {
+    const dialog = h('dialog', { class: 'scope-dialog' });
+    const done = targets => { dialog.close(); dialog.remove(); resolve(targets); };
+    dialog.append(
+      h('p', { class: 'dlg-title', textContent: `Save ${count} change(s) for…` }),
+      h('div', { class: 'scope-choices' },
+        h('button', { type: 'button', class: 'primary', textContent: `Just ${me}`, onclick: () => done([]) }),
+        h('button', { type: 'button', textContent: `Similar machines (${similar.length})`, disabled: !similar.length, onclick: () => done(similar) }),
+        h('button', { type: 'button', textContent: `All machines (${others.length}) + Template`, onclick: () => done([...others, '']) })),
+      h('p', { class: 'dlg-small', textContent: similar.length ? `Similar (name starts like ${me}): ${names(similar)}` : 'No other machine has a similar name.' }),
+      h('p', { class: 'dlg-small', textContent: 'Only what you changed here is copied; the other machines keep the rest of their settings.' }),
+      h('div', { class: 'dlg-buttons' }, h('button', { type: 'button', textContent: 'Cancel', onclick: () => done(null) })));
+    dialog.addEventListener('cancel', e => { e.preventDefault(); done(null); });
+    document.body.append(dialog);
+    dialog.showModal();
+  });
+}
+
+async function applyToOthers(key, changes, targets) {
+  const failed = [];
+  for (const id of targets) {
+    const query = id ? `?machine=${encodeURIComponent(id)}` : '';
+    try {
+      const data = await request(`/api/config/${key}${query}`);
+      await request(`/api/config/${key}${query}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(applyChanges(key, data, changes)),
+      });
+    } catch (e) {
+      failed.push(`${id || 'Template'} (${e.message})`);
+    }
+  }
+  const done = targets.length - failed.length;
+  toast(failed.length ? `Also saved for ${done} of ${targets.length}. Not saved: ${failed.join('; ')}` : `Also saved for ${done} other mapping(s).`, failed.length > 0);
 }
 
 function askRestart(restartToApply) {

@@ -114,6 +114,67 @@ public sealed class MachineRegistry
         }
     }
 
+    // Machines of one kind: the same name before the first "-" (NEXIM-...), or, without a
+    // "-", the same name without its trailing digits (NXT101 ~ NXT105). The config page
+    // uses the same rule (familyOf in app.js).
+    public static string Family(string machineId)
+    {
+        var dash = machineId.IndexOf('-');
+        return (dash >= 0 ? machineId[..dash] : Regex.Replace(machineId, @"\d+$", "")).ToLowerInvariant();
+    }
+
+    // A readable tab of the same kind to copy for a new machine: one somebody confirmed
+    // first, an automatic one only if there is no other. null = none (copy the template).
+    public string? SimilarTab(string machineId)
+    {
+        var family = Family(machineId);
+        if (family.Length == 0)
+            return null;
+        return _machines.Values
+            .Where(e => e.Store is not null && !e.Id.Equals(machineId, StringComparison.OrdinalIgnoreCase) && Family(e.Id) == family)
+            .OrderBy(e => IsAuto(e.Id) ? 1 : 0).ThenBy(e => e.Id, StringComparer.OrdinalIgnoreCase)
+            .Select(e => e.Id).FirstOrDefault();
+    }
+
+    // A tab the gateway created by itself (no person has checked it yet): this file in its folder.
+    public const string AutoMarker = "auto-created.json";
+    public bool IsAuto(string machineId) => FolderFor(machineId) is { } folder && File.Exists(Path.Combine(folder, AutoMarker));
+
+    // Where an automatic tab was copied from ("" = the template); null = not automatic.
+    public string? AutoCopiedFrom(string machineId)
+    {
+        if (FolderFor(machineId) is not { } folder || !File.Exists(Path.Combine(folder, AutoMarker)))
+            return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(File.ReadAllText(Path.Combine(folder, AutoMarker)));
+            return doc.RootElement.TryGetProperty("copiedFrom", out var from) && from.ValueKind == JsonValueKind.String ? from.GetString() ?? "" : "";
+        }
+        catch (Exception ex) when (ex is JsonException or IOException)
+        {
+            return "";
+        }
+    }
+
+    // Create, marked automatic. Null = done, else why not.
+    public string? CreateAuto(string machineId, string? copyFrom)
+    {
+        var problem = Create(machineId, copyFrom);
+        if (problem is null && FolderFor(machineId) is { } folder)
+            File.WriteAllText(Path.Combine(folder, AutoMarker),
+                JsonSerializer.Serialize(new { copiedFrom = copyFrom ?? "", at = DateTimeOffset.Now }));
+        return problem;
+    }
+
+    // Somebody checked the automatic tab: no longer marked.
+    public bool ConfirmAuto(string machineId)
+    {
+        if (FolderFor(machineId) is not { } folder || !File.Exists(Path.Combine(folder, AutoMarker)))
+            return false;
+        File.Delete(Path.Combine(folder, AutoMarker));
+        return true;
+    }
+
     // Gives a machine its own mapping, starting from a copy of copyFrom's
     // (another machine's own, or the shared one when null). Null = done, else why not.
     public string? Create(string machineId, string? copyFrom)

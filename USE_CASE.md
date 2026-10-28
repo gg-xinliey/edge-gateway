@@ -132,7 +132,7 @@ All files are in the `Config\` folder **next to the running exe**, e.g. `bin\Rel
 |---|---|---|
 | `point-map.json` | incoming tag → data group + fieldName | live, on save |
 | `timestamp-rules.json` | per data group: timestamp (SinglePoint / Span) and `sendEveryMs` (how often changes go to MES; 0 = right away, empty = 1000). Span: `previousField` = where the value before the change goes (MACHINE_STATUS: `previous_status`; empty = `previous_<triggerField>`) | live, on save |
-| `mes-schema.json` | the MES format: per data group, the columns of its MES table, all sent (`null` when missing). Edited on the page with **+ MES field** / **×** in PointMap (all machines) | live, on save |
+| `mes-schema.json` | the MES format: per data group, the columns of its MES table, all sent (`null` when missing). Columns are added on the page with **+ MES field** in PointMap (all machines); the page never removes one: edit the file for that | live, on save |
 | `mqtt-config.json` | broker address/port, `username` / `password` (empty = no login; plain MQTT, not encrypted; the config page shows the password only as dots and never gets it back), `clientIdSuffix`, area, keepalive, deadband, rate. The MQTTConfig view shows `MQTT: connected / disconnected` from the live connection | after restart |
 | `machine-config.json` | gatewayId, `listenAddress` + TCP port (`0.0.0.0` = all addresses; a specific IP = only that network card, then `127.0.0.1` is refused), MES URL, default data source, `timestampsWithoutZone` (`UTC` or `local`), `outboxKeepSentDays` | after restart |
 
@@ -150,7 +150,7 @@ All files are in the `Config\` folder **next to the running exe**, e.g. `bin\Rel
 
 | Setting | What happens to its MES lines |
 |---|---|
-| `hold` (default) | **Held**: not processed, not answered. The adapter keeps them. A red "⚠ N not registered" shows on the tab bar, the log has a line about it, and General → Machines lists the machine with the tags it sent and a **register** button |
+| `hold` (default) | The machine **gets a tab automatically** on its first message: a copy of a machine with a similar name (same start before the first `-`, e.g. `NEXIM-…`; without a `-`, the same name without its trailing digits, e.g. `NXT10x`; a confirmed tab first), else of the Template. The tab shows an orange **auto** chip and its views a note with **✓ confirm**; the log has `[config] … tab created automatically (copied from …)`. At most 20 per hour (an adapter sending a new `machine_id` with every message): after that, new machines are **held**: not processed, not answered. The adapter keeps them. A red "⚠ N not registered" shows on the tab bar, the log has a line about it, and General → Machines lists the machine with the tags it sent and a **register** button |
 | `shared` | Processed with the Template mapping and the shared outbox (no notice) |
 
 - **Best:** register a machine before it starts sending. Same model as an existing machine (NXT103 next to NXT101): open that machine's tab and press **+**. New model: get the field list, press **+**, fill in the incoming tags.
@@ -203,7 +203,9 @@ Open **http://localhost:5100/config/**. It only opens on the gateway PC itself.
 
 **PointMap** — per data group, two lists:
 1. **MES fields:** every column of that group's MES table (the MES format), already filled in. Type only the **incoming tag** next to each one; several tags for one field are comma-separated (`MACHINE_STATUS, current_status_code`). A field with no tag is sent to MES as `null`. "set by TimeStamp rule" marks fields the gateway fills itself (start/end/record times).
-   - **+ MES field** adds a column to the MES format, **×** removes one. This changes the MES format **for every machine** (when MES changes a table) and is saved with **save**.
+   - **×** on a MES field takes its incoming tag(s) off, on this tab only: the tag becomes an extra field (not sent), ready to **assign it** again. The MES field itself stays (sent as null until it has a tag).
+   - **+ MES field** adds a column to the MES format **for every machine** (when MES adds one to a table), saved with **save**. MES fields can't be removed on the page.
+   - **save** on a machine tab (PointMap or TimeStamp) asks where the change goes: **just this machine**, **similar machines** (same name start, listed), or **all machines + Template**. Only what you changed is copied; the others keep the rest of their mapping. The pop-up says for how many it worked and names any that failed.
 2. **Extra fields:** tags with no MES column (e.g. Nexim `event_name`): incoming tag + a field name of your choice, for this tab only. They are **not sent to MES**: the payload has only the MES fields. Time fields the TimeStamp rule adds without a MES column (`record_timestamp` …) are not sent either. Type in the blank row to add one, **×** removes one. Groups that are no MES table (MOTION, IO, new groups) only have this list.
    - Several tags on one MES field (`line_name, module_no`) are alternatives: if a message carries both, the later one in the message wins.
    - **Join with `+`:** `line_no+process_id` puts both values in the field, joined with `_` (`001` + `xxxx` = `001_xxxx`). Only when every part is in the message; otherwise the field keeps its last value (never half a value). The parts count as mapped and can still be mapped on their own too.

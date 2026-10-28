@@ -61,6 +61,12 @@ body.resizing { cursor: col-resize; user-select: none; }
 .tab-x { flex: none; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--muted); font-size: 14px; line-height: 22px; }
 .tab-x:hover { background: #e0e0e0; border: 0; color: var(--bad); }
 .tab-add { flex: none; height: 32px; margin-top: 4px; padding: 0; font-size: 18px; line-height: 30px; }
+.tabs-title { margin: 6px 6px 12px; font-size: 22px; font-weight: 400; }
+.tab-auto { flex: none; padding: 0 6px; border: 1px solid #e0a84a; border-radius: 9px; background: #fff4e0; color: #6b4000; font-size: 10px; font-weight: 600; line-height: 16px; }
+.scope-hint.info { background: #fff4e0; border-color: #e0a84a; color: #6b4000; }
+.scope-choices { display: grid; gap: 8px; margin: 12px 0; }
+.scope-choices button { height: 40px; text-align: left; }
+.scope-choices button:disabled { opacity: .5; cursor: not-allowed; }
 .tab-alert { flex: none; height: auto; min-height: 30px; padding: 4px 10px; border-color: var(--bad); border-radius: 4px; background: #fdecea; color: var(--bad); font-size: 12px; font-weight: 600; text-align: left; white-space: normal; }
 .tab-alert:hover { background: #fbd9d5; border-color: var(--bad); }
 .held-title { color: var(--bad); }

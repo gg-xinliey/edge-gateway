@@ -60,6 +60,9 @@ public sealed class GatewayHost
     public bool? MqttConnected => _mqttConnected?.Invoke();
     private static readonly TimeSpan StatsEvery = TimeSpan.FromSeconds(10);
 
+    // Tabs created automatically for new machines, at most per hour (see AutoTab).
+    private const int AutoTabsPerHour = 20;
+
     // A machine timestamp further than this from arrival is warned about.
     private static readonly TimeSpan ClockWarning = TimeSpan.FromHours(1);
 
@@ -303,6 +306,11 @@ public sealed class GatewayHost
                 store = own;
                 pipeline = OwnPipeline(machineId);
             }
+            else if (machine.HoldUnregistered && AutoTab(machineId) is { } created)
+            {
+                store = created;
+                pipeline = OwnPipeline(machineId);
+            }
             else if (machine.HoldUnregistered)
             {
                 Hold(sender, ticket, machineId, rawTags, "is not registered (no tab)");
@@ -448,6 +456,39 @@ public sealed class GatewayHost
                 }
             }
             return added;
+        }
+
+        // A machine without a tab (hold mode) gets one right away: a copy of a tab of the same
+        // kind (MachineRegistry.Family), else of the template, marked auto until someone confirms
+        // it. At most AutoTabsPerHour, so an adapter that sends a new machine_id with every message
+        // can't create hundreds; past that, machines are held as before. null = held.
+        var autoTabs = new Queue<DateTimeOffset>();
+        var autoTabLimit = new ThrottledLog(TimeSpan.FromSeconds(60));
+        GatewayConfigStore? AutoTab(string machineId)
+        {
+            lock (autoTabs)
+            {
+                if (_machines.TryGetOwn(machineId, out var existing, out _))
+                    return existing; // another message of this machine was first
+                var now = DateTimeOffset.UtcNow;
+                while (autoTabs.Count > 0 && now - autoTabs.Peek() > TimeSpan.FromHours(1))
+                    autoTabs.Dequeue();
+                if (autoTabs.Count >= AutoTabsPerHour)
+                {
+                    autoTabLimit.Write("limit", $"[config] {machineId}: no tab created automatically, {AutoTabsPerHour} were created in the last hour " +
+                                                "(does an adapter send a new machine_id with every message?): held, register it on the config page");
+                    return null;
+                }
+                var copiedFrom = _machines.SimilarTab(machineId);
+                if (_machines.CreateAuto(machineId, copiedFrom) is { } problem)
+                {
+                    Console.WriteLine($"[config] {machineId}: no tab created automatically: {problem}");
+                    return null;
+                }
+                autoTabs.Enqueue(now);
+                Console.WriteLine($"[config] {machineId}: tab created automatically (copied from {copiedFrom ?? "the template"}): check it on the config page (marked auto)");
+                return _machines.StoreFor(machineId);
+            }
         }
 
         var heldUnmapped = new ThrottledLog(TimeSpan.FromSeconds(60));

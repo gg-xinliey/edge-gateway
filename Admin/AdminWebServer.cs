@@ -252,11 +252,31 @@ public sealed class AdminWebServer
         }
 
         // Machines with their own mapping: list, add (copying a mapping), remove.
+        // An automatic tab was checked by a person: no longer marked auto.
+        if (path.Equals("/api/machine-configs/confirm", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!HttpMethodsEqual(context, "POST"))
+            {
+                await WriteJsonAsync(context.Response, 405, new { error = "Method not allowed" });
+                return;
+            }
+            var id = MachineParam(context);
+            if (id is not null && _machines.ConfirmAuto(id))
+                await WriteJsonAsync(context.Response, 200, new { ok = true });
+            else
+                await WriteJsonAsync(context.Response, 404, new { error = "That machine has no automatic tab to confirm." });
+            return;
+        }
+
         if (path.Equals("/api/machine-configs", StringComparison.OrdinalIgnoreCase))
         {
             if (HttpMethodsEqual(context, "GET"))
             {
-                await WriteJsonAsync(context.Response, 200, _machines.List().Select(m => new { machineId = m.Id, readable = m.Readable, error = m.Error }));
+                await WriteJsonAsync(context.Response, 200, _machines.List().Select(m => new
+                {
+                    machineId = m.Id, readable = m.Readable, error = m.Error,
+                    autoCopiedFrom = _machines.AutoCopiedFrom(m.Id), // null = not created automatically; "" = from the template
+                }));
                 return;
             }
 
