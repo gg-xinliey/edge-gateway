@@ -264,6 +264,12 @@ function renderTabs() {
       el.append(h('span', { class: `dot ${opts.status}`, role: 'img', 'aria-label': STATUS_WORDS[opts.status], title: STATUS_WORDS[opts.status] }));
     if (opts.close)
       el.append(h('button', {
+        type: 'button', class: 'tab-x', textContent: '⇄',
+        title: `Change ${label}'s mapping: copy another tab's or the Template's`,
+        'aria-label': `Change the mapping of ${label}`, onclick: e => { e.stopPropagation(); reassignTab(id); },
+      }));
+    if (opts.close)
+      el.append(h('button', {
         type: 'button', class: 'tab-x', textContent: '×',
         title: holdPolicy() ? `Close: ${label}'s data is held until it gets a tab again` : `Close: ${label} goes back to the shared mapping`,
         'aria-label': `Close ${label}`, onclick: e => { e.stopPropagation(); removeMachine(id); },
@@ -351,7 +357,8 @@ function renderScopeHint() {
   hint.hidden = !broken && !waiting.length && !auto;
   if (auto && !broken && !waiting.length) {
     hint.append(`${auto.machineId}'s tab was created automatically, as a copy of ${auto.autoCopiedFrom || 'the Template'}. Check its mapping, then `,
-      h('button', { type: 'button', class: 'link', textContent: '✓ confirm', onclick: () => confirmAutoTab(auto.machineId) }), '.');
+      h('button', { type: 'button', class: 'link', textContent: '✓ confirm', onclick: () => confirmAutoTab(auto.machineId) }), ' or ',
+      h('button', { type: 'button', class: 'link', textContent: '✗ cancel', title: 'Pick another mapping for it instead', onclick: () => reassignTab(auto.machineId) }), '.');
     return;
   }
   if (broken) {
@@ -373,6 +380,35 @@ async function confirmAutoTab(id) {
   await loadMachineConfigs();
   render();
   toast(`${id}'s tab is confirmed.`);
+}
+
+// Another mapping for a machine tab: "✗ cancel" on an automatic tab (#30), "⇄" on any tab (#31).
+// Its mapping becomes a copy of another tab's or the Template's (the old files are kept as .bak).
+// A confirmed tab asks for the password first; its data keeps the old mapping until then.
+async function reassignTab(id) {
+  const auto = state.machineConfigs.find(m => m.machineId === id)?.autoCopiedFrom != null;
+  const others = state.machineConfigs.filter(c => c.readable && c.machineId !== id).map(c => c.machineId);
+  const guess = guessCopyFrom(id);
+  const pick = prompt(`Copy which mapping into ${id}? A tab (${others.join(', ') || 'none'}), or empty for the ${sharedLabel()}.`, guess === id ? '' : guess);
+  if (pick === null) return;
+  const from = pick.trim();
+  if (from && !others.some(o => o.toLowerCase() === from.toLowerCase())) { toast(`Not changed: ${from} is not a tab.`, true); return; }
+  let password = '';
+  if (!auto) {
+    password = prompt(`${id}'s tab is confirmed. Password to change its mapping:`) ?? '';
+    if (!password) return;
+  }
+  if (state.scope === id && [...MAPPING].some(k => state.dirty.has(k)) && !confirm(`Unsaved changes on ${id} will be lost. Go on?`)) return;
+  try {
+    await request(`/api/machine-configs/reassign?machine=${encodeURIComponent(id)}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ copyFrom: from || null, password }),
+    });
+  } catch (e) { toast(`Not changed: ${e.message}`, true); return; }
+  if (state.scope === id) { for (const key of MAPPING) state.dirty.delete(key); await loadScope(id); }
+  await loadMachineConfigs();
+  render();
+  toast(`${id} uses a copy of ${from || `the ${sharedLabel()}`} now (old files kept as .bak).`);
 }
 
 function pointMapGroups() {
