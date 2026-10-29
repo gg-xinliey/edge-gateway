@@ -35,6 +35,11 @@ public class TimeStamper
             return;
         }
 
+        // A start / end time the machine sent itself: UTC with Z too (no zone = UTC).
+        foreach (var field in new[] { rule.StartField, rule.EndField })
+            if (field is not null && fields.TryGetValue(field, out var sent))
+                fields[field] = ToUtc(sent);
+
         // Span category: keep the last value we saw and when we first saw
         // it. A change closes the previous span and opens a new one.
         var key = $"{machineId}:{dataSource}:{dataGroup}";
@@ -97,6 +102,11 @@ public class TimeStamper
         string s => !(s.Trim() is "" or "0" or "false" or "False" or "FALSE" or "off" or "OFF" or "Off"),
         _ => true
     };
+
+    // A time the machine sent as text: to UTC with Z like every MES time (no zone = UTC); anything else stays as sent.
+    private static object? ToUtc(object? value) =>
+        value is string s && DateTimeOffset.TryParse(s, System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.AssumeUniversal, out var t) ? FormatIso(t) : value;
 
     // After a restart: the span that was open (its trigger value and start), read
     // back from the outbox, so the next change closes it with the right start
