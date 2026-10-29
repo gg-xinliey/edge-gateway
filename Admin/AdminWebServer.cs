@@ -272,6 +272,27 @@ public sealed class AdminWebServer
             return;
         }
 
+        // Another mapping for a machine's tab: a copy of copyFrom's (another tab, or the template when
+        // empty). A confirmed tab needs the password (#31), an automatic one doesn't (#30).
+        if (path.Equals("/api/machine-configs/reassign", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!HttpMethodsEqual(context, "POST"))
+            {
+                await WriteJsonAsync(context.Response, 405, new { error = "Method not allowed" });
+                return;
+            }
+            using var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding ?? Encoding.UTF8);
+            using var body = JsonDocument.Parse(await reader.ReadToEndAsync());
+            string? Text(string name) => body.RootElement.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+
+            var problem = _machines.Reassign(MachineParam(context) ?? "", Text("copyFrom")?.Trim(), Text("password"));
+            if (problem is null)
+                await WriteJsonAsync(context.Response, 200, new { ok = true });
+            else
+                await WriteJsonAsync(context.Response, problem == "Wrong password." ? 403 : 400, new { error = problem });
+            return;
+        }
+
         if (path.Equals("/api/machine-configs", StringComparison.OrdinalIgnoreCase))
         {
             if (HttpMethodsEqual(context, "GET"))
