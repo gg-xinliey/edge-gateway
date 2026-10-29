@@ -181,6 +181,54 @@ public sealed class MachineRegistry
         return true;
     }
 
+    // Changing the mapping of a confirmed tab needs this password (#31); an automatic tab's doesn't (#30).
+    public const string ReassignPassword = "xxx";
+
+    // A tab gets another mapping: its point-map.json and timestamp-rules.json become a copy of
+    // copyFrom's (another tab's, or the template when empty). The old ones are kept as .bak and its
+    // outbox stays. Its data keeps the old mapping until the copy is done. An automatic tab stays
+    // automatic, to be checked again. Null = done, else why not.
+    public string? Reassign(string machineId, string? copyFrom, string? password)
+    {
+        if (!_machines.TryGetValue(machineId, out var entry))
+            return $"{machineId} has no own mapping.";
+        var auto = IsAuto(machineId);
+        if (!auto && password != ReassignPassword)
+        {
+            Console.WriteLine($"[config] {machineId}: mapping not changed, wrong password");
+            return "Wrong password.";
+        }
+
+        string sourceFolder;
+        if (string.IsNullOrWhiteSpace(copyFrom))
+            sourceFolder = Shared.ConfigRoot;
+        else if (copyFrom.Equals(machineId, StringComparison.OrdinalIgnoreCase))
+            return "Pick another mapping than its own.";
+        else if (_machines.TryGetValue(copyFrom, out var source))
+            sourceFolder = source.Folder;
+        else
+            return $"{copyFrom} has no own mapping to copy.";
+
+        foreach (var file in MappingFiles)
+        {
+            var from = Path.Combine(sourceFolder, file);
+            var to = Path.Combine(entry.Folder, file);
+            if (File.Exists(to))
+                File.Copy(to, to + ".bak", overwrite: true);
+            if (File.Exists(from))
+                File.Copy(from, to, overwrite: true);
+            else
+                File.WriteAllText(to, file == "point-map.json" ? "[]" : "{}");
+        }
+        if (auto)
+            File.WriteAllText(Path.Combine(entry.Folder, AutoMarker),
+                JsonSerializer.Serialize(new { copiedFrom = copyFrom ?? "", at = DateTimeOffset.Now }));
+
+        Console.WriteLine($"[config] {machineId}: mapping replaced by a copy of {(string.IsNullOrWhiteSpace(copyFrom) ? "the template" : copyFrom)}"
+                          + $" ({(auto ? "automatic tab" : "confirmed tab, password given")}; old files kept as .bak)");
+        return Reload(machineId);
+    }
+
     // Gives a machine its own mapping, starting from a copy of copyFrom's
     // (another machine's own, or the shared one when null). Null = done, else why not.
     public string? Create(string machineId, string? copyFrom)
