@@ -352,21 +352,21 @@ public sealed class GatewayHost
             var dataSource = TakeString(rawTags, "data_source");
 
             // When it happened on the machine; arrival time if it sent none.
-            // No zone in the text: timestampsWithoutZone (UTC by default).
-            var zoneless = machine.ZonelessIsUtc ? DateTimeStyles.AssumeUniversal : DateTimeStyles.AssumeLocal;
+            // Always UTC: no zone in the text is read as UTC, a zone (+07:00) is converted to UTC.
+            var toUtc = DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal;
             DateTimeOffset? eventTime = null;
             if (TakeString(rawTags, "timestamp") is { } stamp)
             {
                 // Unreadable or far off: still used (arrival time / as sent), but shown,
                 // or wrong record times reach MES and nobody notices.
-                if (!DateTimeOffset.TryParse(stamp, CultureInfo.InvariantCulture, zoneless, out var at))
+                if (!DateTimeOffset.TryParse(stamp, CultureInfo.InvariantCulture, toUtc, out var at))
                     BadTime(machineId, $"timestamp \"{stamp}\" can't be read, the arrival time is used");
                 else
                 {
                     var off = at - DateTimeOffset.Now;
                     if (off.Duration() > ClockWarning)
                         BadTime(machineId, $"timestamp {stamp} is {off.Duration().TotalHours:0.0} h {(off > TimeSpan.Zero ? "ahead of" : "behind")} its arrival " +
-                                           "(the machine's clock or timestampsWithoutZone is wrong, or an old message was resent): used as sent");
+                                           "(the machine's clock is wrong, or an old message was resent): used as sent");
                     eventTime = at;
                 }
             }
