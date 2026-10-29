@@ -411,6 +411,7 @@ public sealed class GatewayHost
             var interval = pipeline.SenderFor(store);
             var qualifier = rawTags.TryGetValue("topic_qualifier", out var q) ? q?.ToString() : null;
             var buckets = config.Normalizer.Sort(rawTags);
+            IntervalSender.AddCycleTime(config, buckets);
 
             foreach (var (dataGroup, fields) in buckets)
             {

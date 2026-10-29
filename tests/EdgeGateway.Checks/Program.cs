@@ -307,7 +307,9 @@ if (which is "all" or "16")
 // Sends one raw message through mapping + IntervalSender and waits until its rows are saved.
 static async Task SendRaw(GatewayConfigStore store, IntervalSender sender, Dictionary<string, object?> raw, DateTimeOffset at, string source = "S")
 {
-    foreach (var (group, fields) in store.Current.Normalizer.Sort(raw))
+    var buckets = store.Current.Normalizer.Sort(raw);
+    IntervalSender.AddCycleTime(store.Current, buckets); // as GatewayHost does
+    foreach (var (group, fields) in buckets)
     {
         if (group == Normalizer.IgnoredGroup) continue;
         var saved = new TaskCompletionSource();
@@ -696,6 +698,24 @@ if (which is "all" or "29")
     var sent = outbox.ReadUnsent(100).Select(r => System.Text.Json.JsonSerializer.Serialize(r.Envelope.payload["cycle_time"])).ToList();
     await outbox.DisposeAsync();
     Report("#29 cycle_time from start and end in one message", sent.SequenceEqual(new[] { "116.85", "99" }), $"MES gets cycle_time: [{string.Join(", ", sent)}] (want 116.85, 99)");
+
+    // LDM: start_time / cycle_end_time mapped to MACHINE_STATUS (MES needs them there): they stay there,
+    // and PRODUCTION still gets cycle_time from them.
+    var (root2, json2) = TempConfig();
+    File.WriteAllText(Path.Combine(root2, "mes-schema.json"), """{"PRODUCTION":["station_id","cycle_time"],"MACHINE_STATUS":["machine_status","status_start_time","status_end_time"]}""");
+    File.WriteAllText(Path.Combine(root2, "point-map.json"), """[{"tag":"start_time","dataGroup":"MACHINE_STATUS","fieldName":"status_start_time"},{"tag":"cycle_end_time","dataGroup":"MACHINE_STATUS","fieldName":"status_end_time"}]""");
+    File.WriteAllText(Path.Combine(root2, "timestamp-rules.json"), """{"PRODUCTION":{"mode":"Span","triggerField":"cycle_active","startField":"cycle_start_time","endField":"cycle_end_time"},"MACHINE_STATUS":{"mode":"Span","triggerField":"machine_status","startField":"status_start_time","endField":"status_end_time"}}""");
+    var store2 = new GatewayConfigStore(root2, json2);
+    var outbox2 = new Outbox(Path.Combine(root2, "outbox"));
+    var sender2 = new IntervalSender(outbox2, new EnvelopeBuilder("TEST", "SRC", "TCP"), () => store2.Current);
+    await SendRaw(store2, sender2, new() { ["start_time"] = "2026-09-02T04:48:53.832+07:00", ["cycle_end_time"] = "2026-09-02T04:50:15.045+07:00" }, t);
+    await Task.Delay(1500);
+    var rows2 = outbox2.ReadUnsent(100).Select(r => r.Envelope).ToList();
+    await outbox2.DisposeAsync();
+    string Got(string group, string field) => rows2.FirstOrDefault(e => e.data_group == group)?.payload.GetValueOrDefault(field) is { } v ? System.Text.Json.JsonSerializer.Serialize(v) : "none";
+    var ldm = $"PRODUCTION cycle_time {Got("PRODUCTION", "cycle_time")}, MACHINE_STATUS start {Got("MACHINE_STATUS", "status_start_time")} end {Got("MACHINE_STATUS", "status_end_time")}";
+    Report("#29 cycle_time from MACHINE_STATUS start / end, which stay", Got("PRODUCTION", "cycle_time") == "81.213"
+        && Got("MACHINE_STATUS", "status_start_time") != "none" && Got("MACHINE_STATUS", "status_end_time") != "none", ldm);
 }
 
 if (which is "all" or "23")

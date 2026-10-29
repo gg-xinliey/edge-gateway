@@ -99,8 +99,6 @@ public sealed class IntervalSender
                 state.Stamper = config.TimeStamper;
             }
 
-            CycleTime(config.TimeStamper.RuleFor(dataGroup), MesColumns(config, dataGroup), fields);
-
             // Changes go to a copy, kept only once saved: a value that can't be saved must not
             // stay in the snapshot and fail every later message of the group.
             var snapshot = new Dictionary<string, object?>(state.Snapshot);
@@ -177,15 +175,28 @@ public sealed class IntervalSender
         return state.NextDueMs;
     }
 
-    // #29: a message with its cycle's start and end (the group's startField / endField, e.g.
-    // cycle_start_time / cycle_end_time) gets cycle_time = end - start in seconds, when MES
-    // has a cycle_time column and the machine sent no cycle_time of its own.
-    private static void CycleTime(TimestampRule? rule, IReadOnlyList<string>? columns, Dictionary<string, object?> fields)
+    // #29: a message with its cycle's start and end gets PRODUCTION cycle_time = end - start in
+    // seconds, unless the machine sent its own. Start / end: the startField / endField of PRODUCTION,
+    // else of MACHINE_STATUS (MES needs them there, e.g. LDM's start_time / cycle_end_time),
+    // both from this message, before any stamping. Only when MES has the column.
+    // buckets: one message, sorted into data groups (Normalizer.Sort); a PRODUCTION one is added if needed.
+    public static void AddCycleTime(ConfigSnapshot config, Dictionary<string, Dictionary<string, object?>> buckets)
     {
-        if (rule is { StartField: { } start, EndField: { } end } && columns?.Contains("cycle_time", StringComparer.OrdinalIgnoreCase) == true
-            && !fields.ContainsKey("cycle_time") && Time(fields.GetValueOrDefault(start)) is { } from
-            && Time(fields.GetValueOrDefault(end)) is { } to && to >= from)
-            fields["cycle_time"] = Math.Round((to - from).TotalSeconds, 3);
+        Dictionary<string, object?>? Bucket(string group) => buckets.FirstOrDefault(b => b.Key.Equals(group, StringComparison.OrdinalIgnoreCase)).Value;
+        var production = Bucket("PRODUCTION");
+        if (MesColumns(config, "PRODUCTION")?.Contains("cycle_time", StringComparer.OrdinalIgnoreCase) != true
+            || production?.Keys.Contains("cycle_time", StringComparer.OrdinalIgnoreCase) == true)
+            return;
+
+        foreach (var group in new[] { "PRODUCTION", "MACHINE_STATUS" })
+            if (config.TimeStamper.RuleFor(group) is { StartField: { } start, EndField: { } end } && Bucket(group) is { } fields
+                && Time(fields.GetValueOrDefault(start)) is { } from && Time(fields.GetValueOrDefault(end)) is { } to && to >= from)
+            {
+                if (production is null)
+                    buckets["PRODUCTION"] = production = new Dictionary<string, object?>();
+                production["cycle_time"] = Math.Round((to - from).TotalSeconds, 3);
+                return;
+            }
     }
 
     private static DateTimeOffset? Time(object? value) =>
