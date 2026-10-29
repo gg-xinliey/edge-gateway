@@ -99,13 +99,22 @@ public sealed class IntervalSender
                 state.Stamper = config.TimeStamper;
             }
 
-            if (!ApplyChanges(state.Snapshot, fields, MesColumns(config, dataGroup)))
-                return false; // nothing new for MES (same values, or only fields MES never gets)
+            CycleTime(config.TimeStamper.RuleFor(dataGroup), MesColumns(config, dataGroup), fields);
 
-            record = new Dictionary<string, object?>(state.Snapshot);
+            // Changes go to a copy, kept only once saved: a value that can't be saved must not
+            // stay in the snapshot and fail every later message of the group.
+            var snapshot = new Dictionary<string, object?>(state.Snapshot);
+            if (!ApplyChanges(snapshot, fields, MesColumns(config, dataGroup)))
+            {
+                state.Snapshot = snapshot; // extra fields still kept up to date
+                return false; // nothing new for MES (same values, or only fields MES never gets)
+            }
+
+            record = new Dictionary<string, object?>(snapshot);
             config.TimeStamper.Stamp(machineId, dataGroup, record, at, source);
+            saved = Save(machineId, source, dataGroup, snapshot, record, config);
             sendAfter = SendAfter(state, SendEveryMs(config, dataGroup));
-            saved = Save(machineId, source, dataGroup, state.Snapshot, record, config);
+            state.Snapshot = snapshot;
             state.SpanSince = saved.SpanSince;
         }
 
@@ -167,6 +176,21 @@ public sealed class IntervalSender
         }
         return state.NextDueMs;
     }
+
+    // #29: a message with its cycle's start and end (the group's startField / endField, e.g.
+    // cycle_start_time / cycle_end_time) gets cycle_time = end - start in seconds, when MES
+    // has a cycle_time column and the machine sent no cycle_time of its own.
+    private static void CycleTime(TimestampRule? rule, IReadOnlyList<string>? columns, Dictionary<string, object?> fields)
+    {
+        if (rule is { StartField: { } start, EndField: { } end } && columns?.Contains("cycle_time", StringComparer.OrdinalIgnoreCase) == true
+            && !fields.ContainsKey("cycle_time") && Time(fields.GetValueOrDefault(start)) is { } from
+            && Time(fields.GetValueOrDefault(end)) is { } to && to >= from)
+            fields["cycle_time"] = Math.Round((to - from).TotalSeconds, 3);
+    }
+
+    private static DateTimeOffset? Time(object? value) =>
+        value is string s && DateTimeOffset.TryParse(s, System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.AssumeUniversal, out var t) ? t : null;
 
     private static IReadOnlyList<string>? MesColumns(ConfigSnapshot config, string dataGroup) =>
         config.MesColumns.TryGetValue(dataGroup, out var columns) ? columns : null;

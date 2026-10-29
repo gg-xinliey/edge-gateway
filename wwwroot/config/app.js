@@ -1253,7 +1253,7 @@ function renderUnidentified(view, unid, groups) {
     // Best MES column by name (gateway's NameMatcher); "use" fills group + field, save confirms.
     const s = u.suggestion;
     const suggestion = s ? h('div', { class: 'suggest-cell', title: s.conflict ? `Not mapped automatically: ${s.conflict}` : 'Below the auto-map score' },
-      h('span', { textContent: `${s.group} / ${s.field} (${s.score.toFixed(2)})` }),
+      h('span', { textContent: `${s.group} / ${s.field} (${s.seenOn ? `seen on ${s.seenOn} tab${s.seenOn === 1 ? '' : 's'}` : s.score.toFixed(2)})` }),
       s.conflict ? h('span', { class: 'field-note', textContent: s.conflict }) : null,
       h('button', { type: 'button', class: 'link', textContent: 'use', onclick: () => {
         edit.dataGroup = s.group; edit.fieldName = s.field; markDirty('point-map'); render();
@@ -1373,6 +1373,7 @@ const SETTINGS = {
   outboxKeepSentDays: { label: 'Keep sent records (days)', help: 'A day file is deleted when it is this many days old and everything in it was sent.' },
   mesStuckRowTries: { label: 'MES: tries before a stuck record moves to failed', help: 'A record MES keeps answering 500 or 413 moves to failed messages after this many tries in a row, once MES took other records meanwhile. At least 1. Applied on Restart Gateway.' },
   nameMatchThreshold: { label: 'Name matching: auto-map from score', help: 'An unknown tag whose name matches one MES column at least this well (0.5 to 1; 1 = the same name) is mapped automatically and marked "auto" in PointMap. Lower scores, or a column in several groups or already filled, are only suggested (Unidentified). Applied on Restart Gateway.' },
+  alarmWebhookUrl: { label: 'Alarm webhook (Teams / Power Automate / Slack)', help: 'Empty = off. Problems are POSTed here as JSON (text, raised, cleared, active) when one starts or clears: MES unreachable for 5 min, records in MES failures, held machines, tabs created automatically, time warnings, over 10,000 records waiting. Applied on Restart Gateway.' },
   nameMatchSynonyms: { label: 'Name matching: words that mean the same', help: 'short=long, comma-separated, e.g. qty=quantity, sn=serial number. Used to compare tag names with MES columns. Applied on Restart Gateway.' },
   mesStuckRowMinutes: { label: 'MES: minutes before a stuck record moves to failed (when nothing else is sent)', help: 'Same, when MES took nothing else meanwhile (e.g. one machine alone). 1 to 10. Applied on Restart Gateway.' },
 };

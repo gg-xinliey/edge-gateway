@@ -461,14 +461,16 @@ public sealed class AdminWebServer
             var id = MachineParam(context);
             var tracker = id is null ? _unidentified : _machines.UnidentifiedFor(id);
             var config = (id is null ? _configStore : _machines.StoreFor(id))?.Current;
-            var synonyms = NameMatcher.ParseSynonyms(_gateway.Machine.NameMatchSynonyms);
+            var synonyms = NameMatcher.WithLearned(NameMatcher.ParseSynonyms(_gateway.Machine.NameMatchSynonyms),
+                _machines.OtherPointMaps(null).Prepend(_configStore.Current.PointMap).SelectMany(m => m));
             if (tracker is null)
                 await WriteJsonAsync(context.Response, 404, new { error = $"{id} has no own mapping." });
             else // each with its best MES column by name, for the page to suggest
                 await WriteJsonAsync(context.Response, 200, tracker.Snapshot().Select(u => new
                 {
                     u.Tag, u.LastValue, u.Count, u.FirstSeen, u.LastSeen,
-                    suggestion = config is null ? null : NameMatcher.Best(u.Tag, config.MesColumns, synonyms, config.PointMap),
+                    suggestion = config is null ? null : NameMatcher.Seen(u.Tag, _machines.OtherPointMaps(id), config.PointMap)
+                                                         ?? NameMatcher.Best(u.Tag, config.MesColumns, synonyms, config.PointMap, u.LastValue),
                 }));
             return;
         }
@@ -722,7 +724,7 @@ public sealed class AdminWebServer
         };
 
         var combined = Path.GetFullPath(Path.Combine(_wwwRoot, relative.TrimStart('/').Replace('/', Path.DirectorySeparatorChar)));
-        if (!combined.StartsWith(_wwwRoot, StringComparison.OrdinalIgnoreCase))
+        if (!combined.StartsWith(_wwwRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)) // not a sibling like wwwroot-private
         {
             await WriteJsonAsync(context.Response, 403, new { error = "Forbidden" });
             return;

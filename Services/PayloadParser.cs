@@ -115,9 +115,12 @@ public static class PayloadParser
 
     // A whole number past 2^53 (serial numbers, counters) does not fit a double exactly:
     // it is kept as a decimal, so MES gets the same digits and a change of 1 is a change (SVI-100).
+    // A number past the double range (1e400) is refused: as Infinity it could never be saved
+    // or sent, and the machine would get no answer.
     private static object Number(JsonElement element)
     {
-        var value = element.GetDouble();
+        if (!element.TryGetDouble(out var value) || !double.IsFinite(value))
+            throw new FormatException("number out of range");
         return Math.Abs(value) >= 9007199254740992 && element.TryGetDecimal(out var exact) && exact == decimal.Truncate(exact)
             ? exact
             : value;
@@ -131,7 +134,7 @@ public static class PayloadParser
 
         var tag = parts[0];
         var rawValue = parts[1];
-        object? value = double.TryParse(rawValue, out var num) ? num : rawValue;
+        object? value = double.TryParse(rawValue, out var num) && double.IsFinite(num) ? num : rawValue; // "NaN", "1e400": kept as text
 
         return new Dictionary<string, object?> { [tag] = value };
     }

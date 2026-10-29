@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using EdgeGateway.Models;
 
 namespace EdgeGateway.Services;
 
@@ -73,6 +74,11 @@ public sealed class MachineRegistry
     // The machine's own store (null = it has none, or it is unreadable).
     public GatewayConfigStore? StoreFor(string machineId) =>
         _machines.TryGetValue(machineId, out var entry) ? entry.Store : null;
+
+    // Point maps of every readable tab except this machine's (null = the shared mapping): what people mapped elsewhere.
+    public IEnumerable<IReadOnlyList<PointMapEntry>> OtherPointMaps(string? machineId) =>
+        _machines.Values.Where(e => e.Store is not null && !e.Id.Equals(machineId, StringComparison.OrdinalIgnoreCase))
+            .Select(e => e.Store!.Current.PointMap);
 
     public UnidentifiedTagTracker? UnidentifiedFor(string machineId) =>
         _machines.TryGetValue(machineId, out var entry) ? entry.Unidentified : null;

@@ -30,6 +30,7 @@ public sealed class HeldMachines
     }
 
     public int Count => _machines.Count;
+    public IReadOnlyList<string> Ids => _machines.Keys.ToList();
 
     // The connection (ip:port) a held machine last sent on, or null.
     public string? ConnectionOf(string machineId)

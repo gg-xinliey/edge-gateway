@@ -63,4 +63,8 @@ public class MachineConfig
 
     // Words that mean the same in tag names: "short=long", comma-separated.
     public string NameMatchSynonyms { get; set; } = "qty=quantity, sn=serial number, temp=temperature, pcs=quantity";
+
+    // Problems (MES unreachable, MES failures, held machines, auto tabs, time warnings, a big
+    // backlog) are POSTed here as JSON when one starts or clears (#23). Empty = off. Read at start.
+    public string AlarmWebhookUrl { get; set; } = "";
 }

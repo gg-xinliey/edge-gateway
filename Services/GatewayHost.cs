@@ -62,6 +62,14 @@ public sealed class GatewayHost
     public bool? MqttConnected => _mqttConnected?.Invoke();
     private static readonly TimeSpan StatsEvery = TimeSpan.FromSeconds(10);
 
+    // #23 alarmWebhookUrl: when a problem counts. A time warning lasts TimeWarningFor after the last
+    // one; at most MaxTimeWarnings machines are tracked (port 9000 has no login).
+    private static readonly TimeSpan MesDownAfter = TimeSpan.FromMinutes(5);
+    private const long BacklogAlarm = 10_000;
+    private static readonly TimeSpan TimeWarningFor = TimeSpan.FromMinutes(10);
+    private const int MaxTimeWarnings = 200;
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _timeWarnings = new(StringComparer.OrdinalIgnoreCase);
+
     // Tabs created automatically for new machines, at most per hour (see AutoTab).
     private const int AutoTabsPerHour = 20;
 
@@ -264,7 +272,15 @@ public sealed class GatewayHost
                     _traffic?.Message(MachineFromTopic(doc.RootElement), sender, "MQTT", null);
                     return;
                 }
-                rawTags = PayloadParser.Parse(doc.RootElement);
+                try
+                {
+                    rawTags = PayloadParser.Parse(doc.RootElement);
+                }
+                catch (FormatException ex) // a value no record can hold: it never will be accepted
+                {
+                    Reject(sender, ticket, ex.Message, "number-out-of-range");
+                    return;
+                }
             }
             else
             {
@@ -366,14 +382,15 @@ public sealed class GatewayHost
             // tag. One source + alarm_status 1/0 lets the ALARM span close (start and clear
             // time). Only when the mapping knows alarm_status, so nothing is held for it.
             // shortcut: event names hard-coded, move to config when another machine type does this
-            if (dataSource is "MCALARMON" or "MCALARMOFF" && config.Normalizer.IsMapped("alarm_status"))
+            var alarmEvent = dataSource?.ToUpperInvariant(); // data_source is matched in any case elsewhere too
+            if (alarmEvent is "MCALARMON" or "MCALARMOFF" && config.Normalizer.IsMapped("alarm_status"))
             {
-                rawTags["alarm_status"] = dataSource == "MCALARMON" ? 1.0 : 0.0;
+                rawTags["alarm_status"] = alarmEvent == "MCALARMON" ? 1.0 : 0.0;
                 dataSource = "MCALARM";
             }
 
             var unmapped = config.Normalizer.Unmapped(rawTags);
-            if (unmapped.Count > 0 && AutoMap(store, machineId, unmapped))
+            if (unmapped.Count > 0 && AutoMap(store, machineId, unmapped, rawTags))
             {
                 config = store.Current; // the new mapping applies to this message already
                 unmapped = unmapped.Where(tag => !config.Normalizer.IsMapped(tag)).ToList(); // not Unmapped(): it would count them twice
@@ -438,17 +455,32 @@ public sealed class GatewayHost
                 $"[ingest] {machineId} {why}: its data cannot be used until it has a tab on the config page (held: not processed, not answered, the adapter keeps it)");
         }
 
-        // Unknown tags whose name matches one MES column well enough (nameMatchThreshold) and
-        // without a conflict go into this mapping's point map, marked auto. The others stay
-        // on the Unidentified list, where the page shows the match as a suggestion.
-        var synonyms = NameMatcher.ParseSynonyms(machine.NameMatchSynonyms);
-        bool AutoMap(GatewayConfigStore store, string machineId, List<string> unmapped)
+        // Unknown tags mapped the same way on other tabs (#25), or whose name matches one MES column
+        // well enough (nameMatchThreshold), without a conflict, go into this mapping's point map,
+        // marked auto. The others stay on the Unidentified list, where the page shows the match as a suggestion.
+        var configuredSynonyms = NameMatcher.ParseSynonyms(machine.NameMatchSynonyms);
+        (List<IReadOnlyList<PointMapEntry>> Maps, Dictionary<string, string> Synonyms)? learned = null;
+        // Configured + learned from every tab's mapping (#26); learned again only when a point map changed.
+        Dictionary<string, string> Synonyms()
+        {
+            var maps = _machines.OtherPointMaps(null).Prepend(_machines.Shared.Current.PointMap).ToList();
+            lock (configuredSynonyms)
+            {
+                if (learned is not { } known || !known.Maps.SequenceEqual(maps, ReferenceEqualityComparer.Instance))
+                    learned = known = (maps, NameMatcher.WithLearned(configuredSynonyms, maps.SelectMany(m => m)));
+                return known.Synonyms;
+            }
+        }
+
+        bool AutoMap(GatewayConfigStore store, string machineId, List<string> unmapped, Dictionary<string, object?> values)
         {
             var added = false;
+            var synonyms = Synonyms();
             foreach (var tag in unmapped)
             {
                 var current = store.Current;
-                var match = NameMatcher.Best(tag, current.MesColumns, synonyms, current.PointMap);
+                var match = NameMatcher.Seen(tag, _machines.OtherPointMaps(machineId), current.PointMap)
+                            ?? NameMatcher.Best(tag, current.MesColumns, synonyms, current.PointMap, values.GetValueOrDefault(tag)?.ToString());
                 if (match is null || match.Conflict is not null || match.Score < machine.NameMatchThreshold)
                     continue;
                 try
@@ -456,7 +488,8 @@ public sealed class GatewayHost
                     if (!store.AddPointMapEntry(new PointMapEntry { Tag = tag, DataGroup = match.Group, FieldName = match.Field, Auto = match.Score }))
                         continue;
                     added = true;
-                    Console.WriteLine($"[mapping] {machineId}: tag {tag} auto-mapped to {match.Group} / {match.Field} (name match {match.Score:0.00}), " +
+                    var why = match.SeenOn > 0 ? $"seen on {match.SeenOn} tab{(match.SeenOn == 1 ? "" : "s")}" : $"name match {match.Score:0.00}";
+                    Console.WriteLine($"[mapping] {machineId}: tag {tag} auto-mapped to {match.Group} / {match.Field} ({why}), " +
                                       $"on the {store.Label ?? "shared"} mapping: check it on the config page (PointMap, marked auto)");
                 }
                 catch (Exception ex)
@@ -521,6 +554,8 @@ public sealed class GatewayHost
         void BadTime(string machineId, string problem)
         {
             _traffic?.BadTime(machineId);
+            if (_timeWarnings.Count < MaxTimeWarnings || _timeWarnings.ContainsKey(machineId))
+                _timeWarnings[machineId] = DateTimeOffset.UtcNow;
             badTimes.Write($"time|{machineId}", $"[ingest] {machineId}: {problem}");
         }
 
@@ -567,7 +602,8 @@ public sealed class GatewayHost
                 tcpServer.RunAsync(parts.Token),       // task on fetching from machine
                 pipelineFailed.Task,                   // a MES sender failed (they run in their pipelines)
                 twinForwarder.RunAsync(parts.Token),   // task on publishing to the digital twin
-                ReportStatsAsync(() => CreatedPipelines().Sum(p => p.Outbox.CountUnsent()), parts.Token) // one [stats] line every 10 s
+                ReportStatsAsync(() => CreatedPipelines().Sum(p => p.Outbox.CountUnsent()), // one [stats] line every 10 s
+                    Uri.TryCreate(machine.AlarmWebhookUrl, UriKind.Absolute, out var hook) ? new AlarmWebhook(hook, machine.GatewayId) : null, parts.Token)
             };
 
             // The TCP listener binds before its first await, so a busy port shows up right here.
@@ -604,7 +640,8 @@ public sealed class GatewayHost
     // Instead of a line per message: one summary every StatsEvery, only when
     // something is moving. (Avoids the words the log treats as problems.)
     // countUnsent: rows not yet delivered, all outboxes together.
-    private async Task ReportStatsAsync(Func<long> countUnsent, CancellationToken ct)
+    // alarms: alarmWebhookUrl, told about Problems with every line (null = off).
+    private async Task ReportStatsAsync(Func<long> countUnsent, AlarmWebhook? alarms, CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
         {
@@ -615,6 +652,9 @@ public sealed class GatewayHost
             catch { backlog = -1; } // outbox busy: report the rest anyway
 
             var r = Stats.Sample(backlog);
+            if (alarms is not null)
+                _ = alarms.CheckAsync(Problems(backlog)); // not awaited: a slow webhook must not hold up the stats
+
             if (r.InPerSec == 0 && r.MqttPerSec == 0 && r.MesDeliveredPerSec == 0 && r.Backlog <= 0)
                 continue;
 
@@ -627,6 +667,32 @@ public sealed class GatewayHost
                 $" · mes queued {Rate(r.MesQueuedPerSec)}/s, delivered {Rate(r.MesDeliveredPerSec)}/s" +
                 $" · backlog {(r.Backlog < 0 ? "?" : r.Backlog.ToString("N0", CultureInfo.InvariantCulture))}");
         }
+    }
+
+    // #23: what alarmWebhookUrl is told about right now (key, text). backlog -1 = unknown.
+    private List<(string Key, string Text)> Problems(long backlog)
+    {
+        var problems = new List<(string Key, string Text)>();
+        var now = DateTimeOffset.UtcNow;
+        var mesUpAt = new DateTimeOffset(Math.Max(Stats.LastDeliveredTicks, StartedAt?.UtcTicks ?? now.UtcTicks), TimeSpan.Zero);
+        if (backlog > 0 && now - mesUpAt > MesDownAfter)
+            problems.Add(("mes-down", $"MES has taken no record for {(now - mesUpAt).TotalMinutes:0} min ({backlog:N0} waiting): unreachable or refusing"));
+        if (backlog > BacklogAlarm)
+            problems.Add(("backlog", $"over {BacklogAlarm:N0} records waiting for MES"));
+        long failed = 0;
+        try { failed = Admin.OutboxReader.CountFailed(); } catch { /* outbox busy: next check */ }
+        if (failed > 0)
+            problems.Add(("failed", $"MES rejected records: see MES failures on the config page (re-send or discard)"));
+        foreach (var id in _machines.Held.Ids)
+            problems.Add(($"held:{id}", $"{id} sends data but has no tab: held, not answered"));
+        foreach (var id in _machines.Ids.Where(_machines.IsAuto))
+            problems.Add(($"auto-tab:{id}", $"{id}: tab created automatically, check and confirm it on the config page"));
+        foreach (var (id, at) in _timeWarnings)
+            if (now - at < TimeWarningFor)
+                problems.Add(($"time:{id}", $"{id}: time warnings (timestamp unreadable, or far from its arrival: machine clock?)"));
+            else
+                _timeWarnings.TryRemove(id, out _);
+        return problems;
     }
 
     // One decimal below 10/s, so 1 message in 10 s shows as 0.1/s, not 0/s.

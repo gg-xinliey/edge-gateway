@@ -679,6 +679,122 @@ if (which is "all" or "100")
     Report("SVI-100 integers above 2^53 kept exactly", sent.SequenceEqual(new[] { "9007199254740993", "9007199254740995" }), $"MES gets: [{string.Join(", ", sent)}]");
 }
 
+if (which is "all" or "29")
+{
+    // #29: start and end of a cycle in the same message -> cycle_time = end - start (s); the machine's own cycle_time wins.
+    var (root, json) = TempConfig();
+    File.WriteAllText(Path.Combine(root, "mes-schema.json"), """{"PRODUCTION":["station_id","cycle_time"]}""");
+    File.WriteAllText(Path.Combine(root, "point-map.json"), """[{"tag":"start_time","dataGroup":"PRODUCTION","fieldName":"cycle_start_time"},{"tag":"cycle_end_time","dataGroup":"PRODUCTION","fieldName":"cycle_end_time"},{"tag":"cycle_time","dataGroup":"PRODUCTION","fieldName":"cycle_time"}]""");
+    File.WriteAllText(Path.Combine(root, "timestamp-rules.json"), """{"PRODUCTION":{"mode":"Span","triggerField":"cycle_active","startField":"cycle_start_time","endField":"cycle_end_time"}}""");
+    var store = new GatewayConfigStore(root, json);
+    var outbox = new Outbox(Path.Combine(root, "outbox"));
+    var sender = new IntervalSender(outbox, new EnvelopeBuilder("TEST", "SRC", "TCP"), () => store.Current);
+    var t = DateTimeOffset.UtcNow;
+    await SendRaw(store, sender, new() { ["start_time"] = "2026-10-29T10:00:00.000+07:00", ["cycle_end_time"] = "2026-10-29T10:01:56.850+07:00" }, t);
+    await SendRaw(store, sender, new() { ["start_time"] = "2026-10-29T10:02:00.000+07:00", ["cycle_end_time"] = "2026-10-29T10:03:00.000+07:00", ["cycle_time"] = 99.0 }, t.AddSeconds(1));
+    await Task.Delay(1500);
+    var sent = outbox.ReadUnsent(100).Select(r => System.Text.Json.JsonSerializer.Serialize(r.Envelope.payload["cycle_time"])).ToList();
+    await outbox.DisposeAsync();
+    Report("#29 cycle_time from start and end in one message", sent.SequenceEqual(new[] { "116.85", "99" }), $"MES gets cycle_time: [{string.Join(", ", sent)}] (want 116.85, 99)");
+}
+
+if (which is "all" or "23")
+{
+    // #23: problems pushed to alarmWebhookUrl when one starts or clears; a failed POST is sent again next check.
+    var port = 19900 + Random.Shared.Next(90);
+    var bodies = new System.Collections.Concurrent.ConcurrentQueue<string>();
+    var calls = 0;
+    using var hookServer = FakeMes(port, body => { bodies.Enqueue(body); return Interlocked.Increment(ref calls) == 1 ? 500 : 200; });
+    var hook = new AlarmWebhook(new Uri($"http://localhost:{port}/"), "T");
+    var held = new[] { ("held:M1", "M1 held") };
+    await hook.CheckAsync(held);                                    // 500: not counted as told
+    await hook.CheckAsync(held);                                    // raised again, 200
+    await hook.CheckAsync(held);                                    // nothing new: no POST
+    await hook.CheckAsync(Array.Empty<(string, string)>());         // cleared
+    string Lists(string body) { var e = System.Text.Json.JsonDocument.Parse(body).RootElement; return $"raised [{string.Join(",", e.GetProperty("raised").EnumerateArray())}] cleared [{string.Join(",", e.GetProperty("cleared").EnumerateArray())}]"; }
+    var got = bodies.Select(Lists).ToList();
+    Report("#23 webhook: raised, retried after a failure, cleared", got.SequenceEqual(new[] { "raised [M1 held] cleared []", "raised [M1 held] cleared []", "raised [] cleared [M1 held]" }),
+        string.Join("; ", got));
+
+    // Through the gateway: a new machine gets a tab automatically (hold mode) -> pushed with the next [stats] check.
+    var (root, json) = TempConfig();
+    var tcp = 19500 + Random.Shared.Next(300);
+    var mesPort = 19900 + Random.Shared.Next(90);
+    while (mesPort == port) mesPort = 19900 + Random.Shared.Next(90);
+    using var mes = FakeMes(mesPort, _ => 200);
+    bodies.Clear();
+    File.WriteAllText(Path.Combine(root, "machine-config.json"),
+        $$"""{"gatewayId":"T","listenAddress":"127.0.0.1","tcpPort":{{tcp}},"mesUrl":"http://localhost:{{mesPort}}/","unregisteredMachines":"hold","unmappedTags":"send","alarmWebhookUrl":"http://localhost:{{port}}/"}""");
+    File.WriteAllText(Path.Combine(root, "mqtt-config.json"),
+        """{"brokerAddress":"127.0.0.1","brokerPort":1,"clientIdSuffix":"checks","reconnectCooldownSeconds":60,"area":"T","keepaliveIntervalSeconds":60,"motionDeadband":0.01,"maxPublishRateMs":50}""");
+    DataFolder.Use(root);
+    var host = new GatewayHost(new MachineRegistry(new GatewayConfigStore(root, json), new UnidentifiedTagTracker(), json), json, null, new MessageIdFilter());
+    using var stop = new CancellationTokenSource();
+    var run = host.RunAsync(stop.Token);
+    for (var i = 0; i < 50 && host.State != "running"; i++) await Task.Delay(100);
+    using (var c = new System.Net.Sockets.TcpClient())
+    {
+        await c.ConnectAsync("127.0.0.1", tcp);
+        await new StreamWriter(c.GetStream()) { AutoFlush = true, NewLine = "\n" }.WriteLineAsync("""{"message_id":"A1","machine_id":"NEW-9","data":{"product_sn":"SN-1"}}""");
+        await Task.Delay(300);
+    }
+    for (var i = 0; i < 130 && bodies.IsEmpty; i++) await Task.Delay(100); // one [stats] check: 10 s
+    stop.Cancel(); try { await run; } catch { }
+    mes.Stop();
+    var pushed = bodies.Select(Lists).ToList();
+    Report("#23 gateway pushes a tab created automatically", pushed.Count == 1 && pushed[0].Contains("NEW-9: tab created automatically"), string.Join("; ", pushed));
+}
+
+if (which is "all" or "range")
+{
+    // A value that can't be saved (Infinity) must not stay in the group's snapshot: the next change still goes.
+    var (root, json) = TempConfig();
+    var store = new GatewayConfigStore(root, json);
+    var outbox = new Outbox(Path.Combine(root, "outbox"));
+    var sender = new IntervalSender(outbox, new EnvelopeBuilder("TEST", "SRC", "TCP"), () => store.Current);
+    var t = DateTimeOffset.UtcNow;
+    // module_no is not in the next message: before the fix it stayed in the snapshot, so every save failed
+    try { await SendRaw(store, sender, new() { ["product_sn"] = "P1", ["module_no"] = double.PositiveInfinity }, t); } catch { }
+    string next;
+    try { await SendRaw(store, sender, new() { ["product_sn"] = "P2" }, t.AddSeconds(1)); next = "saved"; }
+    catch (Exception ex) { next = $"{ex.GetType().Name}: {ex.Message}"; }
+    await Task.Delay(1500);
+    var sent = outbox.ReadUnsent(100).Select(r => System.Text.Json.JsonSerializer.Serialize(r.Envelope.payload["product_serial_number"])).ToList();
+    await outbox.DisposeAsync();
+    Report("range: an unsaveable value doesn't block the group", next == "saved" && sent.SequenceEqual(new[] { "\"P2\"" }),
+        $"next change: {next}; MES gets: [{string.Join(", ", sent)}] (want [\"P2\"])");
+
+    // 1e400 over TCP: nacked (not left unanswered), and the machine's next line is acked.
+    var (root2, json2) = TempConfig();
+    var tcp = 19500 + Random.Shared.Next(300);
+    var mesPort = 19900 + Random.Shared.Next(90);
+    using var mes = FakeMes(mesPort, _ => 200);
+    File.WriteAllText(Path.Combine(root2, "machine-config.json"),
+        $$"""{"gatewayId":"T","listenAddress":"127.0.0.1","tcpPort":{{tcp}},"mesUrl":"http://localhost:{{mesPort}}/","unregisteredMachines":"shared","unmappedTags":"send"}""");
+    File.WriteAllText(Path.Combine(root2, "mqtt-config.json"),
+        """{"brokerAddress":"127.0.0.1","brokerPort":1,"clientIdSuffix":"checks","reconnectCooldownSeconds":60,"area":"T","keepaliveIntervalSeconds":60,"motionDeadband":0.01,"maxPublishRateMs":50}""");
+    DataFolder.Use(root2);
+    var host = new GatewayHost(new MachineRegistry(new GatewayConfigStore(root2, json2), new UnidentifiedTagTracker(), json2), json2, null, new MessageIdFilter());
+    using var stop = new CancellationTokenSource();
+    var run = host.RunAsync(stop.Token);
+    for (var i = 0; i < 50 && host.State != "running"; i++) await Task.Delay(100);
+    async Task<string> Send(string line)
+    {
+        using var c = new System.Net.Sockets.TcpClient();
+        await c.ConnectAsync("127.0.0.1", tcp);
+        var s = c.GetStream();
+        await new StreamWriter(s) { AutoFlush = true, NewLine = "\n" }.WriteLineAsync(line);
+        try { return await new StreamReader(s).ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(5)) ?? "(closed)"; }
+        catch (TimeoutException) { return "(no answer)"; }
+    }
+    var bad = await Send("""{"message_id":"R1","machine_id":"M1","data_source":"spi","data":{"product_sn":"SN-1","module_no":1e400}}""");
+    var good = await Send("""{"message_id":"R2","machine_id":"M1","data_source":"spi","data":{"product_sn":"SN-2"}}""");
+    stop.Cancel(); try { await run; } catch { }
+    mes.Stop();
+    Report("range: 1e400 is nacked, the next line acked", bad == """{"nack":"R1","reason":"number out of range"}""" && good == """{"ack":"R2"}""",
+        $"1e400 -> {bad}; next line -> {good}");
+}
+
 if (which is "all" or "98")
 {
     // SVI-98: MES 404 / 405 (wrong mesUrl path, MES being redeployed) is MES's problem, not the row's: retried.
@@ -1016,6 +1132,70 @@ if (which is "all" or "namematch")
     var wrongCases = got.Where((g, i) => g != want[i]).ToList();
     Report("name match: score, synonyms, ambiguous and filled columns", wrongCases.Count == 0,
         wrongCases.Count == 0 ? $"{want.Length} cases as expected" : string.Join("; ", wrongCases));
+
+    // #27: whole words, rare ones weigh more. By letters alone "serial" is nearest material_id, and
+    // "result_code" ties result / error_code ("code" is in three columns, "result" in one).
+    var columns27 = new Dictionary<string, IReadOnlyList<string>>
+    {
+        ["TRACEABILITY"] = new[] { "product_serial_number", "material_id" },
+        ["QUALITY"] = new[] { "result" },
+        ["ALARM"] = new[] { "alarm_code", "error_code", "downtime_reason_code" },
+    };
+    var want27 = new[] { "serial -> product_serial_number ask", "result_code -> result ask", "test_result -> result ask" };
+    var got27 = want27.Select(w => w[..w.IndexOf(' ')]).Select(tag =>
+    {
+        var m = NameMatcher.Best(tag, columns27, synonyms, new List<PointMapEntry>())!;
+        return $"{tag} -> {m.Field} {(m.Conflict is null && m.Score >= 0.9 ? "auto" : "ask")}";
+    }).ToList();
+    Report("#27 name match: whole words, rare words count more", got27.SequenceEqual(want27), string.Join("; ", got27));
+
+    // #25: a tag people mapped (or ignored) on other tabs is mapped the same way; tabs that disagree,
+    // or a field filled here already, make it a suggestion; entries still marked auto don't count.
+    static PointMapEntry E(string tag, string group, string field, double? auto = null) => new() { Tag = tag, DataGroup = group, FieldName = field, Auto = auto };
+    var tabs = new List<IReadOnlyList<PointMapEntry>>
+    {
+        new[] { E("serial", "TRACEABILITY", "product_serial_number"), E("angle_deg", "IGNORED", "angle_deg"), E("torque", "PROCESS", "actual_value") },
+        new[] { E("SERIAL", "TRACEABILITY", "product_serial_number"), E("torque", "QUALITY", "result") },
+        new[] { E("serial", "PROCESS", "recipe_id", auto: 1) },
+    };
+    string Seen25(string tag, params PointMapEntry[] here) =>
+        NameMatcher.Seen(tag, tabs, here) is { } m ? $"{m.Group}/{m.Field} seen {m.SeenOn} {(m.Conflict is null ? "auto" : "ask")}" : "none";
+    var got25 = new[] { Seen25("serial"), Seen25("angle_deg"), Seen25("torque"), Seen25("serial", E("sn", "TRACEABILITY", "product_serial_number")), Seen25("tool") };
+    var want25 = new[] { "TRACEABILITY/product_serial_number seen 2 auto", "IGNORED/angle_deg seen 1 auto", "PROCESS/actual_value seen 1 ask",
+                         "TRACEABILITY/product_serial_number seen 2 ask", "none" };
+    Report("#25 mapping seen on other tabs", got25.SequenceEqual(want25), string.Join("; ", got25));
+
+    // #26: synonyms learned from mappings: cnt = quantity (two tags agree); tmp disagrees; val has one
+    // example (the same tag on two tabs); pct comes only from an entry still marked auto.
+    var mapped26 = new[]
+    {
+        E("GOOD_CNT", "PRODUCTION", "good_quantity"), E("NG_CNT", "PRODUCTION", "ng_quantity"),
+        E("A_TMP", "PROCESS", "a_temperature"), E("B_TMP", "PROCESS", "b_timestamp"),
+        E("X_VAL", "PROCESS", "x_value"), E("x_val", "PROCESS", "x_value"),
+        E("Y_PCT", "PROCESS", "y_percent", auto: 1), E("Z_PCT", "PROCESS", "z_percent", auto: 1),
+    };
+    var learned = NameMatcher.LearnSynonyms(mapped26);
+    var scrap = NameMatcher.Best("SCRAP_CNT", new Dictionary<string, IReadOnlyList<string>> { ["PRODUCTION"] = new[] { "scrap_quantity", "good_quantity" } },
+        NameMatcher.WithLearned(synonyms, mapped26), new List<PointMapEntry>())!;
+    // #28: the value as a hint: OK / NG -> a result column, a date-time -> a *_time column. Only reorders,
+    // never auto ("judge" has no name match); a plain number gives no hint.
+    var columns28 = new Dictionary<string, IReadOnlyList<string>>
+    {
+        ["QUALITY"] = new[] { "result", "test_timestamp" },
+        ["PRODUCTION"] = new[] { "station_id", "cycle_end_time" },
+    };
+    string Hint28(string tag, string value)
+    {
+        var m = NameMatcher.Best(tag, columns28, synonyms, new List<PointMapEntry>(), value)!;
+        return $"{tag}={value} -> {m.Field} {(m.Conflict is null && m.Score >= 0.9 ? "auto" : "ask")}";
+    }
+    var got28 = new[] { Hint28("judge", "OK"), Hint28("judge", "NG"), Hint28("t_end", "2026-10-29T10:01:56.850+07:00"), Hint28("judge", "12.5") };
+    var ok28 = got28[0] == "judge=OK -> result ask" && got28[1] == "judge=NG -> result ask"
+               && got28[2] == "t_end=2026-10-29T10:01:56.850+07:00 -> cycle_end_time ask" && !got28[3].Contains("-> result");
+    Report("#28 value hints a column", ok28, string.Join("; ", got28));
+
+    Report("#26 synonyms learned from mappings", string.Join(",", learned.Select(p => $"{p.Key}={p.Value}")) == "cnt=quantity" && scrap.Field == "scrap_quantity" && scrap.Score == 1,
+        $"learned [{string.Join(", ", learned.Select(p => $"{p.Key}={p.Value}"))}] (want cnt=quantity); SCRAP_CNT -> {scrap.Field} {scrap.Score:0.00}");
 
     // Through the gateway: an unknown GOOD_QTY is mapped automatically (marked auto) and this very message
     // reaches MES with good_quantity; TORQUE_1 (no good match) stays unmapped.

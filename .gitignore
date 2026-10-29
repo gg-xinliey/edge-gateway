@@ -10,8 +10,8 @@ logs/
 data/
 mes-data/
 
-# backups the config page writes on every save (Config/<file>.bak)
-Config/*.bak
+# backups: the config page writes Config/<file>.bak on every save; hand-made ones too
+*.bak
 
 # test tools: their run data and logs, not their code
 tools/MES_EMULATOR/received*.jsonl

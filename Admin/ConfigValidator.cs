@@ -162,6 +162,9 @@ public static class ConfigValidator
         foreach (var item in (machine.NameMatchSynonyms ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             if (!System.Text.RegularExpressions.Regex.IsMatch(item, @"^[A-Za-z0-9]+\s*=\s*[A-Za-z0-9 ]*[A-Za-z0-9]$"))
                 return $"nameMatchSynonyms: '{item}' must be short=long, e.g. qty=quantity (letters, digits, spaces).";
+        if (!string.IsNullOrWhiteSpace(machine.AlarmWebhookUrl)
+            && !(Uri.TryCreate(machine.AlarmWebhookUrl, UriKind.Absolute, out var hook) && hook.Scheme is "http" or "https"))
+            return "alarmWebhookUrl must be empty (off) or a full http:// or https:// address.";
         if (machine.TimestampsWithoutZone.Trim().ToLowerInvariant() is not ("utc" or "local"))
             return "timestampsWithoutZone must be UTC or local.";
 
