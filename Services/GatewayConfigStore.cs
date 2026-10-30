@@ -64,15 +64,16 @@ public sealed class GatewayConfigStore
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping, // "a+b" stays readable
     };
-    private readonly object _writeSync = new();
-
     // An automatic mapping (name matching): added to this mapping's point-map.json, then
     // reloaded. false when the file has that tag already (another message was first).
+    // Under the file's lock (ConfigFileLock), shared with page saves and mapping changes.
     public bool AddPointMapEntry(PointMapEntry entry)
     {
-        lock (_writeSync)
+        var path = Path.Combine(_configRoot, "point-map.json");
+        var gate = ConfigFileLock.For(path);
+        gate.Wait();
+        try
         {
-            var path = Path.Combine(_configRoot, "point-map.json");
             var entries = JsonSerializer.Deserialize<List<PointMapEntry>>(File.ReadAllText(path), _jsonOptions) ?? new();
             if (entries.Any(p => p.Tag.Equals(entry.Tag, StringComparison.OrdinalIgnoreCase)))
                 return false;
@@ -80,9 +81,13 @@ public sealed class GatewayConfigStore
             var temp = path + ".tmp"; // whole file next to it, then swapped in (#17)
             File.WriteAllText(temp, JsonSerializer.Serialize(entries, PointMapJson) + Environment.NewLine);
             File.Move(temp, path, overwrite: true);
-            Reload();
-            return true;
         }
+        finally
+        {
+            gate.Release();
+        }
+        Reload();
+        return true;
     }
 
     private ConfigSnapshot LoadSnapshot()

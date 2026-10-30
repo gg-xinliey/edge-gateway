@@ -25,6 +25,7 @@ const state = {
   view: 'mqtt-config',
   data: {},                 // file key -> data as loaded / being edited
   saved: {},                // PointMap / TimeStamp as last loaded or saved: what a save changed is copied to other machines
+  versions: {},             // file key -> its version (ETag) as loaded / saved: a save sends it back (If-Match)
   numberKeys: {},           // file key -> keys that must stay numbers (form views)
   dirty: new Set(),         // file keys with unsaved edits
   group: { 'point-map': null, 'timestamp-rules': null },
@@ -109,11 +110,20 @@ function toast(message, bad = false) {
 
 async function request(url, options) {
   // The server takes changes only as JSON (#12), also POST/DELETE without a body.
+  return (await requestVersioned(url, options)).body;
+}
+
+// Also the version (ETag) the gateway sent with a config file. A failure carries .status (409 = the
+// file changed since the copy this save came from).
+async function requestVersioned(url, options) {
   const res = await fetch(url, { cache: 'no-store', ...options, headers: { 'Content-Type': 'application/json', ...options?.headers } });
   const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
-  return body;
+  if (!res.ok) throw Object.assign(new Error(body.error || `HTTP ${res.status}`), { status: res.status });
+  return { body, version: res.headers.get('ETag') };
 }
+
+// Saves a config file as the copy its version came from; null = no check.
+const ifMatch = version => version ? { 'If-Match': version } : {};
 
 function matches(text) {
   const q = state.search.trim().toLowerCase();
@@ -143,8 +153,9 @@ async function loadMesSchema() {
 }
 
 async function loadFile(key) {
-  const data = await request(`/api/config/${key}${scopeQuery(key)}`);
+  const { body: data, version } = await requestVersioned(`/api/config/${key}${scopeQuery(key)}`);
   state.data[key] = data;
+  state.versions[key] = version;
   if (MAPPING.has(key)) state.saved[key] = structuredClone(data);
   if (!Array.isArray(data))
     state.numberKeys[key] = Object.entries(data).filter(([, v]) => typeof v === 'number').map(([k]) => k);
@@ -259,15 +270,9 @@ function renderTabs() {
     }, h('span', { class: 'tab-name', textContent: label }));
     el.setAttribute('aria-selected', String(selected === id));
     if (opts.auto)
-      el.append(h('span', { class: 'tab-auto', textContent: 'auto', title: 'Tab created automatically: check it, then confirm it on its PointMap' }));
+      el.append(h('span', { class: 'tab-auto', textContent: 'auto', title: 'Tab created automatically: check it, then confirm it on its PointMap (counts as confirmed after 3 days)' }));
     if (opts.status)
       el.append(h('span', { class: `dot ${opts.status}`, role: 'img', 'aria-label': STATUS_WORDS[opts.status], title: STATUS_WORDS[opts.status] }));
-    if (opts.close)
-      el.append(h('button', {
-        type: 'button', class: 'tab-x', textContent: '⇄',
-        title: `Change ${label}'s mapping: copy another tab's or the Template's`,
-        'aria-label': `Change the mapping of ${label}`, onclick: e => { e.stopPropagation(); reassignTab(id); },
-      }));
     if (opts.close)
       el.append(h('button', {
         type: 'button', class: 'tab-x', textContent: '×',
@@ -358,7 +363,8 @@ function renderScopeHint() {
   if (auto && !broken && !waiting.length) {
     hint.append(`${auto.machineId}'s tab was created automatically, as a copy of ${auto.autoCopiedFrom || 'the Template'}. Check its mapping, then `,
       h('button', { type: 'button', class: 'link', textContent: '✓ confirm', onclick: () => confirmAutoTab(auto.machineId) }), ' or ',
-      h('button', { type: 'button', class: 'link', textContent: '✗ cancel', title: 'Pick another mapping for it instead', onclick: () => reassignTab(auto.machineId) }), '.');
+      h('button', { type: 'button', class: 'link', textContent: '✗ cancel', title: 'Pick another mapping for it instead', onclick: () => reassignTab(auto.machineId) }),
+      '. Left as it is, it counts as confirmed 3 days after it was created.');
     return;
   }
   if (broken) {
@@ -382,7 +388,7 @@ async function confirmAutoTab(id) {
   toast(`${id}'s tab is confirmed.`);
 }
 
-// Another mapping for a machine tab: "✗ cancel" on an automatic tab (#30), "⇄" on any tab (#31).
+// Another mapping for a machine tab: "✗ cancel" on an automatic tab (#30), "⇄ change mapping" next to save on a machine tab's PointMap (#31).
 // Its mapping becomes a copy of another tab's or the Template's (the old files are kept as .bak).
 // A confirmed tab asks for the password when one is set (else just "are you sure");
 // its data keeps the old mapping until then.
@@ -456,6 +462,7 @@ function render() {
   const isLog = state.view === 'log';
   const readOnly = !FILES[state.view]; // Log / Machines / Outbox: nothing to save
   $('saveBtn').hidden = readOnly;
+  $('reassignBtn').hidden = !(state.view === 'point-map' && state.scope); // a machine tab's PointMap only
   renderTabs();
   renderScopeHint();
 
@@ -1410,7 +1417,7 @@ const SETTINGS = {
   mesStuckRowTries: { label: 'MES: tries before a stuck record moves to failed', help: 'A record MES keeps answering 500 or 413 moves to failed messages after this many tries in a row, once MES took other records meanwhile. At least 1. Applied on Restart Gateway.' },
   nameMatchThreshold: { label: 'Name matching: auto-map from score', help: 'An unknown tag whose name matches one MES column at least this well (0.5 to 1; 1 = the same name) is mapped automatically and marked "auto" in PointMap. Lower scores, or a column in several groups or already filled, are only suggested (Unidentified). Applied on Restart Gateway.' },
   alarmWebhookUrl: { label: 'Alarm webhook (Teams / Power Automate / Slack)', help: 'Empty = off. Problems are POSTed here as JSON (text, raised, cleared, active) when one starts or clears: MES unreachable for 5 min, records in MES failures, held machines, tabs created automatically, time warnings, over 10,000 records waiting. Applied on Restart Gateway.' },
-  mappingPassword: { label: "Password to change a confirmed tab's mapping", secret: true, help: 'Asked by ⇄ on a confirmed machine tab (an automatic tab needs none). Empty = no password asked, only "are you sure?". Never shown: dots mean a password is saved. Applied on Restart Gateway.' },
+  mappingPassword: { label: "Password to change a confirmed tab's mapping", secret: true, help: 'Asked by "⇄ change mapping" (next to save on a confirmed machine tab\'s PointMap; an automatic tab needs none). Empty = no password asked, only "are you sure?". Never shown: dots mean a password is saved. Applied on Restart Gateway.' },
   nameMatchSynonyms: { label: 'Name matching: words that mean the same', help: 'short=long, comma-separated, e.g. qty=quantity, sn=serial number. Used to compare tag names with MES columns. Applied on Restart Gateway.' },
   mesStuckRowMinutes: { label: 'MES: minutes before a stuck record moves to failed (when nothing else is sent)', help: 'Same, when MES took nothing else meanwhile (e.g. one machine alone). 1 to 10. Applied on Restart Gateway.' },
 };
@@ -1602,17 +1609,32 @@ async function save() {
   const targets = changes?.count ? await chooseSaveScope(changes.count) : [];
   if (targets === null) return; // cancelled
 
-  let result;
-  try {
-    result = await request(`/api/config/${key}${scopeQuery(key)}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-  } catch (e) {
-    toast(`Not saved: ${e.message}`, true);
-    return;
+  // Saved as the copy it came from. Changed meanwhile (409: a tag mapped automatically, another save):
+  // PointMap / TimeStamp take the newer file plus only what was changed here, and save once more.
+  const url = `/api/config/${key}${scopeQuery(key)}`;
+  let result, rebased = false;
+  for (;;) {
+    try {
+      result = await request(url, { method: 'PUT', headers: ifMatch(state.versions[key]), body: JSON.stringify(body) });
+      break;
+    } catch (e) {
+      if (e.status !== 409 || rebased || !MAPPING.has(key) || !state.saved[key]) {
+        toast(`Not saved: ${e.message}`, true);
+        return;
+      }
+      try {
+        const latest = await requestVersioned(url);
+        body = rebase(state.saved[key], body, latest.body);
+        state.versions[key] = latest.version;
+        rebased = true;
+      } catch (e2) {
+        toast(`Not saved: ${e2.message}`, true);
+        return;
+      }
+    }
   }
+  state.versions[key] = result.version;
+  if (rebased) toast('Saved. The file had changed meanwhile (e.g. a tag mapped automatically): those rows were kept.');
 
   state.data[key] = body;
   if (MAPPING.has(key)) state.saved[key] = structuredClone(body);
@@ -1644,6 +1666,24 @@ function mappingChanges(key, before, after) {
   const set = Object.entries(after).filter(([g, rule]) => JSON.stringify(rule) !== JSON.stringify(before[g]));
   const removed = Object.keys(before).filter(g => !(g in after));
   return { set, removed, count: set.length + removed.length };
+}
+
+// The newer file plus only what this person changed since loading `before` (`mine`): PointMap rows by
+// tag (rows added meanwhile, e.g. mapped automatically, stay with their auto mark), TimeStamp by group.
+function rebase(before, mine, latest) {
+  if (Array.isArray(mine)) {
+    const id = r => String(r.tag).toLowerCase();
+    const sig = r => [r.tag, r.dataGroup, r.fieldName, r.auto ?? ''].join('\u0001');
+    const old = new Map(before.map(r => [id(r), sig(r)]));
+    const kept = new Set(mine.map(id));
+    const changed = mine.filter(r => old.get(id(r)) !== sig(r));
+    const drop = new Set([...before.filter(r => !kept.has(id(r))).map(id), ...changed.map(id)]);
+    return [...latest.filter(r => !drop.has(id(r))), ...changed];
+  }
+  const next = { ...latest };
+  for (const k of Object.keys(before)) if (!(k in mine)) delete next[k];
+  for (const [k, v] of Object.entries(mine)) if (JSON.stringify(v) !== JSON.stringify(before[k])) next[k] = v;
+  return next;
 }
 
 // Another machine's PointMap / TimeStamp with these changes; its other rows stay as they are.
@@ -1689,10 +1729,15 @@ async function applyToOthers(key, changes, targets) {
   for (const id of targets) {
     const query = id ? `?machine=${encodeURIComponent(id)}` : '';
     try {
-      const data = await request(`/api/config/${key}${query}`);
-      await request(`/api/config/${key}${query}`, {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(applyChanges(key, data, changes)),
-      });
+      for (let attempt = 0; ; attempt++) { // changed between reading and saving: read it again once
+        const { body: data, version } = await requestVersioned(`/api/config/${key}${query}`);
+        try {
+          await request(`/api/config/${key}${query}`, { method: 'PUT', headers: ifMatch(version), body: JSON.stringify(applyChanges(key, data, changes)) });
+          break;
+        } catch (e) {
+          if (e.status !== 409 || attempt) throw e;
+        }
+      }
     } catch (e) {
       failed.push(`${id || 'Template'} (${e.message})`);
     }
@@ -1885,6 +1930,7 @@ $('search').addEventListener('keydown', e => { if (e.key === 'Enter') render(); 
 $('searchBtn').addEventListener('click', () => { state.search = $('search').value; render(); });
 
 $('saveBtn').addEventListener('click', save);
+$('reassignBtn').addEventListener('click', () => state.scope && reassignTab(state.scope));
 $('errBadge').addEventListener('click', () => switchView('log'));
 $('restartNow').addEventListener('click', restartGateway);
 $('restartLater').addEventListener('click', () => {

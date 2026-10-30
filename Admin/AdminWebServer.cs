@@ -568,7 +568,10 @@ public sealed class AdminWebServer
 
         if (HttpMethodsEqual(context, "GET"))
         {
-            var fromFile = File.Exists(filePath) ? JsonNode.Parse(await File.ReadAllTextAsync(filePath)) : null;
+            // Content and version from the same read: the page sends the version back when it saves.
+            var bytes = File.Exists(filePath) ? await File.ReadAllBytesAsync(filePath) : null;
+            var fromFile = bytes is null ? null : JsonNode.Parse(new StreamReader(new MemoryStream(bytes)).ReadToEnd());
+            context.Response.AddHeader("ETag", ConfigFileLock.Version(bytes));
             var result = WithDefaults(key, fromFile);
             if (PasswordSettings.TryGetValue(key, out var secret))
                 MaskPassword(result, secret);
@@ -606,21 +609,46 @@ public sealed class AdminWebServer
                     WriteIndented = true
                 });
 
-                var backupPath = filePath + ".bak";
-                if (File.Exists(filePath))
-                    File.Copy(filePath, backupPath, overwrite: true);
-
-                // Written in full next to it (on disk), then swapped in: a power cut while
-                // saving leaves the old file or the new one, never half of one (#17).
-                var tempPath = filePath + ".tmp";
-                await using (var file = new FileStream(tempPath, FileMode.Create, FileAccess.Write))
-                await using (var writer = new StreamWriter(file, Encoding.UTF8))
+                // One writer at a time per file (the auto-mapper and mapping changes too).
+                var gate = ConfigFileLock.For(filePath);
+                await gate.WaitAsync();
+                string version;
+                try
                 {
-                    await writer.WriteAsync(normalized + Environment.NewLine);
-                    await writer.FlushAsync();
-                    file.Flush(flushToDisk: true);
+                    // Saved from an older copy (a tag was mapped automatically, or another save came in
+                    // between): refused, or it would wipe that out. The page puts its own changes on the
+                    // newer file and saves again. No If-Match (a script): no check, as before.
+                    if (context.Request.Headers["If-Match"] is { Length: > 0 } loaded && loaded != ConfigFileLock.Version(filePath))
+                    {
+                        await WriteJsonAsync(context.Response, 409, new
+                        {
+                            error = $"{fileName} changed since it was loaded (e.g. a tag was mapped automatically): load it again and save.",
+                            conflict = true
+                        });
+                        return;
+                    }
+
+                    var backupPath = filePath + ".bak";
+                    if (File.Exists(filePath))
+                        File.Copy(filePath, backupPath, overwrite: true);
+
+                    // Written in full next to it (on disk), then swapped in: a power cut while
+                    // saving leaves the old file or the new one, never half of one (#17).
+                    var tempPath = filePath + ".tmp";
+                    await using (var file = new FileStream(tempPath, FileMode.Create, FileAccess.Write))
+                    await using (var writer = new StreamWriter(file, Encoding.UTF8))
+                    {
+                        await writer.WriteAsync(normalized + Environment.NewLine);
+                        await writer.FlushAsync();
+                        file.Flush(flushToDisk: true);
+                    }
+                    File.Move(tempPath, filePath, overwrite: true);
+                    version = ConfigFileLock.Version(filePath);
                 }
-                File.Move(tempPath, filePath, overwrite: true);
+                finally
+                {
+                    gate.Release();
+                }
 
                 var restartToApply = RestartToApply.Contains(key);
 
@@ -655,6 +683,7 @@ public sealed class AdminWebServer
                     reloaded = !restartToApply,
                     restartToApply,
                     reconnected, // connections closed so held messages are sent again
+                    version,     // of the file as saved: the next save sends it back (If-Match)
                     backup = machineId is null ? $"Config/{fileName}.bak" : $"Config/{MachineRegistry.FolderName}/{machineId}/{fileName}.bak"
                 });
             }

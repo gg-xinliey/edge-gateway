@@ -181,6 +181,30 @@ public sealed class MachineRegistry
         return true;
     }
 
+    // Automatic tabs nobody confirmed or cancelled within `after` (marker's "at", else the file's time)
+    // count as confirmed: the marker goes, as with ✓ confirm. Returns the tabs confirmed now.
+    public List<string> ConfirmOldAutoTabs(TimeSpan after, DateTimeOffset now)
+    {
+        var confirmed = new List<string>();
+        foreach (var id in Ids)
+        {
+            if (FolderFor(id) is not { } folder || !File.Exists(Path.Combine(folder, AutoMarker)))
+                continue;
+            var marker = Path.Combine(folder, AutoMarker);
+            DateTimeOffset at = File.GetLastWriteTimeUtc(marker);
+            try
+            {
+                using var doc = JsonDocument.Parse(File.ReadAllText(marker));
+                if (doc.RootElement.TryGetProperty("at", out var when) && when.TryGetDateTimeOffset(out var written))
+                    at = written;
+            }
+            catch (Exception ex) when (ex is JsonException or IOException) { /* the file's time */ }
+            if (now - at >= after && ConfirmAuto(id))
+                confirmed.Add(id);
+        }
+        return confirmed;
+    }
+
     public const string WrongPassword = "Wrong password."; // Reassign's answer; the page gets 403 for it
 
     // A tab gets another mapping: its point-map.json and timestamp-rules.json become a copy of
@@ -215,14 +239,23 @@ public sealed class MachineRegistry
         {
             var from = Path.Combine(sourceFolder, file);
             var to = Path.Combine(entry.Folder, file);
-            if (File.Exists(to))
-                File.Copy(to, to + ".bak", overwrite: true);
-            var temp = to + ".tmp"; // whole file next to it, then swapped in (#17)
-            if (File.Exists(from))
-                File.Copy(from, temp, overwrite: true);
-            else
-                File.WriteAllText(temp, file == "point-map.json" ? "[]" : "{}");
-            File.Move(temp, to, overwrite: true);
+            var gate = ConfigFileLock.For(to); // not while the auto-mapper or a page save writes it
+            gate.Wait();
+            try
+            {
+                if (File.Exists(to))
+                    File.Copy(to, to + ".bak", overwrite: true);
+                var temp = to + ".tmp"; // whole file next to it, then swapped in (#17)
+                if (File.Exists(from))
+                    File.Copy(from, temp, overwrite: true);
+                else
+                    File.WriteAllText(temp, file == "point-map.json" ? "[]" : "{}");
+                File.Move(temp, to, overwrite: true);
+            }
+            finally
+            {
+                gate.Release();
+            }
         }
         if (auto)
             File.WriteAllText(Path.Combine(entry.Folder, AutoMarker),

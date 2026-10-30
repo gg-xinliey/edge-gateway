@@ -723,6 +723,60 @@ if (which is "all" or "reassign")
         $"page gets {masked}; saving the mask keeps: {Saved(EdgeGateway.Admin.AdminWebServer.PasswordMask)}; saving new: {Saved("new")}");
 }
 
+if (which is "all" or "autoconfirm")
+{
+    // A tab created automatically that nobody confirmed or cancelled within 3 days counts as confirmed.
+    var (root, json) = TempConfig("OLD", "NEW", "NOAT");
+    var reg = new MachineRegistry(new GatewayConfigStore(root, json), new UnidentifiedTagTracker(), json);
+    var now = DateTimeOffset.Now;
+    void Mark(string id, string marker) => File.WriteAllText(Path.Combine(root, "machines", id, MachineRegistry.AutoMarker), marker);
+    Mark("OLD", System.Text.Json.JsonSerializer.Serialize(new { copiedFrom = "", at = now.AddDays(-3).AddMinutes(-1) }));
+    Mark("NEW", System.Text.Json.JsonSerializer.Serialize(new { copiedFrom = "", at = now.AddDays(-2) }));
+    Mark("NOAT", "{}"); // no time in it: the file's own (now)
+    var confirmed = reg.ConfirmOldAutoTabs(GatewayHost.AutoTabConfirmAfter, now);
+    var again = reg.ConfirmOldAutoTabs(GatewayHost.AutoTabConfirmAfter, now);
+    Report("auto tab counts as confirmed after 3 days", confirmed.SequenceEqual(new[] { "OLD" }) && again.Count == 0
+        && !reg.IsAuto("OLD") && reg.IsAuto("NEW") && reg.IsAuto("NOAT"),
+        $"confirmed [{string.Join(",", confirmed)}] (want OLD), then [{string.Join(",", again)}]; still auto: NEW {reg.IsAuto("NEW")}, NOAT {reg.IsAuto("NOAT")}");
+}
+
+if (which is "all" or "race")
+{
+    // Review: the auto-mapper and a page save wrote point-map.json under different locks, and a save from the
+    // copy the page loaded earlier dropped tags mapped automatically since. Now one lock per file, and the page's
+    // copy has a version (ETag): a save from an older one (If-Match) is refused (409).
+    var (root, json) = TempConfig("M1");
+    DataFolder.Use(root);
+    var registry = new MachineRegistry(new GatewayConfigStore(root, json), new UnidentifiedTagTracker(), json);
+    var port = 19400 + Random.Shared.Next(90);
+    var page = new EdgeGateway.Admin.AdminWebServer(port, "wwwroot", registry, new GatewayHost(registry, json, null, new MessageIdFilter()),
+        GatewayLog.Install(Path.Combine(root, "logs"), 1), json);
+    using var stop = new CancellationTokenSource();
+    var serving = page.RunAsync(stop.Token);
+    await Task.Delay(300);
+    using var http = new HttpClient { BaseAddress = new Uri($"http://localhost:{port}/") };
+    const string url = "api/config/point-map?machine=M1";
+    async Task<(string? Version, string Body)> Load() { using var r = await http.GetAsync(url); return (r.Headers.ETag?.Tag, await r.Content.ReadAsStringAsync()); }
+    async Task<int> Save(string body, string? version)
+    {
+        using var put = new HttpRequestMessage(HttpMethod.Put, url) { Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json") };
+        if (version is not null) put.Headers.TryAddWithoutValidation("If-Match", version);
+        using var r = await http.SendAsync(put);
+        return (int)r.StatusCode;
+    }
+    var file = Path.Combine(root, "machines", "M1", "point-map.json");
+    var (loadedVersion, pageCopy) = await Load();
+    registry.StoreFor("M1")!.AddPointMapEntry(new PointMapEntry { Tag = "GOOD_QTY", DataGroup = "TRACEABILITY", FieldName = "station_id", Auto = 1 }); // meanwhile
+    var stale = await Save(pageCopy, loadedVersion);
+    var autoKept = File.ReadAllText(file).Contains("GOOD_QTY");
+    var (newVersion, newCopy) = await Load();
+    var current = await Save(newCopy, newVersion);
+    var noCheck = await Save(newCopy, null); // a script without If-Match: saved, as before
+    stop.Cancel(); try { await serving; } catch { }
+    Report("review: a save from an older copy can't drop auto-mapped tags", loadedVersion is not null && stale == 409 && autoKept && current == 200 && noCheck == 200,
+        $"version sent: {loadedVersion is not null}; save from the older copy -> {stale} (want 409), GOOD_QTY kept: {autoKept}; from the newer -> {current}; without If-Match -> {noCheck}");
+}
+
 if (which is "all" or "utc")
 {
     // Every time to UTC: a span start / end the machine sends (zone converted, none = UTC, other text as sent) ...

@@ -73,6 +73,9 @@ public sealed class GatewayHost
     // Tabs created automatically for new machines, at most per hour (see AutoTab).
     private const int AutoTabsPerHour = 20;
 
+    // A tab created automatically that nobody confirmed or cancelled in this time counts as confirmed.
+    public static readonly TimeSpan AutoTabConfirmAfter = TimeSpan.FromDays(3);
+
     // A machine timestamp further than this from arrival is warned about.
     private static readonly TimeSpan ClockWarning = TimeSpan.FromHours(1);
 
@@ -653,6 +656,16 @@ public sealed class GatewayHost
             catch { backlog = -1; } // outbox busy: report the rest anyway
 
             var r = Stats.Sample(backlog);
+            try
+            {
+                foreach (var id in _machines.ConfirmOldAutoTabs(AutoTabConfirmAfter, DateTimeOffset.Now))
+                    Console.WriteLine($"[config] {id}: tab created automatically was not confirmed or cancelled within " +
+                                      $"{AutoTabConfirmAfter.TotalDays:0} days: counted as confirmed");
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                Console.WriteLine($"[config] automatic tabs not checked for confirming: {ex.Message}"); // next check in 10 s
+            }
             if (alarms is not null)
                 _ = alarms.CheckAsync(Problems(backlog)); // not awaited: a slow webhook must not hold up the stats
 
