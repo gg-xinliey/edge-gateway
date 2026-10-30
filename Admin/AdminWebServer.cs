@@ -273,6 +273,31 @@ public sealed class AdminWebServer
             return;
         }
 
+        // The Connect button on MQTTConfig: tries the broker with the settings typed there (not saved yet;
+        // the dots mean the stored password). The running connections stay as they are.
+        if (path.Equals("/api/mqtt/test", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!HttpMethodsEqual(context, "POST"))
+            {
+                await WriteJsonAsync(context.Response, 405, new { error = "Method not allowed" });
+                return;
+            }
+            using var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding ?? Encoding.UTF8);
+            var raw = KeepStoredPassword(await reader.ReadToEndAsync(), Path.Combine(_configRoot, "mqtt-config.json"));
+            var settings = JsonSerializer.Deserialize<MqttConnectionConfig>(raw, _jsonOptions) ?? new MqttConnectionConfig();
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            var error = await MqttPublisher.TryConnectAsync(settings, timeout.Token);
+            Console.WriteLine($"[mqtt] connect test {settings.BrokerAddress}:{settings.BrokerPort}{(settings.UseTls ? " (TLS)" : "")}: {error ?? "connected"}");
+            await WriteJsonAsync(context.Response, 200, new
+            {
+                connected = error is null,
+                error,
+                broker = $"{settings.BrokerAddress}:{settings.BrokerPort}",
+                tls = settings.UseTls
+            });
+            return;
+        }
+
         // Another mapping for a machine's tab: a copy of copyFrom's (another tab, or the template when
         // empty). A confirmed tab needs the password (#31), an automatic one doesn't (#30).
         if (path.Equals("/api/machine-configs/reassign", StringComparison.OrdinalIgnoreCase))

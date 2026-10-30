@@ -42,11 +42,18 @@ public class MqttPublisherService : IMqttPublisher
         };
     }
 
-    // A failed connect for the log: a refused login says so, it is not the network.
-    public static string Why(Exception ex) =>
-        ex is MQTTnet.Adapter.MqttConnectingFailedException { ResultCode: MqttClientConnectResultCode.BadUserNameOrPassword or MqttClientConnectResultCode.NotAuthorized }
-            ? $"broker refused the login (check username / password): {ex.Message}"
-            : ex.Message;
+    // A failed connect for the log (and the Connect button): a refused login says so, it is not the
+    // network; otherwise every distinct reason down the chain (a TLS one sits in an inner exception).
+    public static string Why(Exception ex)
+    {
+        if (ex is MQTTnet.Adapter.MqttConnectingFailedException { ResultCode: MqttClientConnectResultCode.BadUserNameOrPassword or MqttClientConnectResultCode.NotAuthorized })
+            return $"broker refused the login (check username / password): {ex.Message}";
+        var reasons = new List<string>();
+        for (var e = ex; e is not null; e = e.InnerException)
+            if (!reasons.Contains(e.Message))
+                reasons.Add(e.Message);
+        return string.Join(" → ", reasons);
+    }
 
     public async Task ConnectAsync(CancellationToken ct = default)
     {
@@ -74,6 +81,7 @@ public class MqttPublisherService : IMqttPublisher
             .WithTimeout(TimeSpan.FromSeconds(5));
         if (!string.IsNullOrEmpty(_options.Username))
             builder = builder.WithCredentials(_options.Username, _options.Password);
+        builder = MqttTls.Apply(builder, _options.UseTls, _options.TlsCaFile);
 
         await _client.ConnectAsync(builder.Build(), ct);
         Console.WriteLine($"[mqtt] connected to {_options.BrokerAddress}:{_options.BrokerPort}");

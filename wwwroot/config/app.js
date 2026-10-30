@@ -463,6 +463,7 @@ function render() {
   const readOnly = !FILES[state.view]; // Log / Machines / Outbox: nothing to save
   $('saveBtn').hidden = readOnly;
   $('reassignBtn').hidden = !(state.view === 'point-map' && state.scope); // a machine tab's PointMap only
+  $('connectBtn').hidden = state.view !== 'mqtt-config';
   renderTabs();
   renderScopeHint();
 
@@ -1399,7 +1400,9 @@ const SETTINGS = {
   clientIdSuffix: { label: 'MQTT client name', help: 'The gateway connects as <PC name>_<this>. Two gateways on one broker need different names.' },
   reconnectCooldownSeconds: { label: 'Reconnect wait (s)', help: 'After a failed connect to the broker, wait this long before trying again.' },
   username: { label: 'MQTT username', help: 'Login for the broker. Empty = connect without a login.' },
-  password: { label: 'MQTT password', secret: true, help: 'Never shown: dots mean a password is saved. Type a new one to replace it, clear the field to remove it. Sent without encryption (plain MQTT).' },
+  password: { label: 'MQTT password', secret: true, help: 'Never shown: dots mean a password is saved. Type a new one to replace it, clear the field to remove it. Sent without encryption unless TLS is on.' },
+  useTls: { label: 'MQTT over TLS (encrypted)', help: 'Encrypts the login and the data; the broker port is then usually 8883. The broker\'s certificate must be trusted by this PC (in Docker: the container), or come from the CA file below, and its name must match the broker address. Press connect to try. Applied on Restart Gateway.' },
+  tlsCaFile: { label: 'TLS: company CA file', help: 'Empty = the CAs this PC already trusts. A broker with a company certificate: put the CA\'s .crt / .pem in the data Config folder (Docker: data\\Config) and type its file name here, or a full path.' },
   area: { label: 'Topic area', help: 'Topics the gateway makes itself start with svi/<area>/.' },
   keepaliveIntervalSeconds: { label: 'Keepalive every (s)', help: 'The gateway publishes {"alive":true} on svi/<area>/<gateway id>/keepalive.' },
   motionDeadband: { label: 'Motion: smallest change sent', help: 'A motion value is published again only after it moved at least this much.' },
@@ -1931,6 +1934,27 @@ $('searchBtn').addEventListener('click', () => { state.search = $('search').valu
 
 $('saveBtn').addEventListener('click', save);
 $('reassignBtn').addEventListener('click', () => state.scope && reassignTab(state.scope));
+$('connectBtn').addEventListener('click', testMqtt);
+
+// Connect on MQTTConfig: tries the broker with what is typed there now, also before saving.
+// The gateway's running connections stay as they are until the settings are saved.
+async function testMqtt() {
+  let body;
+  try { body = buildBody('mqtt-config'); } catch (e) { toast(e.message, true); return; }
+  const btn = $('connectBtn');
+  btn.disabled = true;
+  btn.textContent = 'connecting…';
+  try {
+    const r = await request('/api/mqtt/test', { method: 'POST', body: JSON.stringify(body) });
+    const unsaved = state.dirty.has('mqtt-config') ? ' Save to use these settings.' : '';
+    toast(r.connected ? `MQTT: connected to ${r.broker}${r.tls ? ' with TLS' : ''}.${unsaved}` : `MQTT: not connected to ${r.broker}: ${r.error}`, !r.connected);
+  } catch (e) {
+    toast(`MQTT test failed: ${e.message}`, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'connect';
+  }
+}
 $('errBadge').addEventListener('click', () => switchView('log'));
 $('restartNow').addEventListener('click', restartGateway);
 $('restartLater').addEventListener('click', () => {

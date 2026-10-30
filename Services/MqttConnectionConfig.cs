@@ -20,8 +20,12 @@ public class MqttConnectionConfig
     // Messages that arrive in the meantime are dropped, not queued.
     public int ReconnectCooldownSeconds { get; set; } = 5;
 
-    // Broker login. Empty username = connect without one. Plain MQTT (no TLS): both
-    // cross the network unencrypted. The config page never gets the password back.
+    // Broker login. Empty username = connect without one. Without TLS both cross the
+    // network unencrypted. The config page never gets the password back.
     public string Username { get; set; } = "";
     public string Password { get; set; } = "";
+
+    // TLS (usually port 8883), see MqttTls. Same keys as MqttOptions.
+    public bool UseTls { get; set; }
+    public string TlsCaFile { get; set; } = "";
 }

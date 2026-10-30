@@ -60,6 +60,37 @@ public sealed class MqttPublisher : IAsyncDisposable
     // alone means nothing; a failed attempt does.
     public bool ConnectFailed => _connectFailed;
 
+    // Broker, login and TLS as in mqtt-config.json; also what the config page's Connect button tries.
+    private static MqttClientOptions Options(MqttConnectionConfig config, string clientId)
+    {
+        var builder = new MqttClientOptionsBuilder()
+            .WithTcpServer(config.BrokerAddress, config.BrokerPort)
+            .WithClientId(clientId)
+            .WithCleanSession()
+            .WithTimeout(TimeSpan.FromSeconds(3))
+            .WithKeepAlivePeriod(TimeSpan.FromSeconds(15));
+        if (!string.IsNullOrEmpty(config.Username))
+            builder = builder.WithCredentials(config.Username, config.Password);
+        return MqttTls.Apply(builder, config.UseTls, config.TlsCaFile).Build();
+    }
+
+    // The Connect button: one connection with these settings (its own client id, so the running
+    // connections stay up), closed again. null = connected, else why not, in plain words.
+    public static async Task<string?> TryConnectAsync(MqttConnectionConfig config, CancellationToken ct = default)
+    {
+        using var client = new MqttFactory().CreateMqttClient();
+        try
+        {
+            await client.ConnectAsync(Options(config, $"{Environment.MachineName}_{config.ClientIdSuffix}_ConnectTest"), ct);
+            await client.DisconnectAsync(cancellationToken: ct);
+            return null;
+        }
+        catch (Exception ex)
+        {
+            return MqttPublisherService.Why(ex);
+        }
+    }
+
     // Queues json for topic as given; MqttRelay has already checked the topic
     // and put the payload in SpotWelding shape. Returns at once.
     public void Enqueue(string topic, string json) => _queue.Writer.TryWrite((topic, json));
@@ -128,16 +159,7 @@ public sealed class MqttPublisher : IAsyncDisposable
             if (_client.IsConnected)
                 return true;
 
-            var builder = new MqttClientOptionsBuilder()
-                .WithTcpServer(_config.BrokerAddress, _config.BrokerPort)
-                .WithClientId($"{Environment.MachineName}_{_config.ClientIdSuffix}")
-                .WithCleanSession()
-                .WithTimeout(TimeSpan.FromSeconds(3))
-                .WithKeepAlivePeriod(TimeSpan.FromSeconds(15));
-            if (!string.IsNullOrEmpty(_config.Username))
-                builder = builder.WithCredentials(_config.Username, _config.Password);
-
-            await _client.ConnectAsync(builder.Build(), ct);
+            await _client.ConnectAsync(Options(_config, $"{Environment.MachineName}_{_config.ClientIdSuffix}"), ct);
             _connectFailed = false;
             Console.WriteLine($"[mqtt] connected to {_config.BrokerAddress}:{_config.BrokerPort}");
             return true;

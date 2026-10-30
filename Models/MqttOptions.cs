@@ -21,6 +21,10 @@ public class MqttOptions
     public string Username { get; set; } = "";
     public string Password { get; set; } = "";
 
+    // Same keys as MqttConnectionConfig.UseTls / TlsCaFile (TLS for both connections, see MqttTls).
+    public bool UseTls { get; set; }
+    public string TlsCaFile { get; set; } = "";
+
     // Topic prefix for topics the gateway builds itself: svi/<area>/<machine_id>/...
     public string Area { get; set; } = "TEST";
 

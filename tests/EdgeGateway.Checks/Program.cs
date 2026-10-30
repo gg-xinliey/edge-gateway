@@ -5,6 +5,8 @@
 //   dotnet run --project tests/EdgeGateway.Checks -- cfg <Config folder>
 //                                                             would the gateway load this config?
 // Works while the gateway runs (own build configuration, loopback ports 19400-19899).
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using EdgeGateway.Models;
 using EdgeGateway.Services;
 
@@ -878,6 +880,7 @@ if (which is "all" or "cycleactive")
     var outbox = new Outbox(outboxDir);
     var sender = new IntervalSender(outbox, new EnvelopeBuilder("TEST", "SRC", "TCP"), () => store.Current);
     var t0 = DateTimeOffset.UtcNow;
+    t0 = t0.AddTicks(-(t0.Ticks % TimeSpan.TicksPerMillisecond)); // whole ms: a kept start is read back to the ms
     await SendRaw(store, sender, new() { ["CYCLE_ACTIVE"] = 1.0, ["STATION"] = "S1" }, t0);  // station: a row
     await SendRaw(store, sender, new() { ["CYCLE_ACTIVE"] = 0.0 }, t0.AddSeconds(42.5));       // cycle 1 ends: 42.5 s
     await SendRaw(store, sender, new() { ["CYCLE_ACTIVE"] = 1.0 }, t0.AddSeconds(50));         // cycle 2 starts: no row
@@ -1231,6 +1234,50 @@ if (which is "all" or "stuck")
     stop.Cancel(); try { await forwarder; } catch { } try { await feed; } catch { }
     mes.Stop(); await outbox.DisposeAsync(); Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
     Report("settings: forwarder uses mesStuckRowTries", big.Failed == 1 && tries == 2, $"failed {big.Failed} (want 1) after {tries} tries (want 2)");
+}
+
+if (which is "all" or "mqtttls")
+{
+    // MQTT over TLS: a local test broker on TLS with a certificate for "localhost" that no system trusts,
+    // so only the CA file makes it trusted. Through the Connect button's try (same settings as the relay
+    // connection) and the twin connection.
+    var port = 19900 + Random.Shared.Next(90);
+    using var key = RSA.Create(2048);
+    var csr = new CertificateRequest("CN=localhost", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+    var san = new SubjectAlternativeNameBuilder();
+    san.AddDnsName("localhost");
+    csr.CertificateExtensions.Add(san.Build());
+    csr.CertificateExtensions.Add(new X509BasicConstraintsExtension(true, false, 0, true));
+    csr.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(new OidCollection { new Oid("1.3.6.1.5.5.7.3.1") }, false));
+    using var cert = csr.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
+    var caFile = Path.Combine(Path.GetTempPath(), $"gw-ca-{Guid.NewGuid():N}.crt");
+    File.WriteAllText(caFile, cert.ExportCertificatePem());
+    var broker = new MQTTnet.MqttFactory().CreateMqttServer(new MQTTnet.Server.MqttServerOptionsBuilder()
+        .WithoutDefaultEndpoint()
+        .WithEncryptedEndpoint().WithEncryptedEndpointBoundIPAddress(System.Net.IPAddress.Loopback).WithEncryptedEndpointPort(port)
+        .WithEncryptionCertificate(cert.Export(X509ContentType.Pfx))
+        .WithEncryptionSslProtocol(System.Security.Authentication.SslProtocols.Tls12)
+        .Build());
+    await broker.StartAsync();
+    MqttConnectionConfig Settings(bool tls, string ca, string host = "localhost") =>
+        new() { BrokerAddress = host, BrokerPort = port, ClientIdSuffix = "checks-tls", UseTls = tls, TlsCaFile = ca };
+    var withCa = await MqttPublisher.TryConnectAsync(Settings(true, caFile));
+    var noCa = await MqttPublisher.TryConnectAsync(Settings(true, ""));
+    var plain = await MqttPublisher.TryConnectAsync(Settings(false, ""));
+    var wrongName = await MqttPublisher.TryConnectAsync(Settings(true, caFile, "127.0.0.1")); // the certificate is for localhost
+    var missing = await MqttPublisher.TryConnectAsync(Settings(true, "no-such-ca.crt"));
+    var twin = new MqttPublisherService(new MqttOptions { BrokerAddress = "localhost", BrokerPort = port, UseTls = true, TlsCaFile = caFile }, "checks-tls-twin");
+    string twinResult;
+    try { await twin.ConnectAsync(); twinResult = twin.IsConnected ? "connected" : "not connected"; }
+    catch (Exception ex) { twinResult = ex.Message; }
+    finally { try { await twin.DisconnectAsync(); } catch { } }
+    await broker.StopAsync(new MQTTnet.Server.MqttServerStopOptions());
+    broker.Dispose();
+    Report("mqtt: TLS with the CA file connects (Connect button and twin)", withCa is null && twinResult == "connected",
+        $"Connect button: {withCa ?? "connected"}; twin: {twinResult}");
+    Report("mqtt: TLS refuses an untrusted or misnamed certificate, says why", noCa is not null && wrongName is not null && plain is not null
+        && missing?.Contains("TLS CA file not found") == true,
+        $"no CA file: {noCa}; wrong host name: {wrongName}; plain MQTT to the TLS port: {plain}; missing CA file: {missing}");
 }
 
 if (which is "all" or "mqtt")
