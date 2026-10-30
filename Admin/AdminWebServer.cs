@@ -285,11 +285,11 @@ public sealed class AdminWebServer
             using var body = JsonDocument.Parse(await reader.ReadToEndAsync());
             string? Text(string name) => body.RootElement.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
 
-            var problem = _machines.Reassign(MachineParam(context) ?? "", Text("copyFrom")?.Trim(), Text("password"));
+            var problem = _machines.Reassign(MachineParam(context) ?? "", Text("copyFrom")?.Trim(), Text("password"), _gateway.Machine.MappingPassword);
             if (problem is null)
                 await WriteJsonAsync(context.Response, 200, new { ok = true });
             else
-                await WriteJsonAsync(context.Response, problem == "Wrong password." ? 403 : 400, new { error = problem });
+                await WriteJsonAsync(context.Response, problem == MachineRegistry.WrongPassword ? 403 : 400, new { error = problem });
             return;
         }
 
@@ -569,8 +569,8 @@ public sealed class AdminWebServer
         {
             var fromFile = File.Exists(filePath) ? JsonNode.Parse(await File.ReadAllTextAsync(filePath)) : null;
             var result = WithDefaults(key, fromFile);
-            if (key.Equals("mqtt-config", StringComparison.OrdinalIgnoreCase))
-                MaskPassword(result);
+            if (PasswordSettings.TryGetValue(key, out var secret))
+                MaskPassword(result, secret);
             if (result is null)
             {
                 await WriteJsonAsync(context.Response, 404, new { error = $"Missing Config/{fileName}" });
@@ -587,8 +587,8 @@ public sealed class AdminWebServer
             {
                 using var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding ?? Encoding.UTF8);
                 var raw = await reader.ReadToEndAsync();
-                if (key.Equals("mqtt-config", StringComparison.OrdinalIgnoreCase))
-                    raw = KeepStoredPassword(raw, filePath);
+                if (PasswordSettings.TryGetValue(key, out var secret))
+                    raw = KeepStoredPassword(raw, filePath, secret);
                 using var document = JsonDocument.Parse(raw);
 
                 // Load it the way the gateway will, before touching the file.
@@ -668,34 +668,39 @@ public sealed class AdminWebServer
         await WriteJsonAsync(context.Response, 405, new { error = "Method not allowed" });
     }
 
-    // The MQTT password never goes back to the page: it gets PasswordMask instead, and
-    // saving the mask unchanged keeps the stored password (anyone who can open the page,
-    // in Docker anyone on the network, could otherwise read it).
+    // A password (MQTT "password", machine-config "mappingPassword") never goes back to the page:
+    // it gets PasswordMask instead, and saving the mask unchanged keeps the stored password
+    // (anyone who can open the page, in Docker anyone on the network, could otherwise read it).
     public const string PasswordMask = "••••••••";
-
-    public static void MaskPassword(JsonNode? config)
+    private static readonly Dictionary<string, string> PasswordSettings = new(StringComparer.OrdinalIgnoreCase)
     {
-        if (config is JsonObject settings && PasswordKey(settings) is { } name
+        ["mqtt-config"] = "password",
+        ["machine-config"] = "mappingPassword",
+    };
+
+    public static void MaskPassword(JsonNode? config, string key = "password")
+    {
+        if (config is JsonObject settings && PasswordKey(settings, key) is { } name
             && settings[name] is JsonValue value && value.TryGetValue<string>(out var password) && password.Length > 0)
             settings[name] = PasswordMask;
     }
 
-    public static string KeepStoredPassword(string raw, string filePath)
+    public static string KeepStoredPassword(string raw, string filePath, string key = "password")
     {
-        if (JsonNode.Parse(raw) is not JsonObject incoming || PasswordKey(incoming) is not { } name
+        if (JsonNode.Parse(raw) is not JsonObject incoming || PasswordKey(incoming, key) is not { } name
             || !(incoming[name] is JsonValue value && value.TryGetValue<string>(out var sent) && sent == PasswordMask))
             return raw;
 
         var stored = File.Exists(filePath) && JsonNode.Parse(File.ReadAllText(filePath)) is JsonObject file
-                     && PasswordKey(file) is { } fileName && file[fileName] is JsonValue saved && saved.TryGetValue<string>(out var text)
+                     && PasswordKey(file, key) is { } fileName && file[fileName] is JsonValue saved && saved.TryGetValue<string>(out var text)
             ? text
             : "";
         incoming[name] = stored;
         return incoming.ToJsonString();
     }
 
-    private static string? PasswordKey(JsonObject settings) =>
-        settings.Select(p => p.Key).FirstOrDefault(k => k.Equals("password", StringComparison.OrdinalIgnoreCase));
+    private static string? PasswordKey(JsonObject settings, string key) =>
+        settings.Select(p => p.Key).FirstOrDefault(k => k.Equals(key, StringComparison.OrdinalIgnoreCase));
 
     // MQTT and machine settings: every setting the gateway reads, with the
     // built-in default where the file leaves it out, so the page can show
@@ -712,8 +717,14 @@ public sealed class AdminWebServer
 
         if (defaults is null)
             return fromFile;
+        if (fromFile is not JsonObject file)
+            return defaults;
 
-        return fromFile is JsonObject file ? Merge(defaults, file, overwrite: true) : defaults;
+        // machine-config keys the gateway no longer reads (timestampsWithoutZone) aren't shown, so the next save drops them.
+        if (key.Equals("machine-config", StringComparison.OrdinalIgnoreCase))
+            foreach (var gone in file.Select(p => p.Key).Where(k => !defaults.Any(d => d.Key.Equals(k, StringComparison.OrdinalIgnoreCase))).ToList())
+                file.Remove(gone);
+        return Merge(defaults, file, overwrite: true);
     }
 
     private static JsonObject ToObject<T>(T value) =>

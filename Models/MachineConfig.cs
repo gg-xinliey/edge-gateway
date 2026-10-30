@@ -17,12 +17,6 @@ public class MachineConfig
 
     public string DataSource { get; set; } = "TCP-BRIDGE-01";
 
-    // How an incoming "timestamp" without a zone is read: "UTC" (default) or
-    // "local". A timestamp that carries Z or +07:00 is always taken as written.
-    public string TimestampsWithoutZone { get; set; } = "UTC";
-
-    [System.Text.Json.Serialization.JsonIgnore] // helper, not a setting (keeps it off the config page)
-    public bool ZonelessIsUtc => !TimestampsWithoutZone.Trim().Equals("local", StringComparison.OrdinalIgnoreCase);
     public string ProtocolLabel { get; set; } = "TCP/JSON-CSV";
     public string MesUrl { get; set; } = "http://localhost:5000/api/v1/machine-events";
 
@@ -67,4 +61,8 @@ public class MachineConfig
     // Problems (MES unreachable, MES failures, held machines, auto tabs, time warnings, a big
     // backlog) are POSTed here as JSON when one starts or clears (#23). Empty = off. Read at start.
     public string AlarmWebhookUrl { get; set; } = "";
+
+    // Password to change a confirmed tab's mapping (⇄ on the config page, #31). Empty = confirmed
+    // tabs can't be changed that way. Never sent back to the page (masked). Read at start.
+    public string MappingPassword { get; set; } = "";
 }

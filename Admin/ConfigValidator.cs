@@ -165,8 +165,6 @@ public static class ConfigValidator
         if (!string.IsNullOrWhiteSpace(machine.AlarmWebhookUrl)
             && !(Uri.TryCreate(machine.AlarmWebhookUrl, UriKind.Absolute, out var hook) && hook.Scheme is "http" or "https"))
             return "alarmWebhookUrl must be empty (off) or a full http:// or https:// address.";
-        if (machine.TimestampsWithoutZone.Trim().ToLowerInvariant() is not ("utc" or "local"))
-            return "timestampsWithoutZone must be UTC or local.";
 
         return null;
     }

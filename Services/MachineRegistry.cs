@@ -181,22 +181,25 @@ public sealed class MachineRegistry
         return true;
     }
 
-    // Changing the mapping of a confirmed tab needs this password (#31); an automatic tab's doesn't (#30).
-    public const string ReassignPassword = "xxx";
+    public const string WrongPassword = "Wrong password."; // Reassign's answer; the page gets 403 for it
 
     // A tab gets another mapping: its point-map.json and timestamp-rules.json become a copy of
     // copyFrom's (another tab's, or the template when empty). The old ones are kept as .bak and its
     // outbox stays. Its data keeps the old mapping until the copy is done. An automatic tab stays
-    // automatic, to be checked again. Null = done, else why not.
-    public string? Reassign(string machineId, string? copyFrom, string? password)
+    // automatic, to be checked again. A confirmed tab needs mappingPassword (GatewayConfig, #31);
+    // none set = confirmed tabs can't be changed this way. An automatic tab needs none (#30).
+    // Null = done, else why not.
+    public string? Reassign(string machineId, string? copyFrom, string? password, string mappingPassword)
     {
         if (!_machines.TryGetValue(machineId, out var entry))
             return $"{machineId} has no own mapping.";
         var auto = IsAuto(machineId);
-        if (!auto && password != ReassignPassword)
+        if (!auto && string.IsNullOrEmpty(mappingPassword))
+            return "No password is set for changing a confirmed tab's mapping: set it on the General page (GatewayConfig, mappingPassword) first.";
+        if (!auto && password != mappingPassword)
         {
             Console.WriteLine($"[config] {machineId}: mapping not changed, wrong password");
-            return "Wrong password.";
+            return WrongPassword;
         }
 
         string sourceFolder;
@@ -215,10 +218,12 @@ public sealed class MachineRegistry
             var to = Path.Combine(entry.Folder, file);
             if (File.Exists(to))
                 File.Copy(to, to + ".bak", overwrite: true);
+            var temp = to + ".tmp"; // whole file next to it, then swapped in (#17)
             if (File.Exists(from))
-                File.Copy(from, to, overwrite: true);
+                File.Copy(from, temp, overwrite: true);
             else
-                File.WriteAllText(to, file == "point-map.json" ? "[]" : "{}");
+                File.WriteAllText(temp, file == "point-map.json" ? "[]" : "{}");
+            File.Move(temp, to, overwrite: true);
         }
         if (auto)
             File.WriteAllText(Path.Combine(entry.Folder, AutoMarker),

@@ -681,6 +681,96 @@ if (which is "all" or "100")
     Report("SVI-100 integers above 2^53 kept exactly", sent.SequenceEqual(new[] { "9007199254740993", "9007199254740995" }), $"MES gets: [{string.Join(", ", sent)}]");
 }
 
+if (which is "all" or "reassign")
+{
+    // #30 / #31: another mapping for a tab. A confirmed tab needs mappingPassword (none set = refused),
+    // an automatic one doesn't and stays automatic; the old files are kept as .bak, no .tmp left behind.
+    var (root, json) = TempConfig("A", "B");
+    File.WriteAllText(Path.Combine(root, "machines", "B", "point-map.json"), """[{"tag":"bTag","dataGroup":"TRACEABILITY","fieldName":"station_id"}]""");
+    var reg = new MachineRegistry(new GatewayConfigStore(root, json), new UnidentifiedTagTracker(), json);
+    string Tags(string id) => string.Join(",", reg.StoreFor(id)!.Current.PointMap.Select(p => p.Tag));
+    var aFolder = Path.Combine(root, "machines", "A");
+    var noneSet = reg.Reassign("A", "B", "anything", "");
+    var wrong = reg.Reassign("A", "B", "nope", "pw");
+    var self = reg.Reassign("A", "A", "pw", "pw");
+    var unknown = reg.Reassign("A", "Z", "pw", "pw");
+    var untouched = Tags("A");
+    var ok = reg.Reassign("A", "B", "pw", "pw");
+    var copied = Tags("A");
+    var leftovers = Directory.GetFiles(aFolder, "*.tmp").Length;
+    var bak = File.ReadAllText(Path.Combine(aFolder, "point-map.json.bak")).Contains("product_sn");
+    var created = reg.CreateAuto("C", "B");
+    var autoNoPassword = reg.Reassign("C", null, null, "pw");
+    var got = $"none set: {noneSet?[..30]}; wrong: {wrong}; self: {self}; unknown: {unknown}; before: [{untouched}]; ok: {ok ?? "done"} [{copied}] " +
+              $".tmp {leftovers}, .bak has the old: {bak}; auto tab without password: {created ?? "created"} / {autoNoPassword ?? "done"} [{Tags("C")}] still auto: {reg.IsAuto("C")}";
+    Report("#30/#31 change a tab's mapping", noneSet?.StartsWith("No password is set") == true && wrong == MachineRegistry.WrongPassword && self is not null && unknown is not null
+        && untouched == "product_sn,module_no,MACHINE_STATUS,MACHINE_MODE" && ok is null && copied == "bTag" && leftovers == 0 && bak
+        && created is null && autoNoPassword is null && Tags("C") == "product_sn,module_no,MACHINE_STATUS,MACHINE_MODE" && reg.IsAuto("C"), got);
+
+    // The config page never gets mappingPassword back; saving the mask keeps the stored one.
+    var file = Path.Combine(root, "machine-config.json");
+    File.WriteAllText(file, """{"gatewayId":"T","mappingPassword":"secret"}""");
+    var shown = System.Text.Json.Nodes.JsonNode.Parse("""{"gatewayId":"T","mappingPassword":"secret"}""");
+    EdgeGateway.Admin.AdminWebServer.MaskPassword(shown, "mappingPassword");
+    string Saved(string sent) => System.Text.Json.Nodes.JsonNode.Parse(EdgeGateway.Admin.AdminWebServer.KeepStoredPassword(
+        $$"""{"gatewayId":"T","mappingPassword":"{{sent}}"}""", file, "mappingPassword"))!["mappingPassword"]!.GetValue<string>();
+    var masked = shown!["mappingPassword"]!.GetValue<string>();
+    Report("#31 mappingPassword masked on the page", masked == EdgeGateway.Admin.AdminWebServer.PasswordMask
+        && Saved(EdgeGateway.Admin.AdminWebServer.PasswordMask) == "secret" && Saved("new") == "new",
+        $"page gets {masked}; saving the mask keeps: {Saved(EdgeGateway.Admin.AdminWebServer.PasswordMask)}; saving new: {Saved("new")}");
+}
+
+if (which is "all" or "utc")
+{
+    // Every time to UTC: a span start / end the machine sends (zone converted, none = UTC, other text as sent) ...
+    var stamper = new TimeStamper(new Dictionary<string, TimestampRule>
+    {
+        ["MACHINE_STATUS"] = new() { Mode = TimestampMode.Span, TriggerField = "machine_status", StartField = "status_start_time", EndField = "status_end_time" },
+    });
+    string End(string sent)
+    {
+        var fields = new Dictionary<string, object?> { ["machine_status"] = "RUN", ["status_end_time"] = sent };
+        stamper.Stamp(Guid.NewGuid().ToString(), "MACHINE_STATUS", fields, DateTimeOffset.UtcNow);
+        return fields["status_end_time"] as string ?? "";
+    }
+    var ends = new[] { End("2026-09-02T04:50:15.045+07:00"), End("2026-09-02 04:50:15"), End("n/a") };
+    Report("utc: machine's span end time to UTC", ends.SequenceEqual(new[] { "2026-09-01T21:50:15.045Z", "2026-09-02T04:50:15.000Z", "n/a" }), string.Join("; ", ends));
+
+    // ... and the message's "timestamp": +07:00 converted, no zone = UTC (event_time at MES).
+    var (root, json) = TempConfig();
+    var tcp = 19500 + Random.Shared.Next(300);
+    var mesPort = 19900 + Random.Shared.Next(90);
+    var bodies = new System.Collections.Concurrent.ConcurrentQueue<string>();
+    using var mes = FakeMes(mesPort, body => { bodies.Enqueue(body); return 200; });
+    File.WriteAllText(Path.Combine(root, "machine-config.json"),
+        $$"""{"gatewayId":"T","listenAddress":"127.0.0.1","tcpPort":{{tcp}},"mesUrl":"http://localhost:{{mesPort}}/","unregisteredMachines":"shared","unmappedTags":"send"}""");
+    File.WriteAllText(Path.Combine(root, "mqtt-config.json"),
+        """{"brokerAddress":"127.0.0.1","brokerPort":1,"clientIdSuffix":"checks","reconnectCooldownSeconds":60,"area":"T","keepaliveIntervalSeconds":60,"motionDeadband":0.01,"maxPublishRateMs":50}""");
+    DataFolder.Use(root);
+    var host = new GatewayHost(new MachineRegistry(new GatewayConfigStore(root, json), new UnidentifiedTagTracker(), json), json, null, new MessageIdFilter());
+    using var stop = new CancellationTokenSource();
+    var run = host.RunAsync(stop.Token);
+    for (var i = 0; i < 50 && host.State != "running"; i++) await Task.Delay(100);
+    using (var c = new System.Net.Sockets.TcpClient())
+    {
+        await c.ConnectAsync("127.0.0.1", tcp);
+        var s = c.GetStream();
+        var w = new StreamWriter(s) { AutoFlush = true, NewLine = "\n" }; var r = new StreamReader(s);
+        foreach (var (id, machine, stamp) in new[] { ("U1", "M1", "2026-10-30T10:00:00.000+07:00"), ("U2", "M2", "2026-10-30T10:00:00.000") })
+        {
+            await w.WriteLineAsync($$$"""{"message_id":"{{{id}}}","machine_id":"{{{machine}}}","timestamp":"{{{stamp}}}","data":{"product_sn":"SN"}}""");
+            await r.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        }
+    }
+    for (var i = 0; i < 100 && bodies.Count < 2; i++) await Task.Delay(100);
+    stop.Cancel(); try { await run; } catch { }
+    mes.Stop();
+    var events = bodies.Select(b => System.Text.Json.JsonDocument.Parse(b).RootElement)
+        .ToDictionary(e => e.GetProperty("machine_id").GetString()!, e => e.GetProperty("event_time").GetString());
+    Report("utc: message timestamp to UTC", events.GetValueOrDefault("M1") == "2026-10-30T03:00:00.000Z" && events.GetValueOrDefault("M2") == "2026-10-30T10:00:00.000Z",
+        $"+07:00 -> {events.GetValueOrDefault("M1")} (want 03:00Z); no zone -> {events.GetValueOrDefault("M2")} (want 10:00Z)");
+}
+
 if (which is "all" or "29")
 {
     // #29: start and end of a cycle in the same message -> cycle_time = end - start (s); the machine's own cycle_time wins.
@@ -1027,7 +1117,7 @@ if (which is "all" or "stuck")
     // Stuck-row limits as General settings: tries >= 1, minutes 1-10, 0 refused.
     var (_, json) = TempConfig();
     string? Check(string extra) => EdgeGateway.Admin.ConfigValidator.Validate("machine-config",
-        $$"""{"listenAddress":"0.0.0.0","tcpPort":9000,"mesUrl":"http://localhost:5001/","timestampsWithoutZone":"UTC"{{extra}}}""", json, 8080);
+        $$"""{"listenAddress":"0.0.0.0","tcpPort":9000,"mesUrl":"http://localhost:5001/"{{extra}}}""", json, 8080);
     var cases = new (string Extra, bool Ok)[]
     {
         ("", true), (",\"mesStuckRowTries\":1", true), (",\"mesStuckRowTries\":1000", true), (",\"mesStuckRowTries\":0", false),

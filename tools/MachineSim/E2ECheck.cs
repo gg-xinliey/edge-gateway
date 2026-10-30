@@ -167,22 +167,14 @@ static class E2ECheck
                 return $"{field}: machine sent {sent}, MES has {got}";
         }
 
-        // The machine's timestamp has no zone: the gateway reads it as its
-        // timestampsWithoutZone setting says (UTC or Local). MES gets UTC.
-        var source = DateTimeOffset.Parse(line.Timestamp, CultureInfo.InvariantCulture,
-            ZoneLessIsLocal.Value ? DateTimeStyles.AssumeLocal : DateTimeStyles.AssumeUniversal);
+        // The machine's timestamp has no zone: the gateway reads it as UTC. MES gets UTC.
+        var source = DateTimeOffset.Parse(line.Timestamp, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal);
         var eventTime = DateTimeOffset.Parse(record.GetProperty("event_time").GetString()!, CultureInfo.InvariantCulture);
         if (Math.Abs((source - eventTime).TotalMilliseconds) > 1)
             return $"event_time {record.GetProperty("event_time")} is not the machine's timestamp {line.Timestamp}";
         return null;
     }
 
-    private static readonly Lazy<bool> ZoneLessIsLocal = new(() =>
-    {
-        var path = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "Config", "machine-config.json")); // bin\Debug\net8.0 of tools\MachineSim -> the gateway project
-        using var doc = JsonDocument.Parse(File.ReadAllText(path));
-        return doc.RootElement.TryGetProperty("timestampsWithoutZone", out var z) && string.Equals(z.GetString(), "Local", StringComparison.OrdinalIgnoreCase);
-    });
 
     private static readonly Lazy<Dictionary<string, string[]>> MesColumns = new(() =>
     {
