@@ -865,6 +865,29 @@ if (which is "all" or "29")
         && Got("MACHINE_STATUS", "status_start_time") != "none" && Got("MACHINE_STATUS", "status_end_time") != "none", ldm);
 }
 
+if (which is "all" or "cycleactive")
+{
+    // Review: a machine that only signals cycle_active on / off. Its change is stamped at the message's own time
+    // (not at the next record), and a cycle ending gives cycle_time = how long it was on; a cycle starting makes no row.
+    var (root, json) = TempConfig();
+    File.WriteAllText(Path.Combine(root, "mes-schema.json"), """{"PRODUCTION":["station_id","cycle_time"]}""");
+    File.WriteAllText(Path.Combine(root, "point-map.json"), """[{"tag":"CYCLE_ACTIVE","dataGroup":"PRODUCTION","fieldName":"cycle_active"},{"tag":"STATION","dataGroup":"PRODUCTION","fieldName":"station_id"}]""");
+    File.WriteAllText(Path.Combine(root, "timestamp-rules.json"), """{"PRODUCTION":{"mode":"Span","triggerField":"cycle_active","startField":"cycle_start_time","endField":"cycle_end_time","sendEveryMs":0}}""");
+    var store = new GatewayConfigStore(root, json);
+    var outbox = new Outbox(Path.Combine(root, "outbox"));
+    var sender = new IntervalSender(outbox, new EnvelopeBuilder("TEST", "SRC", "TCP"), () => store.Current);
+    var t0 = DateTimeOffset.UtcNow;
+    await SendRaw(store, sender, new() { ["CYCLE_ACTIVE"] = 1.0, ["STATION"] = "S1" }, t0);  // station: a row
+    await SendRaw(store, sender, new() { ["CYCLE_ACTIVE"] = 0.0 }, t0.AddSeconds(42.5));       // cycle 1 ends: 42.5 s
+    await SendRaw(store, sender, new() { ["CYCLE_ACTIVE"] = 1.0 }, t0.AddSeconds(50));         // cycle 2 starts: no row
+    await SendRaw(store, sender, new() { ["CYCLE_ACTIVE"] = 0.0 }, t0.AddSeconds(80.25));      // cycle 2 ends: 30.25 s
+    await Task.Delay(500);
+    var rows = outbox.ReadUnsent(100).Select(r => r.Envelope.payload.GetValueOrDefault("cycle_time") is { } v ? System.Text.Json.JsonSerializer.Serialize(v) : "-").ToList();
+    await outbox.DisposeAsync();
+    Report("review: cycle_time from cycle_active on / off", rows.SequenceEqual(new[] { "-", "42.5", "30.25" }),
+        $"rows' cycle_time: [{string.Join(", ", rows)}] (want -, 42.5, 30.25: no row when a cycle starts)");
+}
+
 if (which is "all" or "23")
 {
     // #23: problems pushed to alarmWebhookUrl when one starts or clears; a failed POST is sent again next check.

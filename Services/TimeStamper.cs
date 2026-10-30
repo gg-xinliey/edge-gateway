@@ -61,6 +61,10 @@ public class TimeStamper
 
                 fields[string.IsNullOrWhiteSpace(rule.PreviousField) ? "previous_" + rule.TriggerField : rule.PreviousField] = prev.value;
                 fields[rule.EndField!] = FormatIso(now); // closes the span that just ended
+                // A PRODUCTION cycle just ended (its trigger, e.g. cycle_active, was on): its length is the
+                // cycle time, unless the machine sends its own cycle_time.
+                if (dataGroup.Equals("PRODUCTION", StringComparison.OrdinalIgnoreCase) && IsOn(prev.value) && !fields.ContainsKey("cycle_time"))
+                    fields["cycle_time"] = Math.Round((now - prev.since).TotalSeconds, 3);
                 return (newValue, now);
             });
 

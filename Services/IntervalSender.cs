@@ -99,10 +99,18 @@ public sealed class IntervalSender
                 state.Stamper = config.TimeStamper;
             }
 
+            // A Span group's trigger (e.g. PRODUCTION cycle_active) is stamped when it changes, even when
+            // MES has no column for it, so the span gets the time it really changed (review).
+            var columns = MesColumns(config, dataGroup);
+            var trigger = config.TimeStamper.RuleFor(dataGroup) is { Mode: TimestampMode.Span, TriggerField: { } t } ? t : null;
+            var triggerChanged = trigger is not null && fields.TryGetValue(trigger, out var sent)
+                                 && !(state.Snapshot.TryGetValue(trigger, out var was) && SameValue(was, sent));
+
             // Changes go to a copy, kept only once saved: a value that can't be saved must not
             // stay in the snapshot and fail every later message of the group.
             var snapshot = new Dictionary<string, object?>(state.Snapshot);
-            if (!ApplyChanges(snapshot, fields, MesColumns(config, dataGroup)))
+            var changed = ApplyChanges(snapshot, fields, columns);
+            if (!changed && !triggerChanged)
             {
                 state.Snapshot = snapshot; // extra fields still kept up to date
                 return false; // nothing new for MES (same values, or only fields MES never gets)
@@ -110,6 +118,14 @@ public sealed class IntervalSender
 
             record = new Dictionary<string, object?>(snapshot);
             config.TimeStamper.Stamp(machineId, dataGroup, record, at, source);
+            // Only the trigger changed: a record only if the stamp changed something MES gets (cycle_time
+            // when a cycle ends), not when a cycle starts (MES would get a row that looks unchanged).
+            // shortcut: such a stamp-only change isn't saved, so a restart mid-cycle loses that cycle's start; save it if that matters
+            if (!changed && columns?.Any(c => !SameValue(record.GetValueOrDefault(c), snapshot.GetValueOrDefault(c))) != true)
+            {
+                state.Snapshot = snapshot;
+                return false;
+            }
             saved = Save(machineId, source, dataGroup, snapshot, record, config);
             sendAfter = SendAfter(state, SendEveryMs(config, dataGroup));
             state.Snapshot = snapshot;
