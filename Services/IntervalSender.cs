@@ -37,6 +37,7 @@ public sealed class IntervalSender
     private readonly ConcurrentDictionary<(string Machine, string DataSource, string Group), GroupState> _states = new();
     private readonly Lazy<Dictionary<string, SavedState>> _saved; // last values from the outbox, read on first use
     private readonly Lazy<Dictionary<string, long>> _pendingDue;  // latest send_after still waiting per group, ditto
+    private readonly Lazy<Dictionary<string, OpenSpan>> _openSpans; // spans opened without a record (a cycle started), ditto
 
     public IntervalSender(Outbox outbox, EnvelopeBuilder envelopes, Func<ConfigSnapshot> config)
     {
@@ -60,6 +61,15 @@ public sealed class IntervalSender
                 Console.WriteLine($"[outbox] waiting send times not read back, the first record of each group may be sent at once " +
                                   $"(the outbox still keeps each group's order): {ex.Message}");
                 return new Dictionary<string, long>();
+            }
+        });
+        _openSpans = new Lazy<Dictionary<string, OpenSpan>>(() =>
+        {
+            try { return outbox.OpenSpans(); }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[outbox] open cycles not read back, a cycle running at the restart gets no start: {ex.Message}");
+                return new Dictionary<string, OpenSpan>();
             }
         });
     }
@@ -120,16 +130,20 @@ public sealed class IntervalSender
             config.TimeStamper.Stamp(machineId, dataGroup, record, at, source);
             // Only the trigger changed: a record only if the stamp changed something MES gets (cycle_time
             // when a cycle ends), not when a cycle starts (MES would get a row that looks unchanged).
-            // shortcut: such a stamp-only change isn't saved, so a restart mid-cycle loses that cycle's start; save it if that matters
+            // No row keeps that span then: open-spans.json does, so a restart mid-cycle still knows its start.
             if (!changed && columns?.Any(c => !SameValue(record.GetValueOrDefault(c), snapshot.GetValueOrDefault(c))) != true)
             {
                 state.Snapshot = snapshot;
+                state.SpanSince = SpanStart(config, dataGroup, record);
+                KeepOpenSpan(state, SavedState.KeyOf(machineId, source, dataGroup), snapshot.GetValueOrDefault(trigger!), state.SpanSince);
                 return false;
             }
             saved = Save(machineId, source, dataGroup, snapshot, record, config);
             sendAfter = SendAfter(state, SendEveryMs(config, dataGroup));
             state.Snapshot = snapshot;
             state.SpanSince = saved.SpanSince;
+            if (state.OpenSpanKept)
+                KeepOpenSpan(state, saved.Key, null, null); // this row's state has the span now
         }
 
         // Lines of one machine come from one connection and one worker, in order,
@@ -146,15 +160,47 @@ public sealed class IntervalSender
         var stateKey = SavedState.KeyOf(key.Machine, key.DataSource, key.Group);
         // A record still waiting from before the restart: the next one is not due before it (SVI-99).
         var state = new GroupState { Stamper = config.TimeStamper, NextDueMs = _pendingDue.Value.GetValueOrDefault(stateKey) };
-        if (!_saved.Value.TryGetValue(stateKey, out var saved))
-            return state;
+        if (_saved.Value.TryGetValue(stateKey, out var saved))
+        {
+            foreach (var (name, value) in saved.Values)
+                state.Snapshot[name] = PayloadParser.ParseValue(value);
+            state.SpanSince = saved.SpanSince;
+        }
 
-        foreach (var (name, value) in saved.Values)
-            state.Snapshot[name] = PayloadParser.ParseValue(value);
-        state.SpanSince = saved.SpanSince;
-        RestoreSpan(config, key.Machine, key.DataSource, key.Group, state.Snapshot, saved.SpanSince);
+        // A span opened after the last row (a cycle running at the restart): its trigger value and start.
+        // Not when the last row is newer (it was saved after; that entry could not be cleared).
+        if (_openSpans.Value.TryGetValue(stateKey, out var open)
+            && config.TimeStamper.RuleFor(key.Group) is { Mode: TimestampMode.Span, TriggerField: { } trigger }
+            && !(Time(state.SpanSince) > Time(open.Since)))
+        {
+            state.Snapshot[trigger] = PayloadParser.ParseValue(open.Value);
+            state.SpanSince = open.Since;
+            state.OpenSpanKept = true;
+        }
+
+        RestoreSpan(config, key.Machine, key.DataSource, key.Group, state.Snapshot, state.SpanSince);
         return state;
     }
+
+    // Keeps (span) or forgets (null) the group's open span in open-spans.json. A failed write only
+    // means a restart before the next row loses that span's start.
+    private void KeepOpenSpan(GroupState state, string key, object? value, string? since)
+    {
+        if (value is not null && since is null)
+            return;
+        try
+        {
+            _outbox.SaveOpenSpan(key, value is null ? null : new OpenSpan(JsonSerializer.SerializeToElement(value), since!));
+            state.OpenSpanKept = value is not null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Console.WriteLine($"[outbox] open span of {key.Replace('\n', '/')} not {(value is null ? "cleared" : "kept")} ({ex.Message})");
+        }
+    }
+
+    private static string? SpanStart(ConfigSnapshot config, string dataGroup, Dictionary<string, object?> record) =>
+        config.TimeStamper.RuleFor(dataGroup) is { Mode: TimestampMode.Span, StartField: { } start } ? record.GetValueOrDefault(start) as string : null;
 
     // Tells the TimeStamper the open span of a Span group: its trigger value and since when.
     private static void RestoreSpan(ConfigSnapshot config, string machineId, string source, string dataGroup,
@@ -169,10 +215,8 @@ public sealed class IntervalSender
     private static SavedState Save(string machineId, string source, string dataGroup, Dictionary<string, object?> snapshot,
         Dictionary<string, object?> record, ConfigSnapshot config)
     {
-        var rule = config.TimeStamper.RuleFor(dataGroup);
-        var since = rule is { Mode: TimestampMode.Span, StartField: { } start } ? record.GetValueOrDefault(start) as string : null;
         return new SavedState(SavedState.KeyOf(machineId, source, dataGroup),
-            snapshot.ToDictionary(p => p.Key, p => JsonSerializer.SerializeToElement(p.Value)), since);
+            snapshot.ToDictionary(p => p.Key, p => JsonSerializer.SerializeToElement(p.Value)), SpanStart(config, dataGroup, record));
     }
 
     // When MES may get this record (UTC ms): now, if the group's last send moment
@@ -264,5 +308,6 @@ public sealed class IntervalSender
         public long NextDueMs; // end of the current sendEveryMs interval (UTC ms)
         public TimeStamper? Stamper; // the config's TimeStamper that last saw this group's span
         public string? SpanSince;    // the open span's start (Span groups), as in the last record
+        public bool OpenSpanKept;    // the span is in open-spans.json (opened without a record)
     }
 }

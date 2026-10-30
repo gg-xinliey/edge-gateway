@@ -873,19 +873,27 @@ if (which is "all" or "cycleactive")
     File.WriteAllText(Path.Combine(root, "mes-schema.json"), """{"PRODUCTION":["station_id","cycle_time"]}""");
     File.WriteAllText(Path.Combine(root, "point-map.json"), """[{"tag":"CYCLE_ACTIVE","dataGroup":"PRODUCTION","fieldName":"cycle_active"},{"tag":"STATION","dataGroup":"PRODUCTION","fieldName":"station_id"}]""");
     File.WriteAllText(Path.Combine(root, "timestamp-rules.json"), """{"PRODUCTION":{"mode":"Span","triggerField":"cycle_active","startField":"cycle_start_time","endField":"cycle_end_time","sendEveryMs":0}}""");
+    var outboxDir = Path.Combine(root, "outbox");
     var store = new GatewayConfigStore(root, json);
-    var outbox = new Outbox(Path.Combine(root, "outbox"));
+    var outbox = new Outbox(outboxDir);
     var sender = new IntervalSender(outbox, new EnvelopeBuilder("TEST", "SRC", "TCP"), () => store.Current);
     var t0 = DateTimeOffset.UtcNow;
     await SendRaw(store, sender, new() { ["CYCLE_ACTIVE"] = 1.0, ["STATION"] = "S1" }, t0);  // station: a row
     await SendRaw(store, sender, new() { ["CYCLE_ACTIVE"] = 0.0 }, t0.AddSeconds(42.5));       // cycle 1 ends: 42.5 s
     await SendRaw(store, sender, new() { ["CYCLE_ACTIVE"] = 1.0 }, t0.AddSeconds(50));         // cycle 2 starts: no row
+    await Task.Delay(300);
+    await outbox.DisposeAsync();
+    // The gateway restarts in the middle of cycle 2 (new outbox, mapping, TimeStamper, sender on the same folder).
+    store = new GatewayConfigStore(root, json);
+    outbox = new Outbox(outboxDir);
+    sender = new IntervalSender(outbox, new EnvelopeBuilder("TEST", "SRC", "TCP"), () => store.Current);
     await SendRaw(store, sender, new() { ["CYCLE_ACTIVE"] = 0.0 }, t0.AddSeconds(80.25));      // cycle 2 ends: 30.25 s
     await Task.Delay(500);
     var rows = outbox.ReadUnsent(100).Select(r => r.Envelope.payload.GetValueOrDefault("cycle_time") is { } v ? System.Text.Json.JsonSerializer.Serialize(v) : "-").ToList();
+    var openLeft = outbox.OpenSpans().Count;
     await outbox.DisposeAsync();
-    Report("review: cycle_time from cycle_active on / off", rows.SequenceEqual(new[] { "-", "42.5", "30.25" }),
-        $"rows' cycle_time: [{string.Join(", ", rows)}] (want -, 42.5, 30.25: no row when a cycle starts)");
+    Report("review: cycle_time from cycle_active on / off, also across a restart", rows.SequenceEqual(new[] { "-", "42.5", "30.25" }) && openLeft == 0,
+        $"rows' cycle_time: [{string.Join(", ", rows)}] (want -, 42.5, 30.25: no row when a cycle starts; cycle 2 spans a restart); open spans left: {openLeft}");
 }
 
 if (which is "all" or "23")

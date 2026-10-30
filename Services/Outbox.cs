@@ -408,6 +408,36 @@ public sealed class Outbox : IAsyncDisposable
         return states;
     }
 
+    // A Span trigger change that made no record (a cycle starting: nothing MES gets changed) is in no
+    // row's state, so a restart would lose that span's start. Kept here instead (open-spans.json next to
+    // the day files) until a record saves the group's state again; read at start with LatestStates.
+    private string OpenSpansPath => Path.Combine(_dir, "open-spans.json");
+    private readonly object _openSpansSync = new();
+
+    public Dictionary<string, OpenSpan> OpenSpans()
+    {
+        lock (_openSpansSync)
+            return File.Exists(OpenSpansPath)
+                ? JsonSerializer.Deserialize<Dictionary<string, OpenSpan>>(File.ReadAllText(OpenSpansPath)) ?? new()
+                : new();
+    }
+
+    // span null = forget it (the group's state is in a row again).
+    public void SaveOpenSpan(string key, OpenSpan? span)
+    {
+        lock (_openSpansSync)
+        {
+            var spans = OpenSpans();
+            if (span is null && !spans.Remove(key))
+                return;
+            if (span is not null)
+                spans[key] = span;
+            var temp = OpenSpansPath + ".tmp"; // whole file next to it, then swapped in (#17)
+            File.WriteAllText(temp, JsonSerializer.Serialize(spans));
+            File.Move(temp, OpenSpansPath, overwrite: true);
+        }
+    }
+
     // The latest send_after (UTC ms) per group (state_key) among rows still to send, over
     // every file. IntervalSender paces a group it restores from it, so after a restart a new
     // record never gets an earlier send_after than one still waiting (SVI-99).
@@ -634,3 +664,6 @@ public sealed record SavedState(string Key, Dictionary<string, JsonElement> Valu
 {
     public static string KeyOf(string machineId, string dataSource, string dataGroup) => $"{machineId}\n{dataSource}\n{dataGroup}";
 }
+
+// An open span not saved with a row (Outbox.SaveOpenSpan): the trigger's value and since when.
+public sealed record OpenSpan(JsonElement Value, string Since);
