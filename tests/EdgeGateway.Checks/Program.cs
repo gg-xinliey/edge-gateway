@@ -683,14 +683,13 @@ if (which is "all" or "100")
 
 if (which is "all" or "reassign")
 {
-    // #30 / #31: another mapping for a tab. A confirmed tab needs mappingPassword (none set = refused),
-    // an automatic one doesn't and stays automatic; the old files are kept as .bak, no .tmp left behind.
+    // #30 / #31: another mapping for a tab. A confirmed tab needs mappingPassword when one is set (none set =
+    // none asked), an automatic one never and stays automatic; the old files are kept as .bak, no .tmp left behind.
     var (root, json) = TempConfig("A", "B");
     File.WriteAllText(Path.Combine(root, "machines", "B", "point-map.json"), """[{"tag":"bTag","dataGroup":"TRACEABILITY","fieldName":"station_id"}]""");
     var reg = new MachineRegistry(new GatewayConfigStore(root, json), new UnidentifiedTagTracker(), json);
     string Tags(string id) => string.Join(",", reg.StoreFor(id)!.Current.PointMap.Select(p => p.Tag));
     var aFolder = Path.Combine(root, "machines", "A");
-    var noneSet = reg.Reassign("A", "B", "anything", "");
     var wrong = reg.Reassign("A", "B", "nope", "pw");
     var self = reg.Reassign("A", "A", "pw", "pw");
     var unknown = reg.Reassign("A", "Z", "pw", "pw");
@@ -699,11 +698,15 @@ if (which is "all" or "reassign")
     var copied = Tags("A");
     var leftovers = Directory.GetFiles(aFolder, "*.tmp").Length;
     var bak = File.ReadAllText(Path.Combine(aFolder, "point-map.json.bak")).Contains("product_sn");
+    var noneSet = reg.Reassign("A", null, null, ""); // confirmed tab, no password set: back to the template
+    var afterNoneSet = Tags("A");
     var created = reg.CreateAuto("C", "B");
     var autoNoPassword = reg.Reassign("C", null, null, "pw");
-    var got = $"none set: {noneSet?[..30]}; wrong: {wrong}; self: {self}; unknown: {unknown}; before: [{untouched}]; ok: {ok ?? "done"} [{copied}] " +
-              $".tmp {leftovers}, .bak has the old: {bak}; auto tab without password: {created ?? "created"} / {autoNoPassword ?? "done"} [{Tags("C")}] still auto: {reg.IsAuto("C")}";
-    Report("#30/#31 change a tab's mapping", noneSet?.StartsWith("No password is set") == true && wrong == MachineRegistry.WrongPassword && self is not null && unknown is not null
+    var got = $"wrong: {wrong}; self: {self}; unknown: {unknown}; before: [{untouched}]; ok: {ok ?? "done"} [{copied}] " +
+              $".tmp {leftovers}, .bak has the old: {bak}; no password set: {noneSet ?? "done"} [{afterNoneSet}]; " +
+              $"auto tab without password: {created ?? "created"} / {autoNoPassword ?? "done"} [{Tags("C")}] still auto: {reg.IsAuto("C")}";
+    Report("#30/#31 change a tab's mapping", noneSet is null && afterNoneSet == "product_sn,module_no,MACHINE_STATUS,MACHINE_MODE"
+        && wrong == MachineRegistry.WrongPassword && self is not null && unknown is not null
         && untouched == "product_sn,module_no,MACHINE_STATUS,MACHINE_MODE" && ok is null && copied == "bTag" && leftovers == 0 && bak
         && created is null && autoNoPassword is null && Tags("C") == "product_sn,module_no,MACHINE_STATUS,MACHINE_MODE" && reg.IsAuto("C"), got);
 

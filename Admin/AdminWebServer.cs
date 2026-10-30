@@ -214,6 +214,7 @@ public sealed class AdminWebServer
                 held = _machines.Held.Count,         // machines sending without a tab (data held)
                 unmapped = _machines.Unmapped.Count, // machines whose data is held for tags not mapped yet
                 failed = FailedCount(),              // messages MES rejected as invalid, waiting for re-send / discard
+                mappingPasswordSet = _gateway.Machine.MappingPassword.Length > 0, // ⇄ on a confirmed tab asks for it
                 mqttConnected = _gateway.MqttConnected, // null while no run is going
                 adminPort = _port,
                 stats = _gateway.Stats.Latest // per-second rates over the last 10 s

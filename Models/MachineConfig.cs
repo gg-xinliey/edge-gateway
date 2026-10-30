@@ -62,7 +62,7 @@ public class MachineConfig
     // backlog) are POSTed here as JSON when one starts or clears (#23). Empty = off. Read at start.
     public string AlarmWebhookUrl { get; set; } = "";
 
-    // Password to change a confirmed tab's mapping (⇄ on the config page, #31). Empty = confirmed
-    // tabs can't be changed that way. Never sent back to the page (masked). Read at start.
+    // Password to change a confirmed tab's mapping (⇄ on the config page, #31). Empty = none asked.
+    // Never sent back to the page (masked). Read at start.
     public string MappingPassword { get; set; } = "";
 }

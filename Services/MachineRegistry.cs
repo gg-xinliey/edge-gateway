@@ -186,17 +186,16 @@ public sealed class MachineRegistry
     // A tab gets another mapping: its point-map.json and timestamp-rules.json become a copy of
     // copyFrom's (another tab's, or the template when empty). The old ones are kept as .bak and its
     // outbox stays. Its data keeps the old mapping until the copy is done. An automatic tab stays
-    // automatic, to be checked again. A confirmed tab needs mappingPassword (GatewayConfig, #31);
-    // none set = confirmed tabs can't be changed this way. An automatic tab needs none (#30).
+    // automatic, to be checked again. A confirmed tab needs mappingPassword (GatewayConfig, #31) when
+    // one is set; none set = no password asked. An automatic tab never needs one (#30).
     // Null = done, else why not.
     public string? Reassign(string machineId, string? copyFrom, string? password, string mappingPassword)
     {
         if (!_machines.TryGetValue(machineId, out var entry))
             return $"{machineId} has no own mapping.";
         var auto = IsAuto(machineId);
-        if (!auto && string.IsNullOrEmpty(mappingPassword))
-            return "No password is set for changing a confirmed tab's mapping: set it on the General page (GatewayConfig, mappingPassword) first.";
-        if (!auto && password != mappingPassword)
+        var locked = !auto && !string.IsNullOrEmpty(mappingPassword);
+        if (locked && password != mappingPassword)
         {
             Console.WriteLine($"[config] {machineId}: mapping not changed, wrong password");
             return WrongPassword;
@@ -230,7 +229,7 @@ public sealed class MachineRegistry
                 JsonSerializer.Serialize(new { copiedFrom = copyFrom ?? "", at = DateTimeOffset.Now }));
 
         Console.WriteLine($"[config] {machineId}: mapping replaced by a copy of {(string.IsNullOrWhiteSpace(copyFrom) ? "the template" : copyFrom)}"
-                          + $" ({(auto ? "automatic tab" : "confirmed tab, password given")}; old files kept as .bak)");
+                          + $" ({(auto ? "automatic tab" : locked ? "confirmed tab, password given" : "confirmed tab, no password set")}; old files kept as .bak)");
         return Reload(machineId);
     }
 

@@ -384,7 +384,8 @@ async function confirmAutoTab(id) {
 
 // Another mapping for a machine tab: "✗ cancel" on an automatic tab (#30), "⇄" on any tab (#31).
 // Its mapping becomes a copy of another tab's or the Template's (the old files are kept as .bak).
-// A confirmed tab asks for the password first; its data keeps the old mapping until then.
+// A confirmed tab asks for the password when one is set (else just "are you sure");
+// its data keeps the old mapping until then.
 async function reassignTab(id) {
   const auto = state.machineConfigs.find(m => m.machineId === id)?.autoCopiedFrom != null;
   const others = state.machineConfigs.filter(c => c.readable && c.machineId !== id).map(c => c.machineId);
@@ -394,10 +395,10 @@ async function reassignTab(id) {
   const from = pick.trim();
   if (from && !others.some(o => o.toLowerCase() === from.toLowerCase())) { toast(`Not changed: ${from} is not a tab.`, true); return; }
   let password = '';
-  if (!auto) {
+  if (!auto && state.status?.mappingPasswordSet !== false) { // unknown status: ask, the gateway decides
     password = prompt(`${id}'s tab is confirmed. Password to change its mapping:`) ?? '';
     if (!password) return;
-  }
+  } else if (!auto && !confirm(`${id}'s tab is confirmed. Replace its mapping with a copy of ${from || `the ${sharedLabel()}`}? (The old files are kept as .bak.)`)) return;
   if (state.scope === id && [...MAPPING].some(k => state.dirty.has(k)) && !confirm(`Unsaved changes on ${id} will be lost. Go on?`)) return;
   try {
     await request(`/api/machine-configs/reassign?machine=${encodeURIComponent(id)}`, {
@@ -1409,7 +1410,7 @@ const SETTINGS = {
   mesStuckRowTries: { label: 'MES: tries before a stuck record moves to failed', help: 'A record MES keeps answering 500 or 413 moves to failed messages after this many tries in a row, once MES took other records meanwhile. At least 1. Applied on Restart Gateway.' },
   nameMatchThreshold: { label: 'Name matching: auto-map from score', help: 'An unknown tag whose name matches one MES column at least this well (0.5 to 1; 1 = the same name) is mapped automatically and marked "auto" in PointMap. Lower scores, or a column in several groups or already filled, are only suggested (Unidentified). Applied on Restart Gateway.' },
   alarmWebhookUrl: { label: 'Alarm webhook (Teams / Power Automate / Slack)', help: 'Empty = off. Problems are POSTed here as JSON (text, raised, cleared, active) when one starts or clears: MES unreachable for 5 min, records in MES failures, held machines, tabs created automatically, time warnings, over 10,000 records waiting. Applied on Restart Gateway.' },
-  mappingPassword: { label: "Password to change a confirmed tab's mapping", secret: true, help: 'Asked by ⇄ on a confirmed machine tab (an automatic tab needs none). Empty = confirmed tabs can\'t be changed that way. Never shown: dots mean a password is saved. Applied on Restart Gateway.' },
+  mappingPassword: { label: "Password to change a confirmed tab's mapping", secret: true, help: 'Asked by ⇄ on a confirmed machine tab (an automatic tab needs none). Empty = no password asked, only "are you sure?". Never shown: dots mean a password is saved. Applied on Restart Gateway.' },
   nameMatchSynonyms: { label: 'Name matching: words that mean the same', help: 'short=long, comma-separated, e.g. qty=quantity, sn=serial number. Used to compare tag names with MES columns. Applied on Restart Gateway.' },
   mesStuckRowMinutes: { label: 'MES: minutes before a stuck record moves to failed (when nothing else is sent)', help: 'Same, when MES took nothing else meanwhile (e.g. one machine alone). 1 to 10. Applied on Restart Gateway.' },
 };
