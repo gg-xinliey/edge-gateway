@@ -1,0 +1,826 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-02T07:57:13+00:00",
+  "title": "Design System: Edge Gateway Config",
+  "extensions": {
+    "colorMeta": {
+      "ground-navy": {
+        "role": "neutral",
+        "displayName": "Ground Navy",
+        "canonical": "#131924",
+        "tonalRamp": [
+          "#090b10",
+          "#21252c",
+          "#3d424c",
+          "#5b616d",
+          "#7b8391",
+          "#9ea5b2",
+          "#c3c9d5",
+          "#e9eff8"
+        ]
+      },
+      "bar-navy": {
+        "role": "neutral",
+        "displayName": "Bar Navy",
+        "canonical": "#1a2230",
+        "tonalRamp": [
+          "#080b11",
+          "#20252e",
+          "#3c424e",
+          "#596270",
+          "#798394",
+          "#9ca6b5",
+          "#c2cad7",
+          "#e8effa"
+        ]
+      },
+      "panel-navy": {
+        "role": "neutral",
+        "displayName": "Panel Navy",
+        "canonical": "#1e2838",
+        "tonalRamp": [
+          "#070b12",
+          "#1f252f",
+          "#3a424f",
+          "#586272",
+          "#778396",
+          "#9ba6b7",
+          "#c0cad9",
+          "#e7effc"
+        ]
+      },
+      "panel-head-navy": {
+        "role": "neutral",
+        "displayName": "Panel Head Navy",
+        "canonical": "#243044",
+        "tonalRamp": [
+          "#070b13",
+          "#1e2531",
+          "#394252",
+          "#566275",
+          "#75839b",
+          "#99a6bb",
+          "#bfcadd",
+          "#e6efff"
+        ]
+      },
+      "inset-navy": {
+        "role": "neutral",
+        "displayName": "Inset Navy",
+        "canonical": "#161e2b",
+        "tonalRamp": [
+          "#080b11",
+          "#20252d",
+          "#3c424d",
+          "#59626f",
+          "#798393",
+          "#9ca6b4",
+          "#c2cad7",
+          "#e8effa"
+        ]
+      },
+      "line-slate": {
+        "role": "neutral",
+        "displayName": "Line Slate",
+        "canonical": "#2d394d",
+        "tonalRamp": [
+          "#070b13",
+          "#1e2531",
+          "#394252",
+          "#566275",
+          "#75839a",
+          "#99a6bb",
+          "#bfcadc",
+          "#e6effe"
+        ]
+      },
+      "line-soft": {
+        "role": "neutral",
+        "displayName": "Line Soft",
+        "canonical": "rgba(45, 57, 77, .6)"
+      },
+      "line-hover": {
+        "role": "neutral",
+        "displayName": "Line Hover",
+        "canonical": "#3c4b63",
+        "tonalRamp": [
+          "#060b14",
+          "#1d2532",
+          "#384354",
+          "#546278",
+          "#73839e",
+          "#97a6be",
+          "#bdcadf",
+          "#e4efff"
+        ]
+      },
+      "quiet-fill": {
+        "role": "neutral",
+        "displayName": "Quiet Fill",
+        "canonical": "#2c3a50",
+        "tonalRamp": [
+          "#060b14",
+          "#1d2532",
+          "#384353",
+          "#556277",
+          "#73839c",
+          "#98a6bd",
+          "#bdcade",
+          "#e5efff"
+        ]
+      },
+      "track-slate": {
+        "role": "neutral",
+        "displayName": "Track Slate",
+        "canonical": "#2a3546",
+        "tonalRamp": [
+          "#070b12",
+          "#1f252f",
+          "#3a4350",
+          "#576272",
+          "#768397",
+          "#9aa6b8",
+          "#c0cada",
+          "#e7effc"
+        ]
+      },
+      "text-frost": {
+        "role": "neutral",
+        "displayName": "Text Frost",
+        "canonical": "#e4e9f1",
+        "tonalRamp": [
+          "#0a0b0e",
+          "#232529",
+          "#3f4247",
+          "#5e6167",
+          "#7e838a",
+          "#a1a5ac",
+          "#c6c9cf",
+          "#eceff3"
+        ]
+      },
+      "text-muted": {
+        "role": "neutral",
+        "displayName": "Text Muted",
+        "canonical": "#a3aec0",
+        "tonalRamp": [
+          "#080b11",
+          "#20252e",
+          "#3b424e",
+          "#596270",
+          "#798394",
+          "#9ca6b5",
+          "#c1cad7",
+          "#e8effa"
+        ]
+      },
+      "text-faint": {
+        "role": "neutral",
+        "displayName": "Text Faint",
+        "canonical": "#8a95a9",
+        "tonalRamp": [
+          "#080b12",
+          "#20252f",
+          "#3b424f",
+          "#596272",
+          "#788396",
+          "#9ca5b7",
+          "#c1cad9",
+          "#e8effc"
+        ]
+      },
+      "action-cyan": {
+        "role": "primary",
+        "displayName": "Action Cyan",
+        "canonical": "#3db4d6",
+        "tonalRamp": [
+          "#000f1b",
+          "#002c3c",
+          "#004b61",
+          "#006d89",
+          "#0091b2",
+          "#55b3d0",
+          "#8ad6ef",
+          "#bdfaff"
+        ]
+      },
+      "action-cyan-hover": {
+        "role": "primary",
+        "displayName": "Action Cyan Hover",
+        "canonical": "#57c4e2",
+        "tonalRamp": [
+          "#000f19",
+          "#002c3a",
+          "#004b5e",
+          "#006d85",
+          "#1191ad",
+          "#5ab3cc",
+          "#8ed6ec",
+          "#bffaff"
+        ]
+      },
+      "action-ink": {
+        "role": "primary",
+        "displayName": "Action Ink",
+        "canonical": "#062330",
+        "tonalRamp": [
+          "#040d12",
+          "#18272f",
+          "#314550",
+          "#4c6573",
+          "#698797",
+          "#8faab8",
+          "#b6cdda",
+          "#dff2fc"
+        ]
+      },
+      "switch-on-teal": {
+        "role": "primary",
+        "displayName": "Switch On Teal",
+        "canonical": "#1f6f88",
+        "tonalRamp": [
+          "#000e17",
+          "#002a37",
+          "#12495a",
+          "#2a6a80",
+          "#438da7",
+          "#71afc6",
+          "#9ed2e6",
+          "#ccf7ff"
+        ]
+      },
+      "select-gold": {
+        "role": "secondary",
+        "displayName": "Select Gold",
+        "canonical": "#e2c26c",
+        "tonalRamp": [
+          "#140900",
+          "#322200",
+          "#533f00",
+          "#775e08",
+          "#9d7e24",
+          "#bda25b",
+          "#dec78c",
+          "#ffedbc"
+        ]
+      },
+      "ok-green": {
+        "role": "status",
+        "displayName": "Ok Green",
+        "canonical": "#5cc97b",
+        "tonalRamp": [
+          "#001200",
+          "#003009",
+          "#00511f",
+          "#067536",
+          "#279a50",
+          "#62bc7a",
+          "#94dea4",
+          "#c4ffd0"
+        ]
+      },
+      "ok-text": {
+        "role": "status",
+        "displayName": "Ok Text",
+        "canonical": "#bfeccc",
+        "tonalRamp": [
+          "#020f06",
+          "#152b1c",
+          "#2d4936",
+          "#486b53",
+          "#648e71",
+          "#8bb096",
+          "#b3d2bc",
+          "#dcf6e3"
+        ]
+      },
+      "filter-on-green": {
+        "role": "status",
+        "displayName": "Filter On Green",
+        "canonical": "#2b6a3f",
+        "tonalRamp": [
+          "#001003",
+          "#0a2d16",
+          "#224d2e",
+          "#3a6f49",
+          "#559365",
+          "#7eb48b",
+          "#a9d7b3",
+          "#d4fadc"
+        ]
+      },
+      "warn-amber": {
+        "role": "status",
+        "displayName": "Warn Amber",
+        "canonical": "#e9a23b",
+        "tonalRamp": [
+          "#1b0400",
+          "#3d1b00",
+          "#633600",
+          "#8b5300",
+          "#b57200",
+          "#d49845",
+          "#f3bf7c",
+          "#ffe6b1"
+        ]
+      },
+      "warn-text": {
+        "role": "status",
+        "displayName": "Warn Text",
+        "canonical": "#f3d3a0",
+        "tonalRamp": [
+          "#130900",
+          "#312208",
+          "#523e1d",
+          "#755d34",
+          "#9a7d4d",
+          "#bba177",
+          "#ddc6a2",
+          "#ffecce"
+        ]
+      },
+      "warn-ink": {
+        "role": "status",
+        "displayName": "Warn Ink",
+        "canonical": "#1f1606",
+        "tonalRamp": [
+          "#0e0b05",
+          "#2a241b",
+          "#484134",
+          "#696050",
+          "#8c816e",
+          "#aea492",
+          "#d1c8b9",
+          "#f5ede1"
+        ]
+      },
+      "bad-coral": {
+        "role": "status",
+        "displayName": "Bad Coral",
+        "canonical": "#f47c6e",
+        "tonalRamp": [
+          "#210000",
+          "#480b08",
+          "#72241d",
+          "#9e3d34",
+          "#cc594d",
+          "#eb8477",
+          "#ffaea1",
+          "#ffd9cd"
+        ]
+      },
+      "bad-fill": {
+        "role": "status",
+        "displayName": "Bad Fill",
+        "canonical": "#c4423a",
+        "tonalRamp": [
+          "#240000",
+          "#4b0405",
+          "#761d19",
+          "#a4362f",
+          "#d35148",
+          "#f27e72",
+          "#ffaa9e",
+          "#ffd6ca"
+        ]
+      },
+      "bad-text": {
+        "role": "status",
+        "displayName": "Bad Text",
+        "canonical": "#f5b0a6",
+        "tonalRamp": [
+          "#190403",
+          "#3a1b17",
+          "#5e352f",
+          "#86514a",
+          "#ae6f66",
+          "#ce958c",
+          "#eebbb3",
+          "#ffe3dc"
+        ]
+      },
+      "group-machine-status": {
+        "role": "tertiary",
+        "displayName": "Group Machine Status",
+        "canonical": "#4fd1c5",
+        "tonalRamp": [
+          "#00120f",
+          "#002f2a",
+          "#005049",
+          "#00736a",
+          "#00988d",
+          "#50b9af",
+          "#87dbd2",
+          "#bbfef6"
+        ]
+      },
+      "group-production": {
+        "role": "tertiary",
+        "displayName": "Group Production",
+        "canonical": "#e8b04a",
+        "tonalRamp": [
+          "#180600",
+          "#391e00",
+          "#5d3a00",
+          "#845700",
+          "#ac7700",
+          "#cb9c49",
+          "#ebc27f",
+          "#ffe9b2"
+        ]
+      },
+      "group-process": {
+        "role": "tertiary",
+        "displayName": "Group Process",
+        "canonical": "#a78bfa",
+        "tonalRamp": [
+          "#0e0227",
+          "#29174e",
+          "#47317a",
+          "#674da8",
+          "#886cd7",
+          "#aa93f2",
+          "#ccbbff",
+          "#f1e3ff"
+        ]
+      },
+      "group-quality": {
+        "role": "tertiary",
+        "displayName": "Group Quality",
+        "canonical": "#7ccf6a",
+        "tonalRamp": [
+          "#001100",
+          "#012f00",
+          "#165005",
+          "#2e731c",
+          "#479834",
+          "#74ba65",
+          "#a1dc94",
+          "#cdffc3"
+        ]
+      },
+      "group-traceability": {
+        "role": "tertiary",
+        "displayName": "Group Traceability",
+        "canonical": "#5aa9f0",
+        "tonalRamp": [
+          "#000b23",
+          "#002649",
+          "#074472",
+          "#1f659e",
+          "#3887cb",
+          "#69abe8",
+          "#97cfff",
+          "#c6f4ff"
+        ]
+      },
+      "group-alarm": {
+        "role": "tertiary",
+        "displayName": "Group Alarm",
+        "canonical": "#f47c6e",
+        "tonalRamp": [
+          "#210000",
+          "#480b08",
+          "#72241d",
+          "#9e3d34",
+          "#cc594d",
+          "#eb8477",
+          "#ffaea1",
+          "#ffd9cd"
+        ]
+      },
+      "group-operator": {
+        "role": "tertiary",
+        "displayName": "Group Operator",
+        "canonical": "#f08fc0",
+        "tonalRamp": [
+          "#1c000f",
+          "#3f112b",
+          "#66294a",
+          "#8f436b",
+          "#ba5f8f",
+          "#d987b0",
+          "#f9b0d3",
+          "#ffdaf7"
+        ]
+      },
+      "group-material": {
+        "role": "tertiary",
+        "displayName": "Group Material",
+        "canonical": "#f0a35e",
+        "tonalRamp": [
+          "#1b0300",
+          "#3e1a00",
+          "#643400",
+          "#8d500c",
+          "#b76f26",
+          "#d6955c",
+          "#f5bc8c",
+          "#ffe4bc"
+        ]
+      },
+      "group-maintenance": {
+        "role": "tertiary",
+        "displayName": "Group Maintenance",
+        "canonical": "#9fb6cc",
+        "tonalRamp": [
+          "#050c13",
+          "#1b2631",
+          "#354451",
+          "#516375",
+          "#6f859a",
+          "#94a8ba",
+          "#bbcbdc",
+          "#e2f0fe"
+        ]
+      },
+      "group-motion": {
+        "role": "tertiary",
+        "displayName": "Group Motion",
+        "canonical": "#7dd3fc",
+        "tonalRamp": [
+          "#000e1b",
+          "#002a3d",
+          "#014962",
+          "#1b6a8a",
+          "#358db3",
+          "#68afd1",
+          "#97d3f0",
+          "#c6f7ff"
+        ]
+      },
+      "group-io": {
+        "role": "tertiary",
+        "displayName": "Group Io",
+        "canonical": "#c4b5fd",
+        "tonalRamp": [
+          "#0d061d",
+          "#271e40",
+          "#443966",
+          "#64578f",
+          "#8576b9",
+          "#a79bd7",
+          "#cbc1f5",
+          "#f0e8ff"
+        ]
+      },
+      "group-other": {
+        "role": "tertiary",
+        "displayName": "Group Other",
+        "canonical": "#a3aec0",
+        "tonalRamp": [
+          "#080b11",
+          "#20252e",
+          "#3b424e",
+          "#596270",
+          "#798394",
+          "#9ca6b5",
+          "#c1cad7",
+          "#e8effa"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "title": {
+        "displayName": "Title",
+        "purpose": "The machine's name in the portrait card; big stat values."
+      },
+      "dialog-title": {
+        "displayName": "Dialog title",
+        "purpose": "Dialog headings only."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Rows, inputs, navigation; tabular numerals."
+      },
+      "body-strong": {
+        "displayName": "Body strong",
+        "purpose": "Buttons, card headers, mapped values."
+      },
+      "small": {
+        "displayName": "Small",
+        "purpose": "Help text, notes, table headers, sub-headings."
+      },
+      "section-label": {
+        "displayName": "Section label",
+        "purpose": "The machine list's uppercase title only."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Pills, badges, slot counts and names."
+      },
+      "mono": {
+        "displayName": "Mono",
+        "purpose": "Log, JSON, error text, MES column codes."
+      }
+    },
+    "shadows": [
+      {
+        "name": "dialog",
+        "value": "0 12px 40px rgba(0, 0, 0, .45)",
+        "purpose": "Modal dialogs."
+      },
+      {
+        "name": "busy",
+        "value": "0 8px 30px rgba(0, 0, 0, .4)",
+        "purpose": "Busy overlay box."
+      },
+      {
+        "name": "toast",
+        "value": "0 8px 24px rgba(0, 0, 0, .4)",
+        "purpose": "Toasts."
+      },
+      {
+        "name": "live-ring",
+        "value": "0 0 0 3px rgba(92, 201, 123, .15)",
+        "purpose": "Connected and running dots."
+      },
+      {
+        "name": "select-inset",
+        "value": "inset 0 0 0 1px #e2c26c",
+        "purpose": "Selected loadout slot."
+      },
+      {
+        "name": "view-underline",
+        "value": "inset 0 -2px 0 #3db4d6",
+        "purpose": "Active view tab."
+      },
+      {
+        "name": "focus-ring",
+        "value": "outline: 2px solid #3db4d6; outline-offset: 2px",
+        "purpose": "Keyboard focus on every control."
+      }
+    ],
+    "motion": [
+      {
+        "name": "ease-out-expo",
+        "value": "cubic-bezier(.16, 1, .3, 1)",
+        "purpose": "Switch knob (.15s), toast rise (.3s), panel flash (1.2s)."
+      },
+      {
+        "name": "flash",
+        "value": "1.2s gold 2px ring fading to none",
+        "purpose": "A group panel when its slot is clicked; off under prefers-reduced-motion."
+      },
+      {
+        "name": "toast-fade",
+        "value": "opacity .2s, transform .3s (8px rise)",
+        "purpose": "Toast in and out."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "container-narrow",
+        "value": "560px (container)"
+      },
+      {
+        "name": "profile-fold",
+        "value": "1100px"
+      },
+      {
+        "name": "phone",
+        "value": "760px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The one main action of a view (Save, Connect).",
+      "html": "<button class=\"ds-btn ds-btn-primary\">Save</button>",
+      "css": ".ds-btn { display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 14px; border-radius: 5px; border: 1px solid transparent; font: 600 13px/1.35 \"Segoe UI Variable Text\", \"Segoe UI\", system-ui, sans-serif; cursor: pointer; } .ds-btn:focus-visible { outline: 2px solid #3db4d6; outline-offset: 2px; } .ds-btn-primary { background: #3db4d6; color: #062330; } .ds-btn-primary:hover { background: #57c4e2; }"
+    },
+    {
+      "name": "Default Button",
+      "kind": "button",
+      "refersTo": "button-default",
+      "description": "Secondary actions on navy.",
+      "html": "<button class=\"ds-btn ds-btn-default\">Restart gateway</button>",
+      "css": ".ds-btn { display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 14px; border-radius: 5px; border: 1px solid transparent; font: 600 13px/1.35 \"Segoe UI Variable Text\", \"Segoe UI\", system-ui, sans-serif; cursor: pointer; } .ds-btn:focus-visible { outline: 2px solid #3db4d6; outline-offset: 2px; } .ds-btn-default { background: #243044; color: #e4e9f1; } .ds-btn-default:hover { border-color: #3c4b63; }"
+    },
+    {
+      "name": "Ghost Button",
+      "kind": "button",
+      "refersTo": "button-ghost",
+      "description": "Outlined cyan action (Change mapping, Add a machine).",
+      "html": "<button class=\"ds-btn ds-btn-ghost\">Change mapping</button>",
+      "css": ".ds-btn { display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 14px; border-radius: 5px; border: 1px solid transparent; font: 600 13px/1.35 \"Segoe UI Variable Text\", \"Segoe UI\", system-ui, sans-serif; cursor: pointer; } .ds-btn:focus-visible { outline: 2px solid #3db4d6; outline-offset: 2px; } .ds-btn-ghost { background: transparent; color: #3db4d6; border-color: #2c6c82; } .ds-btn-ghost:hover { background: rgba(61, 180, 214, .08); }"
+    },
+    {
+      "name": "Search Field",
+      "kind": "input",
+      "refersTo": "search",
+      "description": "Inset search with a stroke icon; cyan border on focus.",
+      "html": "<label class=\"ds-search\"><svg class=\"ds-i\" viewBox=\"0 0 24 24\"><circle cx=\"11\" cy=\"11\" r=\"6\"/><path d=\"M20 20l-4.5-4.5\"/></svg><input placeholder=\"Find a machine\"></label>",
+      "css": ".ds-i { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; } .ds-search { display: flex; align-items: center; gap: 6px; width: 260px; height: 32px; padding: 0 8px; border: 1px solid #2d394d; border-radius: 5px; background: #161e2b; color: #8a95a9; } .ds-search:focus-within { border-color: #3db4d6; } .ds-search input { flex: 1; min-width: 0; border: 0; background: none; color: #e4e9f1; outline: none; font: 13px \"Segoe UI Variable Text\", \"Segoe UI\", system-ui, sans-serif; } .ds-search input::placeholder { color: #8a95a9; }"
+    },
+    {
+      "name": "Top Bar Navigation",
+      "kind": "nav",
+      "refersTo": "nav-top",
+      "description": "General pages; gold underline on the active page, amber dot when unsaved.",
+      "html": "<nav class=\"ds-nav\"><button class=\"ds-tab\">MQTT broker<span class=\"ds-dirty\"></span></button><button class=\"ds-tab ds-on\">Gateway settings</button><button class=\"ds-tab\">Log</button></nav>",
+      "css": ".ds-nav { display: flex; gap: 2px; background: #1a2230; border-bottom: 1px solid #2d394d; padding: 0 12px; } .ds-tab { position: relative; display: flex; align-items: center; gap: 8px; height: 50px; padding: 0 14px; border: 0; background: none; color: #a3aec0; font: 15px \"Segoe UI Variable Text\", \"Segoe UI\", system-ui, sans-serif; cursor: pointer; } .ds-tab:hover { color: #e4e9f1; background: rgba(255,255,255,.03); } .ds-tab:focus-visible { outline: 2px solid #3db4d6; outline-offset: 2px; } .ds-tab.ds-on { color: #e4e9f1; background: #243044; } .ds-tab.ds-on::after { content: \"\"; position: absolute; left: 10px; right: 10px; bottom: 0; height: 2px; border-radius: 2px; background: #e2c26c; } .ds-dirty { width: 7px; height: 7px; border-radius: 50%; background: #e9a23b; }"
+    },
+    {
+      "name": "Pills",
+      "kind": "chip",
+      "refersTo": "pill-auto",
+      "description": "Auto, count and quiet pills.",
+      "html": "<span class=\"ds-pill ds-auto\">auto</span> <span class=\"ds-pill ds-count\">3</span> <span class=\"ds-pill ds-quiet\">0</span>",
+      "css": ".ds-pill { display: inline-block; font: 600 11px/16px \"Segoe UI Variable Text\", \"Segoe UI\", system-ui, sans-serif; padding: 0 6px; border-radius: 8px; } .ds-auto { background: #e9a23b; color: #1f1606; } .ds-count { background: #c4423a; color: #fff; } .ds-quiet { background: #2c3a50; color: #a3aec0; }"
+    },
+    {
+      "name": "Group Card",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "A group panel: header tinted by the group colour, right-aligned mapped values.",
+      "html": "<article class=\"ds-card\" style=\"--c:#7ccf6a\"><header class=\"ds-head\"><svg class=\"ds-i\" viewBox=\"0 0 24 24\"><path d=\"M12 3l7 3v6c0 4.2-2.9 7.6-7 9-4.1-1.4-7-4.8-7-9V6z\"/><path d=\"M9 12l2 2 4-4\"/></svg><span class=\"ds-gname\">QUALITY</span><span class=\"ds-fill\">3 / 9</span><span class=\"ds-badge\">Single point</span></header><div class=\"ds-row\"><i class=\"ds-mark\"></i><span>judge</span><input value=\"RESULT\"></div><div class=\"ds-row\"><i class=\"ds-mark ds-gw\"></i><span>inspect_time</span><input placeholder=\"optional\"></div></article>",
+      "css": ".ds-i { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; } .ds-card { width: 360px; background: #1e2838; border: 1px solid #2d394d; border-radius: 6px; color: #e4e9f1; font: 13px/1.35 \"Segoe UI Variable Text\", \"Segoe UI\", system-ui, sans-serif; } .ds-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid #2d394d; border-radius: 6px 6px 0 0; background: color-mix(in srgb, var(--c) 12%, #243044); font-weight: 600; } .ds-head svg { color: var(--c); } .ds-gname { color: var(--c); letter-spacing: .02em; } .ds-fill { color: #a3aec0; font-size: 12px; font-weight: 500; } .ds-badge { margin-left: auto; padding: 1px 8px; border-radius: 4px; background: #2c3a50; color: #a3aec0; font-size: 11px; } .ds-row { display: grid; grid-template-columns: 14px 1fr 1.3fr; gap: 8px; align-items: center; padding: 4px 12px; } .ds-row:nth-child(odd) { background: rgba(255,255,255,.018); } .ds-mark { width: 8px; height: 8px; border-radius: 2px; background: var(--c); } .ds-mark.ds-gw { background: color-mix(in srgb, var(--c) 45%, transparent); } .ds-row input { height: 28px; padding: 0 8px; border: 1px solid transparent; border-radius: 4px; background: #161e2b; color: var(--c); font: 600 13px \"Segoe UI Variable Text\", \"Segoe UI\", system-ui, sans-serif; text-align: right; } .ds-row input:hover { border-color: #2d394d; } .ds-row input:focus { border-color: #3db4d6; outline: none; text-align: left; } .ds-row input::placeholder { color: #8a95a9; font-weight: 400; }"
+    },
+    {
+      "name": "Loadout Slot",
+      "kind": "custom",
+      "refersTo": "slot",
+      "description": "One MES group: tile, count badge, short name, two-tone fill bar.",
+      "html": "<button class=\"ds-slot\" style=\"--c:#7ccf6a\"><span class=\"ds-lv\">3/9</span><span class=\"ds-tile\"><svg class=\"ds-i\" viewBox=\"0 0 24 24\"><path d=\"M12 3l7 3v6c0 4.2-2.9 7.6-7 9-4.1-1.4-7-4.8-7-9V6z\"/><path d=\"M9 12l2 2 4-4\"/></svg></span><span class=\"ds-nm\">QUALITY</span><span class=\"ds-bar\"><i style=\"width:22%\"></i><i class=\"ds-gw\" style=\"width:11%\"></i></span></button>",
+      "css": ".ds-i { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; } .ds-slot { position: relative; display: grid; justify-items: center; gap: 6px; width: 90px; padding: 10px 8px 8px; border: 1px solid #2d394d; border-radius: 6px; background: #1e2838; color: #e4e9f1; font: 13px \"Segoe UI Variable Text\", \"Segoe UI\", system-ui, sans-serif; cursor: pointer; } .ds-slot:hover { border-color: #3c4b63; background: #222d3f; } .ds-slot:focus-visible { outline: 2px solid #3db4d6; outline-offset: 2px; border-color: #e2c26c; box-shadow: inset 0 0 0 1px #e2c26c; } .ds-tile { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 8px; color: var(--c); background: color-mix(in srgb, var(--c) 14%, transparent); border: 1px solid color-mix(in srgb, var(--c) 40%, transparent); } .ds-tile .ds-i { width: 22px; height: 22px; } .ds-lv { position: absolute; top: 6px; left: 6px; padding: 0 5px; border-radius: 4px; background: var(--c); color: #10151e; font-size: 11px; font-weight: 700; } .ds-nm { font-size: 11px; letter-spacing: .02em; color: #a3aec0; } .ds-bar { display: flex; width: 100%; height: 3px; border-radius: 2px; background: #2a3546; overflow: hidden; } .ds-bar i { display: block; height: 100%; background: var(--c); } .ds-bar i.ds-gw { background: color-mix(in srgb, var(--c) 45%, transparent); }"
+    },
+    {
+      "name": "Switch",
+      "kind": "custom",
+      "refersTo": "switch-on",
+      "description": "On/off setting; dark teal when on.",
+      "html": "<button class=\"ds-switch\" role=\"switch\" aria-checked=\"true\" onclick=\"this.setAttribute('aria-checked', this.getAttribute('aria-checked') !== 'true')\"></button>",
+      "css": ".ds-switch { position: relative; width: 34px; height: 18px; padding: 0; border: 0; border-radius: 9px; background: #2c3a50; cursor: pointer; } .ds-switch:focus-visible { outline: 2px solid #3db4d6; outline-offset: 2px; } .ds-switch::after { content: \"\"; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #a3aec0; transition: left .15s cubic-bezier(.16, 1, .3, 1); } .ds-switch[aria-checked=\"true\"] { background: #1f6f88; } .ds-switch[aria-checked=\"true\"]::after { left: 18px; background: #dff6fd; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Loadout Console",
+    "overview": "**Creative North Star: \"The Loadout Console\"**\n\nThe config page reads a machine's mapping the way a game reads a character: the nine MES data groups are equipped slots, each with its own colour, a fill count and a two-tone fill bar, and beneath them sit dense, stat-style panels where every row is a field and every value is right-aligned. The ground is dark navy, the panels one step lighter, the headers one step lighter again. Depth is tonal, not shadowed.\n\nThe density is that of an operator console for engineers on a full HD or wider monitor: 13px body text with tabular numerals, rows 28 to 34px tall, gutters of 10 to 12px. Colour has three jobs and never mixes them: group identity (twelve hues, one per MES group), action (cyan), and selection (gold). Status (green, amber, coral) speaks in soft tinted fills with a coloured border and a light text tone, never a loud solid block, except in the small count and auto pills.\n\nThe world refuses the grey settings-form look of the old WinForms UI it replaced. Everything is offline: system fonts (Segoe UI), an inline SVG sprite for icons, no CDNs.",
+    "keyCharacteristics": [
+      "Dark navy tonal layering: ground, bar, panel, panel header, inset field.",
+      "One colour per MES group, carried from slot to panel to value.",
+      "Cyan acts, gold selects, amber marks what the gateway did by itself or what is unsaved.",
+      "Right-aligned values in tabular numerals; dense zebra rows.",
+      "Stroke icons from one inline sprite (16px, 1.6 stroke, round caps).",
+      "Flat surfaces; shadows only on floating layers."
+    ],
+    "rules": [
+      {
+        "name": "The One Colour Per Group Rule",
+        "body": "A group's hue appears everywhere that group appears: slot tile (14% fill, 40% border), panel header (12% mixed into the header navy), header icon, group name, row mark, mapped value text, group tag in tables. Group hues never mean anything else, and no two groups share one.",
+        "section": "colors"
+      },
+      {
+        "name": "The Two-Tone Fill Rule",
+        "body": "Solid group colour means a tag fills it; the same colour at 45% means the gateway fills it. The rule holds on the slot's fill bar and on each row's square mark. An empty field is an outlined faint mark.",
+        "section": "colors"
+      },
+      {
+        "name": "The Three Voices Rule",
+        "body": "Cyan acts, gold selects, amber flags the automatic and the unsaved. A new control takes the voice of its job, never a group hue.",
+        "section": "colors"
+      },
+      {
+        "name": "The Soft Status Rule",
+        "body": "Status surfaces are a 6 to 10% tint of the status colour with a 40 to 50% border and the light text tone. Solid status fills are kept for pills of 16px height and dots.",
+        "section": "colors"
+      },
+      {
+        "name": "The Right-Aligned Value Rule",
+        "body": "Mapped values sit right-aligned, in the group's colour, at 600. When a field takes focus it turns left-aligned for editing and shows the cyan border.",
+        "section": "typography"
+      },
+      {
+        "name": "The No Web Fonts Rule",
+        "body": "The page must work on a gateway PC without internet: system and installed fonts only.",
+        "section": "typography"
+      },
+      {
+        "name": "The Float-Only Shadow Rule",
+        "body": "Cards, slots, panels and buttons never cast a shadow. Only dialogs, the busy box, toasts and the suggestion list float.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "**Do** set a group's colour once on its element and derive every tint from it (14% tile wash, 40% tile border, 12% header mix, 45% gateway fill).",
+      "**Do** keep values right-aligned with tabular numerals, and flip to left-aligned only while editing.",
+      "**Do** step depth through the navy tones (ground, bar, panel, panel head, inset) and 1px slate lines.",
+      "**Do** mark everything the gateway decided by itself in amber (auto pill, auto mark) and keep it confirmable.",
+      "**Do** draw every icon from the inline SVG sprite: 16px, 1.6 stroke, round caps and joins, current colour.",
+      "**Do** give every interactive element the 2px cyan focus outline with 2px offset.",
+      "**Do** honour reduced motion: the panel flash, the toast slide and the switch knob stop moving under prefers-reduced-motion."
+    ],
+    "donts": [
+      "**Don't** use a group hue for actions, selection or status; cyan, gold and the status colours own those jobs.",
+      "**Don't** cast shadows from cards, slots or buttons; only dialogs, the busy box, toasts and the suggestion list float.",
+      "**Don't** load web fonts, icon fonts or anything from a CDN; the page runs offline.",
+      "**Don't** use text glyphs (arrows, warning signs, triangles) as icons; use sprite symbols.",
+      "**Don't** put a small uppercase label above a heading; the machine list's title is the one uppercase label, and it is the heading itself.",
+      "**Don't** shout status with solid blocks on large surfaces; use the soft tint, border and text tone."
+    ]
+  }
+}

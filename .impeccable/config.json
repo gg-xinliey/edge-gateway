@@ -1,0 +1,13 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "design-system-font",
+        "value": "ui variable text\",\"segoe ui\",system-ui,sans-serif",
+        "createdAt": "2026-11-02T07:59:47.440Z"
+      }
+    ]
+  }
+}

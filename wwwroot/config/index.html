@@ -8,64 +8,102 @@
   <link rel="stylesheet" href="/config/app.css" />
 </head>
 <body>
-  <div class="shell">
-    <!-- Four columns: machines | the machine's buttons | content | General. Drag the grip lines to resize. -->
+  <!-- Icons: one stroke family, drawn here and used with <use href="#..."> -->
+  <svg width="0" height="0" class="sprite" aria-hidden="true">
+    <symbol id="i-gate" viewBox="0 0 24 24"><path d="M4 20V9l8-5 8 5v11"/><path d="M9 20v-6h6v6"/></symbol>
+    <symbol id="i-robot" viewBox="0 0 24 24"><rect x="5" y="8" width="14" height="10" rx="2"/><path d="M12 8V5M9 13h.01M15 13h.01M3 12v3M21 12v3M9 21h6"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M5 15V6a1 1 0 0 1 1-1h9"/></symbol>
+    <symbol id="i-map" viewBox="0 0 24 24"><path d="M4 6h7M4 12h7M4 18h7M15 6h5M15 12h5M15 18h5"/><path d="M11 6h4M11 12h4M11 18h4" stroke-dasharray="1.5 2"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></symbol>
+    <symbol id="i-tray" viewBox="0 0 24 24"><path d="M4 13l2-7h12l2 7v5H4z"/><path d="M4 13h5l1 2h4l1-2h5"/></symbol>
+    <symbol id="i-question" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M9.8 9.5a2.3 2.3 0 0 1 4.4.9c0 1.5-2.2 1.8-2.2 3.1M12 16.5h.01"/></symbol>
+    <symbol id="i-swap" viewBox="0 0 24 24"><path d="M5 8h13l-3-3M19 16H6l3 3"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/></symbol>
+    <symbol id="i-plug" viewBox="0 0 24 24"><path d="M9 3v4M15 3v4M7 7h10v4a5 5 0 0 1-10 0zM12 16v5"/></symbol>
+    <symbol id="i-pulse" viewBox="0 0 24 24"><path d="M3 12h4l2-5 4 10 2-5h6"/></symbol>
+    <symbol id="i-db" viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v12c0 1.7 3.1 3 7 3s7-1.3 7-3V6M5 12c0 1.7 3.1 3 7 3s7-1.3 7-3"/></symbol>
+    <symbol id="i-tag" viewBox="0 0 24 24"><path d="M3 12V4h8l9 9-8 8z"/><circle cx="7.5" cy="7.5" r="1.2"/></symbol>
+    <symbol id="i-wave" viewBox="0 0 24 24"><path d="M2 12c2.5-5 5-5 7.5 0s5 5 7.5 0 3.5-3 5-2"/></symbol>
+    <symbol id="i-broker" viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.5"/><path d="M7.8 7.8a6 6 0 0 0 0 8.4M16.2 7.8a6 6 0 0 1 0 8.4M5 5a10 10 0 0 0 0 14M19 5a10 10 0 0 1 0 14"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M9.5 9.5l5 5M14.5 9.5l-5 5"/></symbol>
+    <symbol id="i-scroll" viewBox="0 0 24 24"><path d="M7 4h10v16H7z"/><path d="M10 8h4M10 12h4M10 16h2"/></symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 17h12l-1.5-2V10a4.5 4.5 0 0 0-9 0v5z"/><path d="M10 20h4"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 11v5M12 8h.01"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="M7 7l10 10M17 7L7 17"/></symbol>
+    <symbol id="i-right" viewBox="0 0 24 24"><path d="M10 7l5 5-5 5"/></symbol>
+    <symbol id="i-down" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5"/></symbol>
+    <symbol id="i-layers" viewBox="0 0 24 24"><path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/></symbol>
+    <!-- the MES groups -->
+    <symbol id="g-MACHINE_STATUS" viewBox="0 0 24 24"><path d="M12 3v8"/><path d="M7 6.5a7 7 0 1 0 10 0"/></symbol>
+    <symbol id="g-PRODUCTION" viewBox="0 0 24 24"><path d="M3 20h18M5 20V10l5 3V10l5 3V6h4v14"/></symbol>
+    <symbol id="g-PROCESS" viewBox="0 0 24 24"><path d="M5 4v16M12 4v16M19 4v16"/><circle cx="5" cy="9" r="2" fill="currentColor"/><circle cx="12" cy="15" r="2" fill="currentColor"/><circle cx="19" cy="7" r="2" fill="currentColor"/></symbol>
+    <symbol id="g-QUALITY" viewBox="0 0 24 24"><path d="M12 3l7 3v6c0 4.2-2.9 7.6-7 9-4.1-1.4-7-4.8-7-9V6z"/><path d="M9 12l2 2 4-4"/></symbol>
+    <symbol id="g-TRACEABILITY" viewBox="0 0 24 24"><path d="M4 6v12M7 6v12M10 6v12M14 6v12M16 6v12M20 6v12"/></symbol>
+    <symbol id="g-ALARM" viewBox="0 0 24 24"><path d="M6 17h12l-1.5-2V10a4.5 4.5 0 0 0-9 0v5z"/><path d="M10 20h4"/></symbol>
+    <symbol id="g-OPERATOR" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5"/><path d="M5 20c.8-3.6 3.6-5.5 7-5.5s6.2 1.9 7 5.5"/></symbol>
+    <symbol id="g-MATERIAL" viewBox="0 0 24 24"><path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/></symbol>
+    <symbol id="g-MAINTENANCE" viewBox="0 0 24 24"><path d="M14.5 5.5a4 4 0 0 0 4.9 4.9l-9.4 9.4a2 2 0 0 1-2.8-2.8l9.4-9.4"/></symbol>
+    <symbol id="g-MOTION" viewBox="0 0 24 24"><path d="M2 12c2.5-5 5-5 7.5 0s5 5 7.5 0 3.5-3 5-2"/></symbol>
+    <symbol id="g-IO" viewBox="0 0 24 24"><rect x="4" y="7" width="16" height="10" rx="2"/><path d="M8 7v10M12 7v10M16 7v10"/></symbol>
+    <symbol id="g-other" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M8 12h8"/></symbol>
+  </svg>
+
+  <div class="app">
+    <!-- Top bar: the gateway-wide (General) pages, then the gateway's status -->
+    <header class="topbar">
+      <div class="brand"><svg class="i"><use href="#i-gate"/></svg>Edge Gateway</div>
+      <nav class="gtabs" aria-label="General">
+        <button class="nav" data-view="mqtt-config" type="button"><svg class="i"><use href="#i-broker"/></svg>MQTT broker</button>
+        <button class="nav" data-view="machine-config" type="button"><svg class="i"><use href="#i-sliders"/></svg>Gateway settings</button>
+        <button class="nav" data-view="machines" type="button"><svg class="i"><use href="#i-robot"/></svg>Machines</button>
+        <button class="nav" data-view="failed" type="button"><svg class="i"><use href="#i-x"/></svg>MES failures<span class="pill quiet" id="failedPill">0</span></button>
+        <button class="nav" data-view="log" type="button"><svg class="i"><use href="#i-scroll"/></svg>Log</button>
+      </nav>
+      <div class="gw-status" id="gwStatus" role="status">
+        <span class="dot"></span><span id="gwText">checking gateway…</span>
+        <span id="gwStats" class="gw-stats"></span>
+        <button id="errBadge" class="problem" type="button" hidden></button>
+      </div>
+    </header>
+
+    <!-- Machine list (resizable) | the work area -->
     <div class="window" id="window">
-      <!-- Other machines (shared mapping) | one tab per machine (with its connection dot) | + -->
-      <nav class="tabs" id="tabs" role="tablist" aria-label="Machines" aria-orientation="vertical"></nav>
+      <aside class="mside" aria-label="Machines">
+        <h1 class="mside-title"><svg class="i"><use href="#i-robot"/></svg>Machines<span id="machineCount"></span></h1>
+        <label class="search side"><svg class="i"><use href="#i-search"/></svg><input id="findMachine" type="search" aria-label="Find a machine" placeholder="Find a machine" /></label>
+        <nav class="tabs" id="tabs" role="tablist" aria-label="Machines" aria-orientation="vertical"></nav>
+        <div class="mfoot" id="mfoot"></div>
+      </aside>
       <div class="grip" data-col="tabs" role="separator" aria-orientation="vertical" aria-label="Resize the machine list" tabindex="0"></div>
 
-      <aside class="side">
-        <h1 id="tabTitle">Other machines</h1>
-        <button class="nav" data-view="point-map">PointMap</button>
-        <button class="nav" data-view="timestamp-rules">TimeStamp</button>
-        <button class="nav" data-view="outbox">Outbox</button>
-      </aside>
-      <div class="grip" data-col="side" role="separator" aria-orientation="vertical" aria-label="Resize the machine buttons" tabindex="0"></div>
-
       <main class="panel">
+        <div class="banner" id="banner"></div>
         <!-- Ongoing problems (MES / MQTT unreachable, gateway stopped): one line each, gone when solved -->
         <div class="alerts" id="alerts" role="status" hidden></div>
-
-        <div class="searchbar">
-          <input id="search" type="search" aria-label="Search" />
-          <button id="searchBtn" type="button">Search</button>
-        </div>
-
         <p class="scope-hint" id="scopeHint" hidden></p>
 
-        <div class="picker-row" id="pickerRow">
-          <select id="picker" aria-label="Data group"></select>
-          <span class="hint" id="pickerHint"></span>
+        <div class="work" id="work">
+          <aside class="profile" id="profile" hidden></aside>
+          <section class="content">
+            <div class="toolbar" id="toolbar">
+              <div class="tools" id="tools"></div>
+              <label class="search"><svg class="i"><use href="#i-search"/></svg><input id="search" type="search" aria-label="Search" placeholder="Search" /></label>
+            </div>
+            <div id="view" class="view"></div>
+          </section>
         </div>
-
-        <div id="view" class="view"></div>
 
         <div class="footer">
           <span class="note" id="note"></span>
           <div class="footer-actions">
-            <button id="reassignBtn" class="save" type="button" hidden title="Replace this machine's mapping with a copy of another tab's or the Template's">⇄ change mapping</button>
-            <button id="connectBtn" class="save" type="button" hidden title="Try the broker with the settings above (also before saving)">connect</button>
-            <button id="saveBtn" class="save" type="button">save</button>
+            <button id="reassignBtn" class="btn ghost" type="button" hidden title="Replace this machine's mapping with a copy of another tab's or the Template's"><svg class="i"><use href="#i-swap"/></svg>Change mapping</button>
+            <button id="connectBtn" class="btn ghost" type="button" hidden title="Try the broker with the settings above (also before saving)"><svg class="i"><use href="#i-plug"/></svg><span>Connect</span></button>
+            <button id="saveBtn" class="btn primary save" type="button">Save</button>
           </div>
         </div>
       </main>
-      <div class="grip" data-col="general" role="separator" aria-orientation="vertical" aria-label="Resize General" tabindex="0"></div>
-
-      <!-- Gateway-wide settings and views, always on the right -->
-      <aside class="side general-side">
-        <h1>General</h1>
-        <button class="nav active" data-view="mqtt-config">MQTTConfig</button>
-        <button class="nav" data-view="machine-config">GatewayConfig</button>
-        <button class="nav" data-view="machines">Machines</button>
-        <button class="nav" data-view="failed">MES failures</button>
-        <button class="nav" data-view="log">Log</button>
-        <div class="gw-status" id="gwStatus">
-          <span class="dot"></span><span id="gwText">checking gateway…</span>
-          <span id="gwStats" class="gw-stats"></span>
-          <button id="errBadge" class="err-badge" type="button" hidden></button>
-        </div>
-      </aside>
     </div>
   </div>
 
@@ -74,8 +112,8 @@
     <p id="restartText">Restart the gateway now?</p>
     <p class="dlg-small">Connected machines are dropped for a moment and must reconnect.</p>
     <div class="dlg-buttons">
-      <button id="restartLater" type="button">Later</button>
-      <button id="restartNow" type="button" class="primary">Restart now</button>
+      <button id="restartLater" class="btn ghost" type="button">Later</button>
+      <button id="restartNow" class="btn primary" type="button">Restart now</button>
     </div>
   </dialog>
 

@@ -28,6 +28,8 @@ const state = {
   versions: {},             // file key -> its version (ETag) as loaded / saved: a save sends it back (If-Match)
   numberKeys: {},           // file key -> keys that must stay numbers (form views)
   dirty: new Set(),         // file keys with unsaved edits
+  findMachine: '',          // the machine list's filter
+  waiting: {}, waitingAt: {}, // outbox scope -> rows waiting for MES, and when that was read
   group: { 'point-map': null, 'timestamp-rules': null },
   extraGroups: [],          // made with "+ New group…" and not saved yet
   unidentified: [],         // from /api/unidentified
@@ -73,9 +75,39 @@ function scopeQuery(key) {
 }
 const MAX_LOG_LINES = 500;
 
+// One colour (app.css --g-<group>) and icon (index.html #g-<group>) per group; any other group shares one.
+const KNOWN_GROUPS = new Set(['MACHINE_STATUS', 'PRODUCTION', 'PROCESS', 'QUALITY', 'TRACEABILITY', 'ALARM', 'OPERATOR', 'MATERIAL', 'MAINTENANCE', 'MOTION', 'IO']);
+const gkey = group => (KNOWN_GROUPS.has(group) ? group : 'other');
+const gcolor = group => `var(--g-${gkey(group)})`;
+const SHORT_GROUP = { MACHINE_STATUS: 'STATUS', MAINTENANCE: 'MAINT.', TRACEABILITY: 'TRACE' };
+
 // ---------- small helpers ----------
 
 const $ = id => document.getElementById(id);
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+function icon(id) {
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('class', 'i');
+  svg.setAttribute('aria-hidden', 'true');
+  const use = document.createElementNS(SVG_NS, 'use');
+  use.setAttribute('href', `#${id}`);
+  svg.append(use);
+  return svg;
+}
+
+// Segmented control: [[value, label], ...], one is on.
+function seg(options, value, onChange, label) {
+  return h('div', { class: 'seg', role: 'group', 'aria-label': label },
+    ...options.map(([v, text]) => h('button', { type: 'button', class: v === value ? 'on' : '', 'aria-pressed': String(v === value), textContent: text, onclick: () => onChange(v) })));
+}
+
+// The view's own controls, left of the search box.
+function setTools(...nodes) {
+  $('tools').replaceChildren(...nodes.filter(Boolean));
+}
+
+const fmtMs = ms => (ms >= 1000 && ms % 1000 === 0 ? `${ms / 1000} s` : `${ms} ms`);
 
 function h(tag, props = {}, ...children) {
   const el = document.createElement(tag);
@@ -94,6 +126,77 @@ function select(options, value, onChange, label) {
     ...options.map(([v, text]) => h('option', { value: v, textContent: text })));
   el.value = value;
   return el;
+}
+
+// Our own suggestion list under a text box (the browser's datalist popup is grey and doesn't match the page).
+// One list for the page, fixed to the box, so a scrolling table doesn't clip it.
+// options(text) -> [{ value, text?, hint?, extra? } | { sep } | { note }]; color() -> the group colour, or nothing.
+const comboList = h('ul', { class: 'combo-list', id: 'comboList', role: 'listbox', hidden: true });
+document.body.append(comboList);
+let comboClose = () => {};
+document.addEventListener('scroll', e => { if (e.target !== comboList) comboClose(); }, true);
+window.addEventListener('resize', () => comboClose());
+
+function combo(input, options, color) {
+  let items = [], active = -1;
+  Object.entries({ role: 'combobox', 'aria-autocomplete': 'list', 'aria-controls': 'comboList', 'aria-expanded': 'false', autocomplete: 'off' })
+    .forEach(([k, v]) => input.setAttribute(k, v));
+  const close = () => {
+    comboList.hidden = true;
+    input.setAttribute('aria-expanded', 'false');
+    input.removeAttribute('aria-activedescendant');
+    active = -1;
+  };
+  const pick = value => {
+    input.value = value;
+    close();
+    input.dispatchEvent(new Event('input'));
+    input.dispatchEvent(new Event('change'));
+  };
+  const mark = i => {
+    active = i;
+    comboList.querySelectorAll('[role=option]').forEach((li, n) => { li.classList.toggle('on', n === i); li.setAttribute('aria-selected', String(n === i)); });
+    const li = $(`combo-${i}`);
+    if (li) { input.setAttribute('aria-activedescendant', li.id); li.scrollIntoView({ block: 'nearest' }); }
+  };
+  const open = () => {
+    const all = options(input.value.trim());
+    items = all.filter(o => 'value' in o);
+    if (!all.length) { close(); return; }
+    let n = 0;
+    comboList.replaceChildren(...all.map(o =>
+      o.sep ? h('li', { class: 'sep', role: 'presentation', textContent: o.sep })
+      : o.note ? h('li', { class: 'note', role: 'presentation', textContent: o.note })
+      : h('li', { id: `combo-${n++}`, role: 'option', 'aria-selected': 'false', class: o.extra ? 'extra' : '',
+          onmousedown: e => { e.preventDefault(); pick(o.value); } }, // keeps the focus in the box
+          h('span', { textContent: o.text ?? o.value }), o.hint ? h('span', { class: 'hint', textContent: o.hint }) : null)));
+    comboList.style.setProperty('--c', color?.() || 'var(--text)');
+    const r = input.getBoundingClientRect();
+    const below = innerHeight - r.bottom > 220 || r.top < 220;
+    Object.assign(comboList.style, { left: `${r.left}px`, minWidth: `${r.width}px`,
+      top: below ? `${r.bottom + 4}px` : 'auto', bottom: below ? 'auto' : `${innerHeight - r.top + 4}px` });
+    comboList.hidden = false;
+    input.setAttribute('aria-expanded', 'true');
+    comboClose = close;
+    active = -1;
+  };
+  input.addEventListener('focus', open);
+  input.addEventListener('input', e => { if (e.isTrusted) open(); });
+  input.addEventListener('blur', close);
+  input.addEventListener('keydown', e => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (comboList.hidden) open();
+      if (items.length) mark((active + (e.key === 'ArrowDown' ? 1 : items.length - 1 + (active < 0 ? 1 : 0))) % items.length);
+    } else if (e.key === 'Enter' && !comboList.hidden && active >= 0) {
+      e.preventDefault();
+      pick(items[active].value);
+    } else if (e.key === 'Escape' && !comboList.hidden) {
+      e.preventDefault();
+      close();
+    }
+  });
+  return input;
 }
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -259,57 +362,74 @@ function connectionOf(machineId) {
 }
 
 function renderTabs() {
-  // The machine whose buttons the middle column shows; stays marked while a General view is open.
+  // The machine shown in the work area; stays marked while a General view is open.
   const selected = state.tab === GENERAL ? (state.scope || SHARED) : state.tab;
   const tab = (id, label, opts = {}) => {
     const el = h('div', {
-      class: `tab${selected === id ? ' active' : ''}${opts.fixed ? ' fixed' : ''}${opts.extra ? ' ' + opts.extra : ''}`,
+      class: `tab${selected === id ? ` active${state.tab === GENERAL ? ' parked' : ''}` : ''}${opts.fixed ? ' fixed' : ''}${opts.extra ? ' ' + opts.extra : ''}`,
       role: 'tab', tabIndex: 0, title: opts.title ?? label,
       onclick: () => switchTab(id),
       onkeydown: e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); switchTab(id); } },
-    }, h('span', { class: 'tab-name', textContent: label }));
+    });
     el.setAttribute('aria-selected', String(selected === id));
-    if (opts.auto)
-      el.append(h('span', { class: 'tab-auto', textContent: 'auto', title: 'Tab created automatically: check it, then confirm it on its PointMap (counts as confirmed after 3 days)' }));
     if (opts.status)
       el.append(h('span', { class: `dot ${opts.status}`, role: 'img', 'aria-label': STATUS_WORDS[opts.status], title: STATUS_WORDS[opts.status] }));
+    else if (opts.fixed)
+      el.append(icon('i-copy'));
+    if (opts.extra === 'broken') el.append(icon('i-info'));
+    el.append(h('span', { class: 'tab-name', textContent: label }));
+    if (opts.auto)
+      el.append(h('span', { class: 'tab-auto', textContent: 'auto', title: 'Tab created automatically: check it, then confirm it on its PointMap (counts as confirmed after 3 days)' }));
+    if (opts.unid)
+      el.append(h('span', { class: 'pill count', textContent: String(opts.unid), title: `${opts.unid} unidentified tag(s)` }));
     if (opts.close)
       el.append(h('button', {
-        type: 'button', class: 'tab-x', textContent: '×',
+        type: 'button', class: 'tab-x',
         title: holdPolicy() ? `Close: ${label}'s data is held until it gets a tab again` : `Close: ${label} goes back to the shared mapping`,
         'aria-label': `Close ${label}`, onclick: e => { e.stopPropagation(); removeMachine(id); },
-      }));
+      }, icon('i-close')));
     return el;
   };
 
   $('tabs').replaceChildren(...[
-    h('h1', { class: 'tabs-title', textContent: 'Machines' }),
-    tab(SHARED, unmappedFor('').length ? `⚠ ${sharedLabel()}` : sharedLabel(), { fixed: true, extra: unmappedFor('').length ? 'broken' : '', title: holdPolicy() ? 'Template: what "+" copies into a new machine tab. Machines without a tab are held, not mapped with this.' : 'The shared mapping: every machine that has no own tab' }),
-    ...state.machineConfigs.map(m => {
+    tab(SHARED, sharedLabel(), { fixed: true, extra: unmappedFor('').length ? 'broken' : '', title: holdPolicy() ? 'Template: what "+ Add a machine" copies into a new machine tab. Machines without a tab are held, not mapped with this.' : 'The shared mapping: every machine that has no own tab' }),
+    ...state.machineConfigs.filter(m => m.machineId.toLowerCase().includes(state.findMachine.trim().toLowerCase())).map(m => {
       const waiting = unmappedFor(m.machineId);
       const alert = !m.readable || waiting.length > 0;
       const status = connectionOf(m.machineId);
-      return tab(m.machineId, alert ? `⚠ ${m.machineId}` : m.machineId, {
+      return tab(m.machineId, m.machineId, {
         close: true, extra: alert ? 'broken' : '', status, auto: m.autoCopiedFrom != null,
+        unid: m.machineId === state.scope ? unidentifiedList().length : 0,
         title: !m.readable ? `${m.machineId}: its files can't be read (${m.error})`
           : waiting.length ? `${m.machineId}: data held, tags not mapped yet: ${[...new Set(waiting.flatMap(u => u.tags))].join(', ')}`
           : `${m.machineId} (${STATUS_WORDS[status]}): its own mapping and outbox`,
       });
     }),
-    h('button', { type: 'button', class: 'tab-add', textContent: '+', title: 'Give a machine its own tab and mapping', 'aria-label': 'Add machine', onclick: addMachine }),
+  ]);
+
+  // Pinned under the list (always in view): add a machine, and what needs a person.
+  $('mfoot').replaceChildren(...[
+    h('button', { type: 'button', class: 'btn ghost tab-add', title: 'Give a machine its own tab and mapping', onclick: addMachine }, icon('i-plus'), 'Add a machine'),
     // Machines sending without a tab: their data waits (held) until someone registers them.
     state.held.length ? h('button', {
-      type: 'button', class: 'tab-alert', textContent: `⚠ ${state.held.length} not registered`,
+      type: 'button', class: 'tab-alert', textContent: `${state.held.length} not registered: data held`,
       title: `Sending without a tab, data held: ${state.held.map(m => m.machineId).join(', ')}. Click to register.`,
       onclick: () => switchView('machines'),
     }) : null,
     // Messages MES rejected as invalid: kept, not retried, until someone re-sends or discards them.
     state.failedCount ? h('button', {
-      type: 'button', class: 'tab-alert', textContent: `⚠ ${state.failedCount.toLocaleString()} rejected by MES`,
+      type: 'button', class: 'tab-alert', textContent: `${state.failedCount.toLocaleString()} rejected by MES`,
       title: 'MES said these messages are invalid. They are kept (not retried) until you re-send or discard them. Click to see why.',
       onclick: () => switchView('failed'),
     }) : null,
   ].filter(Boolean));
+
+  const all = state.machineConfigs.length;
+  const online = state.machineConfigs.filter(m => connectionOf(m.machineId) !== 'disconnected').length;
+  $('machineCount').textContent = all ? `${online} of ${all} connected` : '';
+  const failed = $('failedPill');
+  failed.textContent = state.failedCount.toLocaleString();
+  failed.className = state.failedCount ? 'pill count' : 'pill quiet';
 }
 
 // "register" on a held machine: it gets its own tab (copied from copyFrom) and
@@ -328,8 +448,8 @@ async function registerMachine(id, copyFrom) {
   await loadMachineConfigs();
   await loadHeld();
   toast(result.reconnected
-    ? `${id} registered. Its adapter was reconnected and sends the held data again. Map the tags it sent under ⚠ Unidentified.`
-    : `${id} registered. Its held data arrives with its adapter's next resend. Map the tags it sent under ⚠ Unidentified.`);
+    ? `${id} registered. Its adapter was reconnected and sends the held data again. Map the tags it sent on its Unidentified page.`
+    : `${id} registered. Its held data arrives with its adapter's next resend. Map the tags it sent on its Unidentified page.`);
   await switchTab(id);
   state.group['point-map'] = UNID; // the tags it sent, to map
   switchView('point-map');
@@ -361,14 +481,14 @@ function renderScopeHint() {
   hint.classList.toggle('info', !!auto && !broken && !waiting.length);
   hint.hidden = !broken && !waiting.length && !auto;
   if (auto && !broken && !waiting.length) {
-    hint.append(`${auto.machineId}'s tab was created automatically, as a copy of ${auto.autoCopiedFrom || 'the Template'}. Check its mapping, then `,
-      h('button', { type: 'button', class: 'link', textContent: '✓ confirm', onclick: () => confirmAutoTab(auto.machineId) }), ' or ',
-      h('button', { type: 'button', class: 'link', textContent: '✗ cancel', title: 'Pick another mapping for it instead', onclick: () => reassignTab(auto.machineId) }),
-      '. Left as it is, it counts as confirmed 3 days after it was created.');
+    hint.append(icon('i-info'),
+      `${auto.machineId}'s tab was created automatically, as a copy of ${auto.autoCopiedFrom || 'the Template'}. Check its mapping, then confirm it or pick another. Left as it is, it counts as confirmed 3 days after it was created.`,
+      h('button', { type: 'button', class: 'btn small ok', textContent: 'Confirm', onclick: () => confirmAutoTab(auto.machineId) }),
+      h('button', { type: 'button', class: 'btn small warnb', textContent: 'Cancel', title: 'Pick another mapping for it instead', onclick: () => reassignTab(auto.machineId) }));
     return;
   }
   if (broken) {
-    hint.append(`${broken.machineId}'s files can't be read, so its lines are held until they are fixed: ${broken.error}`);
+    hint.append(icon('i-info'), `${broken.machineId}'s files can't be read, so its lines are held until they are fixed: ${broken.error}`);
     return;
   }
   if (!waiting.length) return;
@@ -378,6 +498,7 @@ function renderScopeHint() {
     `Held: ${lines.toLocaleString()} message(s) from ${waiting.map(u => u.machineId).join(', ')}, because this mapping doesn't know: ${tags.join(', ')}. ` +
     'Map each one or set it to ignore, then save: the held messages are sent again. ',
     h('button', { type: 'button', class: 'link', textContent: 'show them', onclick: () => { state.group['point-map'] = UNID; switchView('point-map'); } }));
+  hint.prepend(icon('i-info'));
 }
 
 async function confirmAutoTab(id) {
@@ -388,7 +509,7 @@ async function confirmAutoTab(id) {
   toast(`${id}'s tab is confirmed.`);
 }
 
-// Another mapping for a machine tab: "✗ cancel" on an automatic tab (#30), "⇄ change mapping" next to save on a machine tab's PointMap (#31).
+// Another mapping for a machine tab: "✗ cancel" on an automatic tab (#30), "Change mapping" next to Save on a machine tab (#31).
 // Its mapping becomes a copy of another tab's or the Template's (the old files are kept as .bak).
 // A confirmed tab asks for the password when one is set (else just "are you sure");
 // its data keeps the old mapping until then.
@@ -430,34 +551,115 @@ function pointMapGroups() {
 
 function unidentifiedList() {
   // A joined tag (line_no+process_id) maps each of its parts too.
-  const mapped = new Set(state.data['point-map'].flatMap(row => (row.tag ?? '').toLowerCase().split('+').map(t => t.trim())));
+  const mapped = new Set((state.data['point-map'] ?? []).flatMap(row => (row.tag ?? '').toLowerCase().split('+').map(t => t.trim())));
   return state.unidentified.filter(u => !mapped.has(u.tag.toLowerCase()));
 }
 
 // ---------- rendering ----------
 
+// The General tabs in the top bar, and the machine's Mapping | Outbox bar (with unsaved marks).
 function updateNav() {
-  $('tabTitle').textContent = state.scope || sharedLabel(); // the machine column's buttons, also while General is open
   document.querySelectorAll('.nav').forEach(button => {
     button.classList.toggle('active', button.dataset.view === state.view);
     button.querySelector('.dirty')?.remove();
     if (state.dirty.has(button.dataset.view))
-      button.append(h('span', { class: 'dirty', textContent: ' •', title: 'Unsaved changes' }));
+      button.append(h('span', { class: 'dirty', role: 'img', 'aria-label': 'unsaved changes', title: 'Unsaved changes' }));
   });
+  renderBanner();
 }
 
-function fillPicker(options, selected) {
-  $('picker').replaceChildren(...options.map(([value, text]) => h('option', { value, textContent: text })));
-  $('picker').value = selected;
-  $('pickerRow').hidden = false;
+const GENERAL_TITLES = {
+  'mqtt-config': ['i-broker', 'MQTT broker'], 'machine-config': ['i-sliders', 'Gateway settings'],
+  machines: ['i-robot', 'Machines'], failed: ['i-x', 'MES failures'], log: ['i-scroll', 'Log'],
+};
+
+function renderBanner() {
+  const banner = $('banner');
+  if (!isMachineTab(state.tab)) {
+    const [ic, title] = GENERAL_TITLES[state.view] ?? ['i-sliders', state.view];
+    banner.replaceChildren(h('div', { class: 'split one' }, h('div', { class: 'on' }, icon(ic), `General · ${title}`)));
+    return;
+  }
+  const name = state.scope || sharedLabel();
+  const mapping = state.view !== 'outbox';
+  const unidView = state.view === 'point-map' && state.group['point-map'] === UNID;
+  const dirty = key => state.dirty.has(key) ? h('span', { class: 'dirty', role: 'img', 'aria-label': 'unsaved changes', title: 'Unsaved changes' }) : null;
+  const unid = unidentifiedList().length;
+  const viewButton = (on, ic, label, onclick, extra) => h('button', { type: 'button', class: on ? 'on' : '', 'aria-pressed': String(on), onclick }, icon(ic), label, extra);
+  banner.replaceChildren(
+    h('div', { class: 'split' },
+      h('button', { type: 'button', class: mapping ? 'on' : '', onclick: () => switchView(state.lastMapping ?? 'point-map') }, icon('i-map'), `${name} Mapping`),
+      h('button', { type: 'button', class: mapping ? '' : 'on', onclick: () => switchView('outbox') }, icon('i-tray'), 'Outbox')),
+    mapping
+      ? h('div', { class: 'views' },
+          viewButton(state.view === 'point-map' && !unidView, 'i-map', 'PointMap', () => { state.group['point-map'] = ALL; switchView('point-map'); }, dirty('point-map')),
+          viewButton(state.view === 'timestamp-rules', 'i-clock', 'TimeStamp', () => switchView('timestamp-rules'), dirty('timestamp-rules')),
+          viewButton(unidView, 'i-question', 'Unidentified', async () => { state.group['point-map'] = UNID; await loadUnidentified(); switchView('point-map'); },
+            h('span', { class: unid ? 'pill count' : 'pill quiet', id: 'unidCount', textContent: String(unid) })))
+      : h('div', { class: 'views' }, h('button', { type: 'button', class: 'on' }, icon('i-tray'), 'Records for MES')));
+}
+
+// Left of the work area on a machine tab: who it is, how it is doing, what it sends live.
+function renderProfile() {
+  const el = $('profile');
+  const show = isMachineTab(state.tab) && state.data['point-map'];
+  el.hidden = !show;
+  $('work').classList.toggle('with-profile', !!show);
+  if (!show) return;
+
+  const id = state.scope;
+  const cfg = state.machineConfigs.find(m => m.machineId === id);
+  const live = id ? state.machines?.machines?.find(x => x.machineId.toLowerCase() === id.toLowerCase()) : null;
+  const status = id ? connectionOf(id) : null;
+  const rows = state.data['point-map'];
+  const mapped = rows.filter(r => (r.tag ?? '').trim() && r.dataGroup !== IGNORED && r.dataGroup !== 'UNIDENTIFIED').length;
+  const fills = pointMapGroups().filter(g => mesColumns(g)).map(groupFill);
+  const filled = fills.reduce((n, f) => n + f.tags + f.gw, 0), total = fills.reduce((n, f) => n + f.total, 0);
+  const unid = unidentifiedList().length;
+  const auto = cfg?.autoCopiedFrom != null;
+  const row = (ic, label, value, style) => h('li', {}, icon(ic), h('span', { textContent: label }), h('span', { class: 'v', textContent: value, title: String(value), ...(style ? { style } : {}) }));
+
+  const portrait = h('section', { class: 'card portrait' },
+    h('div', { class: 'plate' },
+      h('span', { class: `lvl${auto ? ' auto' : ''}`, textContent: !id ? 'template' : auto ? 'auto' : 'confirmed' }),
+      icon(id ? 'i-robot' : 'i-copy')),
+    h('h2', { textContent: id || sharedLabel() }),
+    id ? h('div', { class: 'sub' }, h('span', { class: `dot ${status}` }),
+          `${STATUS_WORDS[status][0].toUpperCase()}${STATUS_WORDS[status].slice(1)}${live?.lastMessage ? ` · last line ${ago(live.lastMessage)}` : ''}`)
+       : h('div', { class: 'sub', textContent: holdPolicy() ? 'Copied into new machine tabs' : 'Every machine without its own tab' }),
+    id ? h('button', { type: 'button', class: 'btn ghost', onclick: () => reassignTab(id) }, icon('i-swap'), 'Change mapping') : null);
+
+  const stats = h('section', { class: 'card' }, h('div', { class: 'head' }, icon('i-pulse'), id ? 'Machine' : 'Mapping'),
+    h('ul', { class: 'rows' }, ...[
+      id ? row('i-plug', 'Connection', live?.connection ?? '—', status === 'connected' ? 'color:var(--ok-text)' : null) : null,
+      id ? row('i-tag', 'Data source', live?.dataSources?.map(d => d.name).join(', ') || '—') : null,
+      id ? row('i-pulse', 'Lines', live ? `${live.total.toLocaleString()} · ${live.perSecond.toFixed(1)} / s` : '0') : null,
+      auto ? row('i-copy', 'Copied from', cfg.autoCopiedFrom || 'Template') : null,
+      row('i-tag', 'Tags mapped', mapped.toLocaleString()),
+      row('i-map', 'MES fields filled', `${filled} / ${total}`, 'color:var(--accent)'),
+      row('i-db', 'Waiting for MES', state.waiting[id || '']?.toLocaleString() ?? '—', state.waiting[id || ''] ? 'color:var(--warn-text)' : null),
+      row('i-question', 'Unidentified tags', String(unid), unid ? 'color:var(--bad-text)' : null),
+      live?.held ? row('i-db', 'Held', live.held.toLocaleString(), 'color:var(--bad-text)') : null,
+      id ? row('i-clock', 'Time warnings', String(live?.badTimes ?? 0)) : null,
+    ].filter(Boolean)));
+
+  const twin = rows.filter(r => TWIN_GROUPS.includes(r.dataGroup) && (r.tag ?? '').trim());
+  const twinCard = h('section', { class: 'card' },
+    h('div', { class: 'head' }, icon('i-wave'), 'Twin (MQTT)', h('span', { class: 'badge quiet', textContent: 'live only' })),
+    h('div', { class: 'chips' }, ...(twin.length
+      ? twin.map(r => h('button', { type: 'button', class: 'chip', textContent: r.tag, title: `${r.dataGroup} / ${r.fieldName}: published live, never sent to MES`,
+          onclick: () => { state.group['point-map'] = ALL; state.focusGroup = r.dataGroup; switchView('point-map'); } }))
+      : [h('span', { class: 'empty', textContent: 'No live data for the twin.' })])));
+
+  el.replaceChildren(portrait, stats, twinCard);
 }
 
 function render() {
   updateNav();
-  $('pickerHint').replaceChildren();
-  $('pickerRow').hidden = true;
+  setTools();
   const view = $('view');
   view.replaceChildren();
+  if (['point-map', 'timestamp-rules'].includes(state.view)) state.lastMapping = state.view;
 
   const isLog = state.view === 'log';
   const readOnly = !FILES[state.view]; // Log / Machines / Outbox: nothing to save
@@ -466,6 +668,7 @@ function render() {
   $('connectBtn').hidden = state.view !== 'mqtt-config';
   renderTabs();
   renderScopeHint();
+  renderProfile();
 
   if (state.view === 'point-map') renderPointMap(view);
   else if (state.view === 'timestamp-rules') renderTimestamp(view);
@@ -512,12 +715,22 @@ function renderMachines(view) {
     return;
   }
 
+  const sum = key => data.machines.reduce((n, m) => n + (m[key] ?? 0), 0);
+  const stat = (label, value, small, cls) => h('div', { class: `stat${cls ? ' ' + cls : ''}` }, h('span', { textContent: label }), h('b', {}, value, small ? h('small', { textContent: ` ${small}` }) : null));
+  const rate = state.status?.stats?.inPerSec;
+  view.append(h('div', { class: 'stats' },
+    stat('Connected', String(data.machines.filter(m => m.status !== 'disconnected').length), `of ${data.machines.length}`),
+    stat('Lines in', rate == null ? '—' : rate < 10 ? rate.toFixed(1) : Math.round(rate).toLocaleString(), '/ s'),
+    stat('Held (no tab)', String(state.held.length), null, state.held.length ? 'bad' : ''),
+    stat('Time warnings', sum('badTimes').toLocaleString(), null, sum('badTimes') ? 'warn' : ''),
+    stat('Repeats ignored', sum('duplicates').toLocaleString())));
+
   // First: machines sending without a tab. Their data is held (not processed, not
   // answered) until someone registers them here.
   if (state.held.length) {
-    view.append(h('h3', { class: 'sub held-title', textContent: `⚠ Not registered: ${state.held.length} machine(s) sending without a tab, data held` }));
+    view.append(h('h3', { class: 'sub held-title' }, icon('i-info'), `Not registered: ${state.held.length} machine(s) sending without a tab, data held`));
     view.append(h('p', { class: 'section-note', textContent:
-      'Their adapters keep the data. Register a machine: it gets its own tab copied from the mapping you pick, its adapter is reconnected and sends the held data again, and the tags it sent appear under ⚠ Unidentified to map.' }));
+      'Their adapters keep the data. Register a machine: it gets its own tab copied from the mapping you pick, its adapter is reconnected and sends the held data again, and the tags it sent appear on its Unidentified page to map.' }));
     const sources = [['', sharedLabel()], ...state.machineConfigs.filter(c => c.readable).map(c => [c.machineId, c.machineId])];
     view.append(table(
       ['machine', 'connection', 'since', 'held lines', 'data sources', 'tags sent', 'register, copying the mapping of'],
@@ -534,7 +747,7 @@ function renderMachines(view) {
           h('td', { class: 'small', textContent: m.dataSources.join(', ') || '—' }),
           h('td', { class: 'small', textContent: `${m.tags.length}: ${m.tags.slice(0, 8).join(', ')}${m.tags.length > 8 ? ' …' : ''}`, title: m.tags.join(', ') }),
           h('td', { class: 'register-cell' }, from,
-            h('button', { type: 'button', class: 'primary', textContent: 'register', onclick: () => registerMachine(m.machineId, from.value) })));
+            h('button', { type: 'button', class: 'btn primary small', textContent: 'Register', onclick: () => registerMachine(m.machineId, from.value) })));
       })));
     view.append(h('h3', { class: 'sub', textContent: 'All machines' }));
   }
@@ -591,21 +804,28 @@ function renderMessageSearch(view, data) {
   const s = state.msgSearch ??= { day: new Date().toLocaleDateString('sv'), from: '00:00', to: '23:59', machine: '', result: null, error: '' };
   const names = [...new Set([...data.machines.map(m => m.machineId), ...state.machineConfigs.map(m => m.machineId)])].sort();
   const field = (type, key, label) => h('input', { type, value: s[key], 'aria-label': label, oninput: e => { s[key] = e.target.value; } });
-  view.append(h('h3', { class: 'sub', textContent: 'Messages received (kept 7 days)' }),
-    h('div', { class: 'outbox-tools msg-search' },
-      field('date', 'day', 'day'), field('time', 'from', 'from time'), h('span', { textContent: 'to' }), field('time', 'to', 'to time'),
+  view.append(h('h3', { class: 'sub' }, icon('i-pulse'), 'Messages received (kept 7 days)'),
+    h('div', { class: 'tools', style: 'margin-bottom:10px' },
+      field('date', 'day', 'day'), field('time', 'from', 'from time'), h('span', { class: 'section-note', style: 'margin:0', textContent: 'to' }), field('time', 'to', 'to time'),
       select([['', 'all machines'], ...names.map(n => [n, n])], s.machine, v => { s.machine = v; }, 'machine'),
-      h('button', { type: 'button', class: 'primary', textContent: 'Search', onclick: searchMessages })));
-  if (s.error) { view.append(h('p', { class: 'hint', textContent: s.error })); return; }
+      h('button', { type: 'button', class: 'btn primary small', textContent: 'Search', onclick: searchMessages })));
+  if (s.error) { view.append(h('p', { class: 'note-warn', textContent: s.error })); return; }
   const r = s.result;
   if (!r) return;
   view.append(h('p', { class: 'section-note', textContent:
     `${r.total.toLocaleString()} line(s) on ${s.day}, ${s.from}–${s.to}${s.machine ? ` from ${s.machine}` : ''} · stored days: ${(r.storedBytes / 1048576).toFixed(1)} MB` }));
   if (!r.total) return;
+  // Lines per hour of the day, as bars (hover for the number).
+  const perHour = new Array(24).fill(0);
+  for (const x of r.hours) perHour[Number(x.hour.slice(11, 13))] += x.count;
+  const top = Math.max(...perHour, 1);
   view.append(h('div', { class: 'msg-results' },
     table(['machine', 'lines'], r.machines.map(m => h('tr', {}, h('td', { textContent: m.machine }), h('td', { class: 'num', textContent: m.count.toLocaleString() })))),
-    table(['hour', 'lines'], r.hours.map(x => h('tr', {},
-      h('td', { textContent: `${x.hour.slice(11, 13)}:00–${x.hour.slice(11, 13)}:59` }), h('td', { class: 'num', textContent: x.count.toLocaleString() }))))));
+    h('div', { class: 'card' },
+      h('div', { class: 'head' }, icon('i-clock'), 'Lines per hour'),
+      h('div', { class: 'hist', role: 'img', 'aria-label': `Lines per hour: ${perHour.map((n, i) => `${i}:00 ${n}`).filter((_, i) => perHour[i]).join(', ')}` },
+        ...perHour.map((n, i) => h('i', { class: n ? '' : 'zero', style: `height:${Math.max(2, Math.round(n / top * 100))}%`, title: `${String(i).padStart(2, '0')}:00–${String(i).padStart(2, '0')}:59 · ${n.toLocaleString()} lines` }))),
+      h('div', { class: 'hist-x' }, ...perHour.map((_, i) => h('span', { textContent: i % 3 === 0 ? String(i) : '' }))))));
 }
 
 async function searchMessages() {
@@ -638,9 +858,19 @@ function guessCopyFrom(machineId) {
   return (same.find(c => c.autoCopiedFrom == null) ?? same[0])?.machineId ?? '';
 }
 
+// Rows of the machine on screen still waiting for MES (all its outbox days), at most every 15 s.
+async function loadWaiting() {
+  const scope = state.scope || '';
+  if (Date.now() - (state.waitingAt[scope] ?? 0) < 15000) return;
+  state.waitingAt[scope] = Date.now();
+  try { state.waiting[scope] = (await request(`/api/outbox/days?scope=${encodeURIComponent(scope)}`)).reduce((n, d) => n + d.waiting, 0); }
+  catch { delete state.waiting[scope]; } // no outbox yet
+}
+
 async function pollMachines() {
   try { state.machines = await request('/api/machines'); } catch { return; }
   renderTabs(); // the connection dots in the machine list
+  if (isMachineTab(state.tab)) { await loadWaiting(); renderProfile(); } // its status dot, last line, rows waiting
   if (state.view === 'machines') await loadMachineConfigs(); // for the mapping column
   if (state.view !== 'machines') return;
   if (['SELECT', 'INPUT'].includes(document.activeElement?.tagName) && $('view').contains(document.activeElement))
@@ -687,18 +917,28 @@ async function renderOutbox(view) {
 
   const daySelect = select(o.days.map(d => [d.day, `${d.day}  (${d.rows.toLocaleString()} rows, ${d.waiting.toLocaleString()} waiting${d.failed ? `, ${d.failed.toLocaleString()} rejected` : ''}, ${d.megabytes} MB)`]),
     o.day ?? '', v => { o.day = v; reload(); }, 'day');
-  const machineInput = h('input', { value: o.machine, placeholder: 'all machines', 'aria-label': 'machine',
-    onchange: e => { o.machine = e.target.value.trim(); reload(); } });
-  machineInput.setAttribute('list', 'outboxMachines'); // read-only as a property
-  const machineList = h('datalist', { id: 'outboxMachines' }, ...knownMachines.map(m => h('option', { value: m })));
+  const machineInput = combo(h('input', { value: o.machine, placeholder: 'all machines', 'aria-label': 'machine',
+    onchange: e => { o.machine = e.target.value.trim(); reload(); } }),
+    text => knownMachines.filter(m => m.toLowerCase().includes(text.toLowerCase())).map(m => ({ value: m })));
   const groupSelect = select([['', 'all groups'], ...groups.map(g => [g, g])], o.group, v => { o.group = v; reload(); }, 'group');
   const sourceInput = h('input', { value: o.source, placeholder: 'all data sources', 'aria-label': 'data source',
     onchange: e => { o.source = e.target.value.trim(); reload(); } });
   const statusSelect = select([['', 'all'], ['sent', 'sent to MES'], ['waiting', 'waiting'], ['failed', 'rejected by MES'], ['discarded', 'discarded']],
     o.status, v => { o.status = v; reload(); }, 'status');
 
-  view.append(h('div', { class: 'outbox-tools' }, scopeSelect, daySelect, machineInput, machineList, groupSelect, sourceInput, statusSelect,
-    h('button', { type: 'button', textContent: 'refresh', onclick: () => { o.days = null; render(); } })));
+  const day = o.days.find(d => d.day === o.day);
+  if (day) {
+    const stat = (label, value, cls) => h('div', { class: `stat${cls ? ' ' + cls : ''}` }, h('span', { textContent: label }), h('b', { textContent: value }));
+    view.append(h('div', { class: 'stats' },
+      stat('Records this day', day.rows.toLocaleString()),
+      stat('Waiting for MES', day.waiting.toLocaleString(), day.waiting ? 'warn' : ''),
+      stat('Rejected by MES', (day.failed ?? 0).toLocaleString(), day.failed ? 'bad' : ''),
+      stat('Day file', `${day.megabytes} MB`),
+      stat('Days kept', o.days.length.toLocaleString())));
+  }
+
+  setTools(scopeSelect, daySelect, machineInput, groupSelect, sourceInput, statusSelect,
+    h('button', { type: 'button', class: 'btn small', textContent: 'Refresh', onclick: () => { o.days = null; render(); } }));
 
   if (!o.days.length) {
     view.append(h('div', { class: 'empty', textContent: 'The outbox is empty.' }));
@@ -711,15 +951,15 @@ async function renderOutbox(view) {
     rows.flatMap(r => {
       const open = o.open[r.id];
       const tr = h('tr', { class: 'clickable', title: 'Click to show the whole envelope', onclick: () => toggleRow(r.id) },
-        h('td', { textContent: open ? '▾' : '▸' }),
+        h('td', { class: 'disc' }, icon(open ? 'i-down' : 'i-right')),
         h('td', { class: 'nowrap', textContent: new Date(r.createdAt).toLocaleTimeString() }),
         h('td', { class: 'strong', textContent: r.machineId ?? '—' }),
         h('td', { textContent: r.dataSource ?? '—' }),
-        h('td', { textContent: r.group }),
-        r.sent ? h('td', { class: 'nowrap', textContent: `sent ${new Date(r.sentAt).toLocaleTimeString()}` })
-          : r.discardedAt ? h('td', { class: 'nowrap', textContent: 'discarded', title: `Discarded ${localTime(r.discardedAt)}: ${r.discardReason}\nMES said: ${r.error ?? ''}` })
-          : r.failedAt ? h('td', { class: 'nowrap bad', textContent: 'rejected', title: `MES said: ${r.error}\nRe-send or discard it under General → MES failures.` })
-          : h('td', { class: 'nowrap warn', textContent: 'waiting' }),
+        h('td', {}, h('span', { class: 'gtag', style: `--c:${gcolor(r.group)}`, textContent: r.group })),
+        r.sent ? h('td', { class: 'nowrap' }, h('span', { class: 'pill ok', textContent: `sent ${new Date(r.sentAt).toLocaleTimeString()}` }))
+          : r.discardedAt ? h('td', { class: 'nowrap', title: `Discarded ${localTime(r.discardedAt)}: ${r.discardReason}\nMES said: ${r.error ?? ''}` }, h('span', { class: 'pill quiet', textContent: 'discarded' }))
+          : r.failedAt ? h('td', { class: 'nowrap', title: `MES said: ${r.error}\nRe-send or discard it under MES failures.` }, h('span', { class: 'pill count', textContent: 'rejected' }))
+          : h('td', { class: 'nowrap' }, h('span', { class: 'pill auto', textContent: 'waiting' })),
         h('td', { class: 'num', textContent: r.size >= 1024 ? `${(r.size / 1024).toFixed(1)} KB` : `${r.size} B` }),
         h('td', { class: 'small preview', textContent: r.preview }));
       return open ? [tr, h('tr', {}, h('td', { colSpan: 8 }, h('pre', { class: 'json', textContent: open })))] : [tr];
@@ -727,7 +967,7 @@ async function renderOutbox(view) {
   ) : h('div', { class: 'empty', textContent: o.loading ? 'Loading…' : 'No rows for these filters.' }));
 
   if (o.more)
-    view.append(h('button', { type: 'button', class: 'more', textContent: 'load older rows', onclick: () => loadOutbox(true) }));
+    view.append(h('button', { type: 'button', class: 'btn small', textContent: 'Load older rows', onclick: () => loadOutbox(true) }));
 }
 
 // The Outbox view loads again for the tab now shown.
@@ -789,15 +1029,16 @@ function renderFailed(view) {
 
   const picked = f.rows.filter(r => state.failedPicked.has(failedKey(r)));
   const refs = rows => rows.map(r => ({ scope: r.scope, day: r.day, id: r.id }));
-  view.append(h('div', { class: 'outbox-tools' },
-    h('button', { type: 'button', class: 'primary', textContent: picked.length ? `re-send ${picked.length} ticked` : 're-send all',
+  setTools(
+    h('button', { type: 'button', class: 'btn primary small', textContent: picked.length ? `Re-send ${picked.length} ticked` : 'Re-send all',
       disabled: !f.total, onclick: () => failedAction('resend', picked.length ? refs(picked) : null) }),
-    h('button', { type: 'button', textContent: picked.length ? `discard ${picked.length} ticked…` : 'discard all…',
+    h('button', { type: 'button', class: 'btn ghost small', textContent: picked.length ? `Discard ${picked.length} ticked…` : 'Discard all…',
       disabled: !f.total, onclick: () => failedAction('discard', picked.length ? refs(picked) : null) }),
-    h('button', { type: 'button', textContent: 'refresh', onclick: () => loadFailed() })));
+    h('button', { type: 'button', class: 'btn small', textContent: 'Refresh', onclick: () => loadFailed() }));
 
   if (!f.total) {
-    view.append(h('div', { class: 'empty', textContent: 'Nothing rejected by MES.' }));
+    view.append(h('div', { class: 'statusbar' }, h('span', { class: 'dot connected' }), h('b', { textContent: 'MES refused nothing' }),
+      h('span', { textContent: 'Records MES answers as invalid wait here to be re-sent or discarded.' })));
     return;
   }
 
@@ -818,9 +1059,9 @@ function renderFailed(view) {
         onchange: e => { e.target.checked ? state.failedPicked.add(key) : state.failedPicked.delete(key); render(); } });
       const tr = h('tr', { class: 'clickable', title: 'Click to show the whole envelope', onclick: () => toggleFailed(r) },
         h('td', {}, tick),
-        h('td', { textContent: open ? '▾' : '▸' }),
+        h('td', { class: 'disc' }, icon(open ? 'i-down' : 'i-right')),
         h('td', { class: 'strong', textContent: r.machineId ?? '—' }),
-        h('td', { textContent: r.group }),
+        h('td', {}, h('span', { class: 'gtag', style: `--c:${gcolor(r.group)}`, textContent: r.group })),
         h('td', { textContent: r.dataSource ?? '—' }),
         h('td', { class: 'nowrap', textContent: r.eventTime ? localTime(r.eventTime) : '—' }),
         h('td', { class: 'nowrap', textContent: ago(r.failedAt), title: localTime(r.failedAt) }),
@@ -889,23 +1130,31 @@ function renderLog(view) {
   state.seenErrors = state.errorCount;
   updateErrorBadge();
 
-  const onlyErrors = h('input', {
-    type: 'checkbox', checked: state.errorsOnly,
-    onchange: e => { state.errorsOnly = e.target.checked; render(); },
-  });
-  view.append(h('label', { class: 'log-tools' }, onlyErrors, 'Show problems only'));
+  const problems = state.logs.filter(l => l.isError).length;
+  setTools(seg([[false, 'All'], [true, `Problems (${problems})`]], state.errorsOnly, v => { state.errorsOnly = v; render(); }, 'Show'));
 
   const lines = state.logs.filter(l => (!state.errorsOnly || l.isError) && matches(l.text));
   const box = h('div', { class: 'log', id: 'logBox' });
   if (!lines.length)
-    box.append(h('div', { class: 'empty', textContent: state.logs.length ? 'No lines match.' : 'No log lines yet.' }));
-  for (const line of lines)
+    box.append(h('div', { class: 'empty', style: 'padding:12px', textContent: state.logs.length ? 'No lines match.' : 'No log lines yet.' }));
+  for (const line of lines) {
+    // "[config] text": the part in brackets gets its own column, coloured by who wrote it.
+    const m = line.text.match(/^\[([^\]]+)\]\s*(.*)$/s);
+    const who = m ? m[1] : '';
     box.append(h('div', { class: line.isError ? 'log-line err' : 'log-line' },
-      h('span', { class: 't', textContent: new Date(line.time).toLocaleTimeString() }), line.text));
+      h('span', { class: 't', textContent: new Date(line.time).toLocaleTimeString() }),
+      h('span', { class: 'm', style: line.isError ? '' : `color:${LOG_COLORS[who.split(' ')[0]] ?? 'var(--muted)'}`, textContent: who }),
+      h('span', { class: 'x', textContent: m ? m[2] : line.text })));
+  }
 
   view.append(box);
   box.scrollTop = box.scrollHeight;
 }
+
+const LOG_COLORS = {
+  tcp: 'var(--g-TRACEABILITY)', gateway: 'var(--ok)', mqtt: 'var(--accent)', twin: 'var(--accent)',
+  config: 'var(--gold)', mapping: 'var(--g-PROCESS)', forwarder: 'var(--g-MATERIAL)', outbox: 'var(--g-MATERIAL)', alarm: 'var(--bad)',
+};
 
 // Ongoing problems, read from the gateway's own log lines. These are fixed texts in
 // MesForwarder.cs and MqttPublisher*.cs / TwinForwarder.cs: change them together.
@@ -952,7 +1201,7 @@ function renderAlerts() {
 function updateErrorBadge() {
   const unseen = state.errorCount - state.seenErrors;
   $('errBadge').hidden = unseen <= 0;
-  $('errBadge').textContent = `⚠ ${unseen} new problem${unseen === 1 ? '' : 's'} · view log`;
+  $('errBadge').replaceChildren(icon('i-info'), `${unseen} new problem${unseen === 1 ? '' : 's'}`);
 }
 
 async function pollLogs() {
@@ -986,135 +1235,215 @@ async function pollLogs() {
   }
 }
 
-// PointMap: incoming tag <-> fieldName, one data group at a time.
+// PointMap: the loadout row (one slot per MES group: how many of its fields are filled), then one
+// panel per group: MES fields (type the incoming tag) and extra fields; non-MES groups (MOTION, IO) free rows.
 function renderPointMap(view) {
   const groups = pointMapGroups();
   const unid = unidentifiedList();
-
-  let group = state.group['point-map'];
-  if (group !== ALL && group !== UNID && !groups.includes(group)) group = groups[0] ?? ALL;
-  state.group['point-map'] = group;
-
-  fillPicker([
-    [ALL, 'All groups'],
-    ...groups.map(g => [g, g]),
-    [UNID, `⚠ Unidentified (${unid.length})`],
-    [NEW, '+ New group…'],
-  ], group);
-
-  if (group === UNID) {
+  if (state.group['point-map'] === UNID) {
     renderUnidentified(view, unid, groups);
     return;
   }
 
-  if (group !== ALL && !TWIN_GROUPS.includes(group) && !state.data['timestamp-rules'][group]) {
-    $('pickerHint').replaceChildren(
-      `No timestamp rule for ${group}, so its records get record_timestamp. `,
-      h('button', { class: 'link', type: 'button', textContent: 'Add rule', onclick: () => addTimestampRule(group) }));
-  }
+  const filter = state.pmFilter ??= 'all';
+  setTools(
+    seg([['all', 'All fields'], ['filled', 'Filled'], ['empty', 'Empty'], ['extras', 'Extras']], filter, v => { state.pmFilter = v; render(); }, 'Show'),
+    h('button', { type: 'button', class: 'btn ghost small', title: 'A data group of your own (not an MES table): its rows go to MQTT or nowhere', onclick: addNewGroup }, icon('i-plus'), 'New group'));
 
-  const all = group === ALL;
-  const searching = state.search.trim() !== '';
+  view.append(loadoutRow());
+
+  const panels = h('div', { class: 'groups' });
   let shown = 0;
-  for (const g of all ? groups : [group])
-    shown += renderGroupFields(view, g, all);
+  for (const g of groups) shown += renderGroupFields(panels, g);
+  view.append(panels);
+  if (!shown)
+    view.append(h('div', { class: 'empty', textContent: state.search.trim() ? 'Nothing matches the search.' : 'Nothing to show with this filter.' }));
 
-  if (!shown && searching)
-    view.append(h('div', { class: 'empty', textContent: all ? 'Nothing matches the search.' : `Nothing in ${group} matches. Try "All groups".` }));
+  // A slot or a twin chip asked for a group: bring its panel into view.
+  if (state.focusGroup) {
+    const panel = $(`grp-${state.focusGroup}`);
+    state.focusGroup = null;
+    if (panel) {
+      panel.scrollIntoView({ block: 'start', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+      panel.classList.add('flash');
+    }
+  }
+}
+
+const loadoutRow = () => h('div', { class: 'loadout', role: 'list', 'aria-label': 'MES groups: fields filled' },
+  ...pointMapGroups().filter(g => mesColumns(g)).map(loadoutSlot));
+
+// After a tag edit: redraw that group's panel (and PRODUCTION's: its cycle_time follows other groups),
+// the slots and the machine card, then put the focus back where the user moved it (Tab, a click).
+function refreshGroup(group) {
+  setTimeout(() => {
+    const focused = document.activeElement;
+    let again = null;
+    for (const g of new Set([group, 'PRODUCTION'])) {
+      const old = $(`grp-${g}`);
+      if (!old) continue;
+      const label = old.contains(focused) ? focused.getAttribute('aria-label') : null;
+      const fresh = h('div', {});
+      renderGroupFields(fresh, g);
+      old.replaceWith(...fresh.childNodes);
+      if (label) again = () => $(`grp-${g}`)?.querySelector(`[aria-label="${CSS.escape(label)}"]`)?.focus();
+    }
+    document.querySelector('.loadout')?.replaceWith(loadoutRow());
+    renderProfile();
+    again?.();
+  });
 }
 
 // The MES columns of a data group (the MES format, Config/mes-schema.json), or null for a group that is no MES table (MOTION, IO, ...).
 const mesColumns = group => state.mesSchema?.[group] ?? null;
 
-// Fields the group's TimeStamp rule fills (they need no incoming tag).
-function ruleFilled(group) {
-  const rule = state.data['timestamp-rules']?.[group];
-  if (!rule) return new Set(['record_timestamp']);
-  if (rule.mode === 'Span')
-    return new Set([rule.startField, rule.endField, rule.previousField || (rule.triggerField && `previous_${rule.triggerField}`)].filter(Boolean));
-  return new Set([rule.timestampField || 'record_timestamp']);
+// Fields the gateway fills by itself, so they need no tag: a Span rule's start / end / previous
+// value (only when its trigger tag is mapped: without it the span never moves), a single-point
+// rule's time field, and PRODUCTION cycle_time when the gateway can work it out (start and end
+// in one message, PRODUCTION's or MACHINE_STATUS's, or cycle_active on / off).
+function gatewayFilled(group) {
+  const rules = state.data['timestamp-rules'] ?? {};
+  const rows = state.data['point-map'] ?? [];
+  const tagged = g => new Set(rows.filter(r => r.dataGroup === g && (r.tag ?? '').trim()).map(r => r.fieldName));
+  const mine = tagged(group);
+  const rule = rules[group];
+  const out = new Set();
+  if (!rule) out.add('record_timestamp');
+  else if (rule.mode === 'Span') {
+    if (rule.triggerField && mine.has(rule.triggerField))
+      [rule.startField, rule.endField, rule.previousField || `previous_${rule.triggerField}`].filter(Boolean).forEach(f => out.add(f));
+  } else out.add(rule.timestampField || 'record_timestamp');
+
+  if (group === 'PRODUCTION') {
+    const both = g => rules[g]?.startField && rules[g]?.endField && tagged(g).has(rules[g].startField) && tagged(g).has(rules[g].endField);
+    if (both('PRODUCTION') || both('MACHINE_STATUS') || (rules.PRODUCTION?.triggerField && mine.has(rules.PRODUCTION.triggerField)))
+      out.add('cycle_time');
+  }
+  return out;
 }
 
-// One group: its MES fields (every MES column, just fill in the incoming tag),
-// then extra fields (tag + own field name). Returns how many rows are shown.
-function renderGroupFields(view, group, withTitle) {
+// A group's MES fields: filled by a tag, filled by the gateway (and no tag), all.
+function groupFill(group) {
+  const columns = mesColumns(group) ?? [];
+  const rows = state.data['point-map'] ?? [];
+  const tagged = new Set(rows.filter(r => r.dataGroup === group && (r.tag ?? '').trim()).map(r => r.fieldName));
+  const byGateway = gatewayFilled(group);
+  const tags = columns.filter(c => tagged.has(c));
+  const gw = columns.filter(c => !tagged.has(c) && byGateway.has(c));
+  return { tags: tags.length, gw: gw.length, total: columns.length, gwFields: gw, empty: columns.filter(c => !tagged.has(c) && !byGateway.has(c)) };
+}
+
+function loadoutSlot(group) {
+  const f = groupFill(group);
+  const filled = f.tags + f.gw;
+  const pct = n => (f.total ? `${(n / f.total) * 100}%` : '0');
+  const tip = [`${group}: ${filled} of ${f.total} MES fields filled`,
+    f.gw ? `${f.gw} set by the gateway: ${f.gwFields.join(', ')}` : '',
+    f.empty.length ? `no tag (sent as null): ${f.empty.join(', ')}` : ''].filter(Boolean).join('\n');
+  return h('button', {
+    type: 'button', role: 'listitem', class: `slot${filled ? '' : ' empty'}${state.selGroup === group ? ' sel' : ''}`,
+    style: `--c:${gcolor(group)}`, title: tip, 'aria-label': tip,
+    onclick: () => { state.selGroup = group; state.focusGroup = group; render(); },
+  },
+    h('span', { class: 'lv', textContent: `${filled}/${f.total}` }),
+    h('span', { class: 'tile' }, icon(`g-${gkey(group)}`)),
+    h('span', { class: 'nm', textContent: SHORT_GROUP[group] ?? group }),
+    h('span', { class: 'bar' }, h('i', { style: `width:${pct(f.tags)}` }), h('i', { class: 'gw', style: `width:${pct(f.gw)}` })));
+}
+
+// The badge in a group's header: how its records are time-stamped and paced.
+function ruleBadge(group) {
+  if (TWIN_GROUPS.includes(group)) return h('span', { class: 'badge quiet', textContent: 'MQTT · live only' });
+  const rule = state.data['timestamp-rules']?.[group];
+  if (!rule) return mesColumns(group) ? h('span', { class: 'badge quiet', textContent: 'no time rule' }) : null;
+  const every = rule.sendEveryMs != null ? ` · ${fmtMs(rule.sendEveryMs)}` : '';
+  return rule.mode === 'Span'
+    ? h('span', { class: 'badge', textContent: `Span · ${rule.triggerField || '?'}${every}` })
+    : h('span', { class: 'badge quiet', textContent: `Single point${every}` });
+}
+
+// One group's panel. Returns how many rows it shows (0 = left out by the search or filter).
+function renderGroupFields(container, group) {
   const columns = mesColumns(group);
+  const filter = state.pmFilter ?? 'all';
   const searching = state.search.trim() !== '';
-  const section = h('div', { class: 'field-section' });
-  if (withTitle) section.append(h('h3', { class: 'sub', textContent: group }));
+  const twin = TWIN_GROUPS.includes(group);
+  const panel = h('article', { class: 'card grp', id: `grp-${group}`, style: `--c:${gcolor(group)}` });
+  const fill = columns ? groupFill(group) : null;
+  panel.append(h('div', { class: 'head' }, icon(`g-${gkey(group)}`), h('span', { class: 'gname', textContent: group }),
+    fill ? h('span', { class: 'fill', textContent: `${fill.tags + fill.gw} / ${fill.total}` }) : null, ruleBadge(group)));
   let shown = 0;
 
-  if (columns) {
-    const filled = ruleFilled(group);
-    const grid = h('div', { class: 'grid mes' },
-      h('div', { class: 'head', textContent: 'MES field' }),
-      h('div', { class: 'head', textContent: 'incoming tag (several: comma-separated)' }),
-      h('div', { class: 'head' })); // a head too: hidden with the others in a narrow column, or every row shifts a cell
+  if (columns && filter !== 'extras') {
+    const byGateway = gatewayFilled(group);
     for (const column of columns) {
       const rows = state.data['point-map'].filter(r => r.dataGroup === group && r.fieldName === column);
-      const tags = rows.map(r => r.tag);
+      const tags = rows.map(r => r.tag).filter(t => (t ?? '').trim());
+      const gw = !tags.length && byGateway.has(column);
+      if (filter === 'filled' && !tags.length && !gw) continue;
+      if (filter === 'empty' && (tags.length || gw)) continue;
       if (!matches(`${column} ${tags.join(' ')} ${group}`)) continue;
       shown++;
-      const byRule = filled.has(column);
-      // Mapped automatically by name matching and not checked yet: ✓ confirms it (save to keep).
+      // Mapped automatically by name matching and not checked yet: clicking the mark confirms it (save to keep).
       const auto = rows.filter(r => r.auto != null);
-      grid.append(
-        h('div', { class: 'field-label', title: byRule ? 'The TimeStamp rule fills this field; a tag is optional.' : `MES column ${column}` },
-          column, byRule ? h('span', { class: 'field-note', textContent: 'set by TimeStamp rule' }) : null,
+      // "a+b" = joined (both needed, values sent as a_b); "a, b" = either tag fills the field.
+      const joined = tags.find(t => t.includes('+'))?.split('+').map(p => p.trim()).filter(Boolean) ?? [];
+      panel.append(h('div', { class: `frow${tags.length ? '' : gw ? ' gwfill' : ' none'}${joined.length > 1 ? ' flag' : ''}` },
+        h('i', { class: 'mark' }),
+        h('span', { class: 'fn', title: `MES column ${column}` }, column,
           auto.length ? h('button', {
-            type: 'button', class: 'auto-mark', textContent: `auto ${Math.max(...auto.map(r => r.auto)).toFixed(2)} ✓`,
-            title: `Mapped automatically by name matching (${auto.map(r => `${r.tag}: ${r.auto}`).join(', ')}). Click to confirm it, then save.`,
+            type: 'button', class: 'auto-mark', textContent: `auto ${Math.max(...auto.map(r => r.auto)).toFixed(2)}`,
+            title: `Mapped automatically (${auto.map(r => `${r.tag}: ${r.auto}`).join(', ')}). Click to confirm it, then save.`,
             onclick: () => { auto.forEach(r => delete r.auto); markDirty('point-map'); render(); },
-          }) : null),
-        h('input', {
-          value: tags.join(', '), 'aria-label': `incoming tag for ${column}`,
-          placeholder: byRule ? 'optional' : 'no tag: sent as null',
+          }) : null,
+          gw ? h('span', { class: 'note-gw', textContent: 'set by the gateway' }) : null),
+        h('textarea', {
+          rows: 1, value: tags.join(', '), 'aria-label': `incoming tag for ${column}`, title: tags.join(', '),
+          onkeydown: e => { if (e.key === 'Enter') { e.preventDefault(); e.target.blur(); } },
+          placeholder: gw ? 'optional' : 'no tag · sent as null',
           // on change (leaving the box), so typing a comma doesn't redraw the list
-          onchange: e => setFieldTags(group, column, e.target.value),
+          onchange: e => { setFieldTags(group, column, e.target.value); refreshGroup(group); },
         }),
         tags.length ? h('button', {
-          class: 'row-x', type: 'button', textContent: '×',
+          class: 'row-x', type: 'button', 'aria-label': `Take the tag off ${column}`,
           title: `Take ${tags.join(', ')} off ${column} on this tab: it becomes an extra field (not sent). ${column} itself stays.`,
           onclick: () => clearFieldTags(group, column, columns),
-        }) : h('div'));
+        }, icon('i-close')) : h('span')));
+      if (joined.length > 1)
+        panel.append(h('div', { class: 'flagnote', textContent: `${joined.join(' + ')}: MES gets their values joined with _, and only when all ${joined.length} arrive.` }));
     }
-    if (shown || !searching) section.append(grid);
-    if (!searching)
-      section.append(h('button', {
-        type: 'button', class: 'link add-field', textContent: '+ MES field',
-        title: `Add a column to the MES format of ${group} (all machines)`, onclick: () => addMesField(group),
-      }));
+    if (!searching && filter === 'all')
+      panel.append(h('div', { class: 'grp-foot' },
+        h('button', { type: 'button', class: 'link', textContent: '+ MES field', title: `Add a column to the MES format of ${group} (all machines)`, onclick: () => addMesField(group) }),
+        !twin && !state.data['timestamp-rules'][group] ? h('button', { type: 'button', class: 'link', textContent: 'Add a time rule', onclick: () => addTimestampRule(group) }) : null));
   }
 
-  // Extra fields: no MES column (never in the MES payload): "assign it" puts the
-  // tag on a MES field. A non-MES group (MOTION, IO): every field, free text.
-  const extraGrid = h('div', { class: 'grid two' },
-    h('div', { class: 'head', textContent: 'incoming tag' }),
-    h('div', { class: 'head', textContent: columns ? 'assign it' : 'fieldName' }),
-    h('div', { class: 'head' }));
-  let extras = 0;
-  for (const row of state.data['point-map']) {
-    if (row.dataGroup !== group || (columns ?? []).includes(row.fieldName)) continue;
-    if (!matches(`${row.tag} ${row.fieldName} ${row.dataGroup}`)) continue;
-    if (columns) appendExtraRow(extraGrid, row, group, columns);
-    else appendPointRow(extraGrid, row, false, group);
-    extras++;
-  }
-  if (!searching) {
-    if (columns) appendExtraRow(extraGrid, null, group, columns);
-    else for (let i = 0; i < BLANK_ROWS; i++) appendPointRow(extraGrid, null, false, group);
-  }
-  shown += extras;
-
-  if (extras || !searching) {
-    if (columns)
-      section.append(h('p', { class: 'section-note extra-note', textContent:
-        'Extra fields for this tab only: NOT sent to MES. Use "assign it" to put a tag on a MES field. ' +
-        'A field that already has a tag gets both, combined with + (the gateway sends the values joined with _, e.g. 001_xxxx).' }));
-    section.append(extraGrid);
+  // Extra fields: no MES column (never in the MES payload); "assign it" puts the tag on a MES field.
+  // A non-MES group (MOTION, IO): every field, free text.
+  if (filter === 'all' || filter === 'extras' || !columns) {
+    const extraRows = state.data['point-map'].filter(r => r.dataGroup === group && !(columns ?? []).includes(r.fieldName)
+      && matches(`${r.tag} ${r.fieldName} ${r.dataGroup}`));
+    if (extraRows.length || !searching) {
+      const list = h('div', {});
+      for (const row of extraRows) {
+        if (columns) appendExtraRow(list, row, group, columns);
+        else appendPointRow(list, row, false, group);
+      }
+      if (!searching) {
+        if (columns) appendExtraRow(list, null, group, columns);
+        else for (let i = 0; i < BLANK_ROWS; i++) appendPointRow(list, null, false, group);
+      }
+      panel.append(
+        columns ? h('div', { class: 'sub-h', title: 'Extra fields for this tab only: NOT sent to MES. "assign it" puts a tag on a MES field; a field that already has a tag gets both, joined with + (values sent joined with _).' },
+          'Extras · not sent to MES', h('span', { class: 'pill quiet', textContent: String(extraRows.length) }))
+          : h('div', { class: 'frow extra', 'aria-hidden': 'true' }, h('span', { class: 'fill', textContent: 'incoming tag' }), h('span', { class: 'fill', textContent: 'fieldName' }), h('span')),
+        list);
+      shown += extraRows.length;
+    }
   }
 
-  if (shown || !searching) view.append(section);
+  if (columns && !shown && !searching && filter === 'all') shown = 1; // an empty MES group still shows (to fill it)
+  if (shown || (!searching && filter === 'all')) container.append(panel);
   return shown;
 }
 
@@ -1168,10 +1497,10 @@ function clearFieldTags(group, column, columns) {
 // row = null draws a blank row; typing in it adds a real row to the group.
 function appendExtraRow(grid, row, group, columns) {
   const rows = state.data['point-map'];
-  const filled = ruleFilled(group);
+  const filled = gatewayFilled(group);
 
   const tag = h('input', {
-    value: row?.tag ?? '', 'aria-label': 'incoming tag', placeholder: row ? '' : 'new tag',
+    value: row?.tag ?? '', 'aria-label': 'incoming tag', placeholder: row ? '' : 'new extra tag',
     oninput: e => {
       if (!row) {
         row = { tag: '', dataGroup: group, fieldName: '' };
@@ -1188,7 +1517,7 @@ function appendExtraRow(grid, row, group, columns) {
   const options = columns.map(column => {
     const has = rows.filter(r => r !== row && r.dataGroup === group && r.fieldName === column && (r.tag ?? '').trim()).map(r => r.tag);
     return [column, has.length ? `${column}  (has ${has.join(', ')}: combine with +)`
-      : filled.has(column) ? `${column}  (set by TimeStamp rule)` : column];
+      : filled.has(column) ? `${column}  (set by the gateway)` : column];
   });
   const assign = select([['', row?.fieldName ? `not assigned: ${row.fieldName} (not sent)` : 'assign it…'], ...options], '', column => {
     if (!column) return;
@@ -1199,18 +1528,19 @@ function appendExtraRow(grid, row, group, columns) {
     }
     assignExtra(group, row, column);
   }, 'assign it to a MES field');
+  assign.title = assign.options[0].text; // the whole "not assigned: …" text, which the box cuts off
 
   const remove = h('button', {
-    class: 'row-x', type: 'button', textContent: '×', title: 'Remove row',
+    class: 'row-x', type: 'button', title: 'Remove row', 'aria-label': 'Remove row',
     onclick: () => {
       if (!row) { tag.value = ''; return; }
       removeRow(row);
       markDirty('point-map');
       render();
     },
-  });
+  }, icon('i-close'));
 
-  grid.append(tag, assign, remove);
+  grid.append(h('div', { class: 'frow extra' }, tag, assign, remove));
 }
 
 // "assign it": the extra tag goes onto a MES field. A field that already has a
@@ -1259,135 +1589,151 @@ function appendPointRow(grid, row, showGroup, group) {
     oninput: e => { ensureRow().fieldName = e.target.value; markDirty('point-map'); },
   });
   const remove = h('button', {
-    class: 'row-x', type: 'button', textContent: '×', title: 'Remove row',
+    class: 'row-x', type: 'button', title: 'Remove row', 'aria-label': 'Remove row',
     onclick: () => {
       if (!row) { tag.value = ''; field.value = ''; return; }
       removeRow(row);
       markDirty('point-map');
       render();
     },
-  });
+  }, icon('i-close'));
 
-  grid.append(tag, field, remove);
+  grid.append(h('div', { class: 'frow extra' }, tag, field, remove));
 }
 
 // Tags the gateway received that are not in the point map yet.
 function renderUnidentified(view, unid, groups) {
   view.append(h('p', {
     class: 'section-note',
-    textContent: 'Tags the gateway received that are not in the point map (since it last started). Pick a group and a fieldName, then save to add them. ' +
-      'A MES field that already has a tag gets both, combined with + (values joined with _).',
+    textContent: 'Tags the gateway received that are not in the point map (since it last started). Pick a group and a field (or use the best match), then save to add them. ' +
+      'A MES field that already has a tag gets both, joined with + (values sent joined with _).',
   }));
 
   const list = unid.filter(u => matches(`${u.tag} ${u.lastValue}`));
   if (!list.length) {
-    view.append(h('div', { class: 'empty', textContent: unid.length ? 'No tags match the search.' : 'Nothing unidentified: every tag received so far is mapped.' }));
+    view.append(unid.length
+      ? h('div', { class: 'empty', textContent: 'No tags match the search.' })
+      : h('div', { class: 'statusbar' }, h('span', { class: 'dot connected' }), h('b', { textContent: 'Nothing unidentified' }),
+          h('span', { textContent: 'Every tag received so far is mapped or set to ignore.' })));
     return;
   }
 
-  const grid = h('div', { class: 'grid unid' },
-    ...['incoming tag', 'last value', 'group', 'field (MES column or extra)', 'name match'].map(text => h('div', { class: 'head', textContent: text })));
-
-  for (const u of list) {
+  const rows = list.map(u => {
     const edit = state.unidEdits[u.tag] ??= { dataGroup: '', fieldName: '' };
-    const field = h('input', {
-      value: edit.fieldName, placeholder: u.tag.toLowerCase(), 'aria-label': 'fieldName',
+    const field = combo(h('input', {
+      value: edit.fieldName, placeholder: u.tag.toLowerCase(), 'aria-label': `field for ${u.tag}`,
       oninput: e => { edit.fieldName = e.target.value; markDirty('point-map'); },
-    });
-    field.setAttribute('list', `mes-${edit.dataGroup}`); // suggests the group's MES columns
+    }), text => fieldOptions(edit.dataGroup, text), () => edit.dataGroup && edit.dataGroup !== IGNORED ? gcolor(edit.dataGroup) : '');
     // Best MES column by name (gateway's NameMatcher); "use" fills group + field, save confirms.
     const s = u.suggestion;
-    const suggestion = s ? h('div', { class: 'suggest-cell', title: s.conflict ? `Not mapped automatically: ${s.conflict}` : 'Below the auto-map score' },
-      h('span', { textContent: `${s.group} / ${s.field} (${s.seenOn ? `seen on ${s.seenOn} tab${s.seenOn === 1 ? '' : 's'}` : s.score.toFixed(2)})` }),
-      s.conflict ? h('span', { class: 'field-note', textContent: s.conflict }) : null,
-      h('button', { type: 'button', class: 'link', textContent: 'use', onclick: () => {
+    const score = s && !s.seenOn ? h('span', { class: 'score' }, h('i', {}, h('b', { style: `width:${Math.round(s.score * 100)}%` })), s.score.toFixed(2)) : null;
+    return h('tr', {},
+      h('td', { class: 'strong', textContent: u.tag }),
+      h('td', { class: 'small', textContent: `${u.lastValue}`, title: `×${u.count} · last seen ${new Date(u.lastSeen).toLocaleString()}` }),
+      h('td', {}, select([['', '— pick —'], [IGNORED, 'ignore (never sent)'], ...groups.filter(g => g !== IGNORED && g !== 'UNIDENTIFIED').map(g => [g, g])], edit.dataGroup,
+        v => { edit.dataGroup = v; markDirty('point-map'); }, `group for ${u.tag}`)),
+      h('td', {}, field),
+      h('td', {}, s ? h('span', { class: 'gtag', style: `--c:${gcolor(s.group)}`, textContent: `${s.group} / ${s.field}` }) : h('span', { class: 'small', textContent: '—' })),
+      h('td', { class: 'nowrap' }, s?.seenOn ? h('span', { class: 'pill quiet', textContent: `seen on ${s.seenOn} tab${s.seenOn === 1 ? '' : 's'}` }) : score),
+      h('td', { class: s?.conflict ? 'note-warn' : 'small', textContent: s ? (s.conflict ?? 'below the auto-map score') : '' }),
+      h('td', {}, s ? h('button', { type: 'button', class: 'btn ghost small', textContent: 'Use', onclick: () => {
         edit.dataGroup = s.group; edit.fieldName = s.field; markDirty('point-map'); render();
-      } })) : h('div', { class: 'value-cell', textContent: '—' });
-    grid.append(
-      h('input', { value: u.tag, readOnly: true, 'aria-label': 'incoming tag' }),
-      h('div', { class: 'value-cell', textContent: `${u.lastValue}   ×${u.count}`, title: `last seen ${new Date(u.lastSeen).toLocaleString()}` }),
-      select([['', '— pick —'], [IGNORED, 'ignore (never sent)'], ...groups.filter(g => g !== IGNORED && g !== 'UNIDENTIFIED').map(g => [g, g])], edit.dataGroup,
-        v => { edit.dataGroup = v; field.setAttribute('list', `mes-${v}`); markDirty('point-map'); }, 'group'),
-      field, suggestion);
-  }
+      } }) : null));
+  });
 
-  view.append(grid,
-    ...Object.entries(state.mesSchema ?? {}).map(([g, columns]) =>
-      h('datalist', { id: `mes-${g}` }, ...columns.map(c => h('option', { value: c })))));
+  view.append(table(['incoming tag', 'last value', 'group', 'field (MES column or extra)', 'best match', 'score', 'why not automatic', ''], rows));
 }
 
-// TimeStamp: one rule per data group.
+// The field list for an Unidentified tag: the group's MES fields (for MOTION, IO or a group of your own,
+// the fields it already has on this tab), each with what fills it now, then what is typed as a new field.
+function fieldOptions(group, text) {
+  if (!group) return [{ note: 'Pick a group first' }];
+  if (group === IGNORED) return [];
+  const rows = state.data['point-map'] ?? [];
+  const columns = mesColumns(group);
+  const names = columns ?? [...new Set(rows.filter(r => r.dataGroup === group && r.fieldName).map(r => r.fieldName))];
+  const byGateway = columns ? gatewayFilled(group) : new Set();
+  const t = text.toLowerCase();
+  const list = names.filter(n => n.toLowerCase().includes(t)).map(n => {
+    const has = rows.filter(r => r.dataGroup === group && r.fieldName === n && (r.tag ?? '').trim()).map(r => r.tag);
+    return { value: n, hint: has.length ? `has ${has.join(', ')}` : byGateway.has(n) ? 'set by the gateway' : '' };
+  });
+  if (text && !names.some(n => n.toLowerCase() === t))
+    list.push({ sep: columns ? 'extra field · not sent to MES' : 'new field' }, { value: text, text: `+ use "${text}"`, extra: true });
+  return list;
+}
+
+// TimeStamp: one panel per rule (how a group's records get their times, and how often they go to MES).
 function renderTimestamp(view) {
   const rules = state.data['timestamp-rules'];
+  setTools(h('button', { type: 'button', class: 'btn ghost small', onclick: addNewGroup }, icon('i-plus'), 'New group'));
+
+  // Same row as PointMap, here with each group's timing: SPAN, or how often it is sent.
+  const mesGroups = Object.keys(state.mesSchema ?? {});
+  view.append(h('div', { class: 'loadout', role: 'list', 'aria-label': 'Time rules per group' }, ...mesGroups.map(g => {
+    const rule = rules[g];
+    const label = !rule ? 'none' : rule.mode === 'Span' ? 'SPAN' : fmtMs(rule.sendEveryMs ?? 1000);
+    return h('button', {
+      type: 'button', role: 'listitem', class: `slot${rule ? '' : ' empty'}`, style: `--c:${gcolor(g)}`,
+      title: rule ? `${g}: ${rule.mode === 'Span' ? `Span on ${rule.triggerField}` : 'Single point'}` : `${g}: no time rule (records get record_timestamp). Click to add one.`,
+      onclick: () => { if (!rule) addTimestampRule(g); else { state.focusGroup = g; render(); } },
+    }, h('span', { class: 'lv', textContent: label }), h('span', { class: 'tile' }, icon(`g-${gkey(g)}`)),
+      h('span', { class: 'nm', textContent: SHORT_GROUP[g] ?? g }), h('span', { class: 'bar' }, h('i', { style: `width:${rule ? 100 : 0}%` })));
+  })));
+
   const names = Object.keys(rules).filter(g => matches(`${g} ${JSON.stringify(rules[g])}`));
-
-  let group = state.group['timestamp-rules'];
-  if (!names.includes(group)) group = names[0] ?? '';
-  state.group['timestamp-rules'] = group;
-
-  fillPicker([
-    ...(group ? [] : [['', '— none —']]),
-    ...names.map(g => [g, g]),
-    [NEW, '+ New group…'],
-  ], group);
-
-  if (!group) {
-    view.append(h('div', {
-      class: 'empty',
-      textContent: Object.keys(rules).length ? 'No timestamp rule matches the search.' : 'No timestamp rules yet. Use "+ New group…" to add one.',
-    }));
+  if (!names.length) {
+    view.append(h('div', { class: 'empty', textContent: Object.keys(rules).length ? 'No time rule matches the search.' : 'No time rules yet. Use "New group" or a slot above to add one.' }));
     return;
   }
 
-  const rule = rules[group];
-  rule.mode ??= 'SinglePoint';
-  const span = rule.mode === 'Span';
-
-  const form = h('div', { class: 'grid form' });
-  form.append(
-    h('div', { class: 'label', textContent: 'mode' }),
-    select([['SinglePoint', 'SinglePoint'], ['Span', 'Span']], rule.mode,
-      v => { rule.mode = v; markDirty('timestamp-rules'); render(); }, 'mode'));
-
-  for (const key of span ? ['triggerField', 'startField', 'endField', 'previousField'] : ['timestampField']) {
-    form.append(
-      h('div', { class: 'label', textContent: key }),
-      h('input', {
-        value: rule[key] ?? '', 'aria-label': key,
-        placeholder: key === 'timestampField' ? 'record_timestamp'
-          : key === 'previousField' ? `previous_${rule.triggerField || '<triggerField>'} (default)` : '',
-        oninput: e => { rule[key] = e.target.value; markDirty('timestamp-rules'); },
-      }));
+  const panels = h('div', { class: 'groups' });
+  for (const group of names) {
+    const rule = rules[group];
+    rule.mode ??= 'SinglePoint';
+    const span = rule.mode === 'Span';
+    const kv = (label, input) => h('div', { class: 'kv' }, h('span', { textContent: label }), input);
+    const text = (key, placeholder) => h('input', {
+      value: rule[key] ?? '', 'aria-label': `${group} ${key}`, placeholder,
+      oninput: e => { rule[key] = e.target.value; markDirty('timestamp-rules'); },
+    });
+    panels.append(h('article', { class: 'card grp', id: `grp-${group}`, style: `--c:${gcolor(group)}` },
+      h('div', { class: 'head' }, icon(`g-${gkey(group)}`), h('span', { class: 'gname', textContent: group }),
+        h('span', { class: span ? 'badge' : 'badge quiet', textContent: span ? 'Span' : 'Single point' })),
+      kv('Mode', select([['SinglePoint', 'Single point: the time of each change'], ['Span', 'Span: start / end of each value']], rule.mode,
+        v => { rule.mode = v; markDirty('timestamp-rules'); render(); }, `${group} mode`)),
+      ...(span
+        ? [kv('Span changes when', text('triggerField')), kv('Start time goes to', text('startField')), kv('End time goes to', text('endField')),
+           kv('Previous value goes to', text('previousField', `previous_${rule.triggerField || '<trigger>'} (default)`))]
+        : [kv('Time goes to', text('timestampField', 'record_timestamp'))]),
+      kv('Send to MES at most every (ms)', h('input', {
+        type: 'number', min: '0', step: '1', value: rule.sendEveryMs ?? '', placeholder: '1000 (default)', 'aria-label': `${group} sendEveryMs`,
+        oninput: e => {
+          if (e.target.value === '') delete rule.sendEveryMs;
+          else rule.sendEveryMs = Number(e.target.value);
+          markDirty('timestamp-rules');
+        },
+      })),
+      h('div', { class: 'grp-note', textContent: span
+        ? `When ${rule.triggerField || 'the trigger'} changes, the running span ends and a new one starts.${group === 'PRODUCTION' ? ' cycle_time = how long it was on.' : ''}`
+        : 'Every change gets the machine\'s time (the arrival time when it sent none).' }),
+      h('div', { class: 'grp-foot' }, h('button', {
+        type: 'button', class: 'link', textContent: 'Remove rule',
+        onclick: () => {
+          if (!confirm(`Remove the timestamp rule for ${group}?`)) return;
+          delete rules[group];
+          markDirty('timestamp-rules');
+          render();
+        },
+      }))));
   }
+  view.append(panels);
 
-  // How often this group's changes go to MES (applies live on save).
-  form.append(
-    h('div', { class: 'label', textContent: 'sendEveryMs' }),
-    h('input', {
-      type: 'number', min: '0', step: '1',
-      value: rule.sendEveryMs ?? '', placeholder: '1000 (default)', 'aria-label': 'sendEveryMs',
-      oninput: e => {
-        if (e.target.value === '') delete rule.sendEveryMs;
-        else rule.sendEveryMs = Number(e.target.value);
-        markDirty('timestamp-rules');
-      },
-    }));
-
-  view.append(form, h('p', {
-    class: 'section-note',
-    textContent: (span
-      ? 'Span: when triggerField changes value, the running span is closed (endField) and a new one starts (startField); the old value goes to previousField.'
-      : 'SinglePoint: timestampField is set to the time of each change (the machine\'s timestamp when sent).') +
-      ' sendEveryMs: every change is sent to MES at the next tick, per machine; no change, nothing sent.',
-  }), h('button', {
-    type: 'button', textContent: 'remove rule',
-    onclick: () => {
-      if (!confirm(`Remove the timestamp rule for ${group}?`)) return;
-      delete rules[group];
-      markDirty('timestamp-rules');
-      render();
-    },
-  }));
+  if (state.focusGroup) {
+    const panel = $(`grp-${state.focusGroup}`);
+    state.focusGroup = null;
+    if (panel) { panel.scrollIntoView({ block: 'start', behavior: 'smooth' }); panel.classList.add('flash'); }
+  }
 }
 
 // MQTTConfig / GatewayConfig settings in plain words. The file's own name stays
@@ -1420,24 +1766,40 @@ const SETTINGS = {
   mesStuckRowTries: { label: 'MES: tries before a stuck record moves to failed', help: 'A record MES keeps answering 500 or 413 moves to failed messages after this many tries in a row, once MES took other records meanwhile. At least 1. Applied on Restart Gateway.' },
   nameMatchThreshold: { label: 'Name matching: auto-map from score', help: 'An unknown tag whose name matches one MES column at least this well (0.5 to 1; 1 = the same name) is mapped automatically and marked "auto" in PointMap. Lower scores, or a column in several groups or already filled, are only suggested (Unidentified). Applied on Restart Gateway.' },
   alarmWebhookUrl: { label: 'Alarm webhook (Teams / Power Automate / Slack)', help: 'Empty = off. Problems are POSTed here as JSON (text, raised, cleared, active) when one starts or clears: MES unreachable for 5 min, records in MES failures, held machines, tabs created automatically, time warnings, over 10,000 records waiting. Applied on Restart Gateway.' },
-  mappingPassword: { label: "Password to change a confirmed tab's mapping", secret: true, help: 'Asked by "⇄ change mapping" (next to save on a confirmed machine tab\'s PointMap; an automatic tab needs none). Empty = no password asked, only "are you sure?". Never shown: dots mean a password is saved. Applied on Restart Gateway.' },
+  mappingPassword: { label: "Password to change a confirmed tab's mapping", secret: true, help: 'Asked by "Change mapping" (next to Save on a confirmed machine tab\'s PointMap; an automatic tab needs none). Empty = no password asked, only "are you sure?". Never shown: dots mean a password is saved. Applied on Restart Gateway.' },
   nameMatchSynonyms: { label: 'Name matching: words that mean the same', help: 'short=long, comma-separated, e.g. qty=quantity, sn=serial number. Used to compare tag names with MES columns. Applied on Restart Gateway.' },
   mesStuckRowMinutes: { label: 'MES: minutes before a stuck record moves to failed (when nothing else is sent)', help: 'Same, when MES took nothing else meanwhile (e.g. one machine alone). 1 to 10. Applied on Restart Gateway.' },
 };
 
-// MQTTConfig / MachineConfig: one setting per row.
+// MQTT broker / Gateway settings: settings grouped in panels, one per row with its help.
+// Settings no panel names (a newer gateway, a hand-edited file) land in "Other settings".
+const FORM_SECTIONS = {
+  'mqtt-config': [
+    ['i-broker', 'Broker', ['brokerAddress', 'brokerPort', 'username', 'password', 'useTls', 'tlsCaFile']],
+    ['i-sliders', 'Topics and timing', ['clientIdSuffix', 'area', 'keepaliveIntervalSeconds', 'reconnectCooldownSeconds', 'motionDeadband', 'maxPublishRateMs']],
+  ],
+  'machine-config': [
+    ['i-robot', 'Machines in', ['gatewayId', 'listenAddress', 'tcpPort', 'dataSource', 'protocolLabel', 'unregisteredMachines', 'unmappedTags']],
+    ['i-db', 'MES', ['mesUrl', 'outboxKeepSentDays', 'mesStuckRowTries', 'mesStuckRowMinutes']],
+    ['i-tag', 'Name matching', ['nameMatchThreshold', 'nameMatchSynonyms']],
+    ['i-bell', 'Alerts and safety', ['alarmWebhookUrl', 'mappingPassword']],
+  ],
+};
+
 function renderForm(view) {
   const key = state.view;
   const data = state.data[key];
-  const form = h('div', { class: 'grid form' });
+  const sections = FORM_SECTIONS[key] ?? [];
+  const listed = new Set(sections.flatMap(([, , names]) => names));
+  const other = Object.keys(data).filter(n => !listed.has(n));
   let shown = 0;
 
-  for (const [name, value] of Object.entries(data)) {
+  const row = name => {
+    const value = data[name];
     const info = SETTINGS[name] ?? {};
-    if (!matches(`${name} ${info.label ?? ''} ${typeof value === 'object' ? JSON.stringify(value) : value}`)) continue;
+    if (!(name in data)) return null;
+    if (!matches(`${name} ${info.label ?? ''} ${typeof value === 'object' ? JSON.stringify(value) : value}`)) return null;
     shown++;
-    form.append(h('div', { class: 'label' }, info.label ?? name, info.label ? h('span', { class: 'key', textContent: name }) : null));
-
     let input;
     if (value !== null && typeof value === 'object') {
       input = h('input', { value: JSON.stringify(value), readOnly: true, title: 'Not editable here; edit the file itself.' });
@@ -1449,7 +1811,10 @@ function renderForm(view) {
       const options = known ? info.choices : [...info.choices, [current, `${current} (not valid)`]];
       input = select(options, known ? known[0] : current, v => { data[name] = v; markDirty(key); }, info.label);
     } else if (typeof value === 'boolean') {
-      input = select([['true', 'true'], ['false', 'false']], String(value), v => { data[name] = v === 'true'; markDirty(key); }, name);
+      const label = h('span', { textContent: value ? 'On' : 'Off' });
+      const sw = h('button', { type: 'button', class: 'switch', role: 'switch', 'aria-checked': String(value), 'aria-label': info.label ?? name,
+        onclick: () => { data[name] = !data[name]; sw.setAttribute('aria-checked', String(data[name])); label.textContent = data[name] ? 'On' : 'Off'; markDirty(key); } });
+      input = h('span', { class: 'toggle' }, sw, label);
     } else {
       const isNumber = state.numberKeys[key]?.includes(name);
       input = h('input', {
@@ -1463,21 +1828,33 @@ function renderForm(view) {
         },
       });
     }
-    form.append(info.help ? h('div', {}, input, h('div', { class: 'help', textContent: info.help })) : input);
+    return h('div', { class: 'form-row' },
+      h('div', { class: 'label' }, h('b', { textContent: info.label ?? name }), info.label ? h('code', { textContent: name }) : null),
+      input,
+      info.help ? h('div', { class: 'help', textContent: info.help }) : null);
+  };
+
+  const panels = h('div', { class: 'forms' });
+  for (const [ic, title, names] of [...sections, ...(other.length ? [['i-sliders', 'Other settings', other]] : [])]) {
+    const rows = names.map(row).filter(Boolean);
+    if (rows.length) panels.append(h('article', { class: 'card grp' }, h('div', { class: 'head' }, icon(ic), title), ...rows));
   }
 
-  if (key === 'mqtt-config') view.append(h('div', { class: 'mqtt-status', id: 'mqttState' }));
-  view.append(shown ? form : h('div', { class: 'empty', textContent: 'No settings match the search.' }));
+  if (key === 'mqtt-config') view.append(h('div', { class: 'statusbar quiet', id: 'mqttState' }));
+  view.append(shown ? panels : h('div', { class: 'empty', textContent: 'No settings match the search.' }));
   showMqttState();
 }
 
-// MQTTConfig: the broker connection right now (from the gateway, not from the log).
+// MQTT broker page: the broker connection right now (from the gateway, not from the log).
 function showMqttState() {
   const el = $('mqttState');
-  const connected = state.status?.mqttConnected;
   if (!el) return;
-  el.replaceChildren(h('span', { class: `dot ${connected ? 'connected' : 'disconnected bad'}` }),
-    connected == null ? ' MQTT: unknown (gateway not running)' : connected ? ' MQTT: connected' : ' MQTT: disconnected');
+  const connected = state.status?.mqttConnected;
+  const saved = state.data['mqtt-config'] ?? {};
+  el.className = `statusbar${connected == null ? ' quiet' : connected ? '' : ' bad'}`;
+  el.replaceChildren(h('span', { class: `dot ${connected ? 'connected' : connected == null ? 'disconnected' : 'disconnected bad'}` }),
+    h('b', { textContent: connected == null ? 'MQTT: unknown (gateway not running)' : connected ? 'MQTT: connected' : 'MQTT: disconnected' }),
+    h('span', { textContent: `${saved.brokerAddress ?? ''}:${saved.brokerPort ?? ''}${saved.useTls ? ' · TLS' : ''} (saved settings)` }));
 }
 
 // ---------- actions ----------
@@ -1715,12 +2092,12 @@ function chooseSaveScope(count) {
     dialog.append(
       h('p', { class: 'dlg-title', textContent: `Save ${count} change(s) for…` }),
       h('div', { class: 'scope-choices' },
-        h('button', { type: 'button', class: 'primary', textContent: `Just ${me}`, onclick: () => done([]) }),
-        h('button', { type: 'button', textContent: `Similar machines (${similar.length})`, disabled: !similar.length, onclick: () => done(similar) }),
-        h('button', { type: 'button', textContent: `All machines (${others.length}) + Template`, onclick: () => done([...others, '']) })),
+        h('button', { type: 'button', class: 'btn primary', textContent: `Just ${me}`, onclick: () => done([]) }),
+        h('button', { type: 'button', class: 'btn', textContent: `Similar machines (${similar.length})`, disabled: !similar.length, onclick: () => done(similar) }),
+        h('button', { type: 'button', class: 'btn', textContent: `All machines (${others.length}) + Template`, onclick: () => done([...others, '']) })),
       h('p', { class: 'dlg-small', textContent: similar.length ? `Similar (name starts like ${me}): ${names(similar)}` : 'No other machine has a similar name.' }),
       h('p', { class: 'dlg-small', textContent: 'Only what you changed here is copied; the other machines keep the rest of their settings.' }),
-      h('div', { class: 'dlg-buttons' }, h('button', { type: 'button', textContent: 'Cancel', onclick: () => done(null) })));
+      h('div', { class: 'dlg-buttons' }, h('button', { type: 'button', class: 'btn ghost', textContent: 'Cancel', onclick: () => done(null) })));
     dialog.addEventListener('cancel', e => { e.preventDefault(); done(null); });
     document.body.append(dialog);
     dialog.showModal();
@@ -1797,7 +2174,7 @@ async function restartGateway() {
   toast('The gateway did not report back within 20 s. Check its console window.', true);
 }
 
-// ---------- gateway status (bottom of the left panel) ----------
+// ---------- gateway status (top bar, right) ----------
 
 function showStatus(status) {
   state.status = status;
@@ -1807,16 +2184,23 @@ function showStatus(status) {
   $('gwStatus').className = `gw-status ${status.state}`;
   const since = status.startedAt ? new Date(status.startedAt).toLocaleTimeString() : '';
   $('gwText').textContent =
-    status.state === 'running' ? `Gateway running · TCP ${status.tcpPort} · since ${since}` :
-    status.state === 'error' ? `Gateway stopped: ${status.lastError} (it tries again by itself)` :
-    `Gateway ${status.state}…`;
+    status.state === 'running' ? `Running · TCP ${status.tcpPort}` :
+    status.state === 'error' ? `Stopped: ${status.lastError}` :
+    `${status.state[0].toUpperCase()}${status.state.slice(1)}…`;
+  $('gwText').title = status.state === 'running' ? `Gateway running since ${since}` : status.state === 'error' ? 'The gateway tries again by itself.' : '';
 
-  // Last 10 s, per second: lines in, MQTT out, MES delivered, rows waiting for MES.
+  // Last 10 s, per second: lines in, MQTT out, MES delivered, rows waiting for MES (all of it on hover).
   const s = status.stats;
   const n = v => Math.round(v).toLocaleString();
   const rate = v => v < 10 ? v.toFixed(1) : n(v); // 1 message in 10 s shows as 0.1, not 0
-  $('gwStats').textContent = s && s.at
-    ? `in ${rate(s.inPerSec)}/s · MQTT ${rate(s.mqttPerSec)}/s · MES ${rate(s.mesDeliveredPerSec)}/s · backlog ${s.backlog < 0 ? '?' : n(s.backlog)}` +
+  const parts = [];
+  if (status.mqttConnected != null)
+    parts.push('MQTT ', h('b', { class: status.mqttConnected ? 'ok' : 'bad', textContent: status.mqttConnected ? 'connected' : 'down' }));
+  if (s && s.at)
+    parts.push(...(parts.length ? [' · '] : []), 'MES ', h('b', { textContent: `${rate(s.mesDeliveredPerSec)}/s` }), ' · backlog ', h('b', { textContent: s.backlog < 0 ? '?' : n(s.backlog) }));
+  $('gwStats').replaceChildren(...parts);
+  $('gwStats').title = s && s.at
+    ? `Last 10 s: in ${rate(s.inPerSec)}/s · MQTT ${rate(s.mqttPerSec)}/s · MES ${rate(s.mesDeliveredPerSec)}/s · backlog ${s.backlog < 0 ? '?' : n(s.backlog)}` +
       (s.rejectedPerSec > 0 ? ` · ${rate(s.rejectedPerSec)}/s rejected` : '') +
       (s.duplicatePerSec > 0 ? ` · ${rate(s.duplicatePerSec)}/s repeats ignored` : '') +
       (s.mqttLostPerSec > 0 ? ` · MQTT lost ${rate(s.mqttLostPerSec)}/s` : '')
@@ -1854,8 +2238,12 @@ async function pollStatus() {
 
   // Keep the Unidentified count fresh without redrawing what the user is typing in.
   await loadUnidentified();
-  const option = $('picker').querySelector(`option[value="${UNID}"]`);
-  if (option) option.textContent = `⚠ Unidentified (${unidentifiedList().length})`;
+  const count = $('unidCount');
+  if (count) {
+    const n = unidentifiedList().length;
+    count.textContent = String(n);
+    count.className = `pill ${n ? 'count' : 'quiet'}`;
+  }
 }
 
 // ---------- wiring ----------
@@ -1865,7 +2253,7 @@ document.querySelectorAll('.nav').forEach(button =>
 
 // ---------- column widths: drag a grip line (or ← / →), double-click for the default ----------
 // Remembered in this browser only (a per-viewer convenience; the page works without it).
-const COLUMN_DEFAULTS = { tabs: 210, side: 210, general: 230 };
+const COLUMN_DEFAULTS = { tabs: 260 };
 const MIN_COLUMN = 120, MIN_PANEL = 300;
 const columnWidth = col => parseFloat(getComputedStyle($('window')).getPropertyValue(`--w-${col}`)) || COLUMN_DEFAULTS[col];
 
@@ -1893,14 +2281,13 @@ window.addEventListener('resize', () => Object.keys(COLUMN_DEFAULTS).forEach(c =
 
 document.querySelectorAll('.grip').forEach(grip => {
   const col = grip.dataset.col;
-  const sign = col === 'general' ? -1 : 1; // General sits right of its grip: dragging left widens it
   grip.addEventListener('pointerdown', e => {
     e.preventDefault();
     grip.setPointerCapture(e.pointerId);
     const startX = e.clientX, startWidth = columnWidth(col);
     grip.classList.add('dragging');
     document.body.classList.add('resizing');
-    const move = ev => setColumn(col, startWidth + sign * (ev.clientX - startX));
+    const move = ev => setColumn(col, startWidth + ev.clientX - startX);
     const up = () => {
       grip.removeEventListener('pointermove', move);
       grip.classList.remove('dragging');
@@ -1915,22 +2302,14 @@ document.querySelectorAll('.grip').forEach(grip => {
   grip.addEventListener('keydown', e => {
     if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
     e.preventDefault();
-    setColumn(col, columnWidth(col) + (e.key === 'ArrowRight' ? 16 : -16) * sign);
+    setColumn(col, columnWidth(col) + (e.key === 'ArrowRight' ? 16 : -16));
     saveColumns();
   });
 });
 
-$('picker').addEventListener('change', async e => {
-  const value = e.target.value;
-  if (value === NEW) { addNewGroup(); return; }
-  state.group[state.view] = value;
-  if (value === UNID) await loadUnidentified();
-  render();
-});
-
 $('search').addEventListener('input', e => { state.search = e.target.value; render(); });
+$('findMachine').addEventListener('input', e => { state.findMachine = e.target.value; renderTabs(); });
 $('search').addEventListener('keydown', e => { if (e.key === 'Enter') render(); });
-$('searchBtn').addEventListener('click', () => { state.search = $('search').value; render(); });
 
 $('saveBtn').addEventListener('click', save);
 $('reassignBtn').addEventListener('click', () => state.scope && reassignTab(state.scope));
@@ -1943,7 +2322,7 @@ async function testMqtt() {
   try { body = buildBody('mqtt-config'); } catch (e) { toast(e.message, true); return; }
   const btn = $('connectBtn');
   btn.disabled = true;
-  btn.textContent = 'connecting…';
+  btn.querySelector('span').textContent = 'Connecting…';
   try {
     const r = await request('/api/mqtt/test', { method: 'POST', body: JSON.stringify(body) });
     const unsaved = state.dirty.has('mqtt-config') ? ' Save to use these settings.' : '';
@@ -1952,7 +2331,7 @@ async function testMqtt() {
     toast(`MQTT test failed: ${e.message}`, true);
   } finally {
     btn.disabled = false;
-    btn.textContent = 'connect';
+    btn.querySelector('span').textContent = 'Connect';
   }
 }
 $('errBadge').addEventListener('click', () => switchView('log'));
