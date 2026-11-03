@@ -38,6 +38,8 @@ public sealed class UnidentifiedTagTracker
         return isNew;
     }
 
+    public int Count => _tags.Count;
+
     // Newest first.
     public IReadOnlyList<UnidentifiedTag> Snapshot() =>
         _tags.Values.OrderByDescending(t => t.LastSeen).ToList();

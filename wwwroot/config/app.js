@@ -21,8 +21,8 @@ const GENERAL_VIEWS = new Set(['mqtt-config', 'machine-config', 'machines', 'fai
 
 const state = {
   tab: GENERAL,
-  lastView: { general: 'mqtt-config', machine: 'point-map' }, // reopened when coming back to that kind of tab
-  view: 'mqtt-config',
+  lastView: { general: 'machines', machine: 'point-map' }, // reopened when coming back to that kind of tab
+  view: 'machines',         // opens on the overview: is it running, which machines, what's wrong
   data: {},                 // file key -> data as loaded / being edited
   saved: {},                // PointMap / TimeStamp as last loaded or saved: what a save changed is copied to other machines
   versions: {},             // file key -> its version (ETag) as loaded / saved: a save sends it back (If-Match)
@@ -41,6 +41,7 @@ const state = {
   lastLogId: 0,
   errorCount: 0,            // problem lines since the gateway started
   seenErrors: 0,            // errorCount when the Log view was last opened
+  seenLogId: 0,             // the last log line then (which problems are new, for "solved since")
   problems: { mes: new Map(), mqtt: null }, // ongoing: MES down per forwarder -> since, MQTT down since (banners)
   unreachable: false,       // the page lost its connection to the gateway
   errorsOnly: false,
@@ -356,6 +357,14 @@ async function removeMachine(id) {
 // The machine's connection, as on the Machines view: connected / idle (no message for 60 s) /
 // disconnected (also: never seen since the gateway started).
 const STATUS_WORDS = { connected: 'connected', idle: 'connected, no message for 60 s', disconnected: 'not connected' };
+// One machine count for the whole page: every machine tab, plus machines sending without one.
+function machineCount() {
+  const ids = new Map(state.machineConfigs.map(m => [m.machineId.toLowerCase(), m.machineId]));
+  for (const m of state.machines?.machines ?? []) ids.set(m.machineId.toLowerCase(), m.machineId);
+  const all = [...ids.values()];
+  return { all: all.length, online: all.filter(id => connectionOf(id) !== 'disconnected').length };
+}
+
 function connectionOf(machineId) {
   const m = state.machines?.machines?.find(x => x.machineId.toLowerCase() === machineId.toLowerCase());
   return m?.status in STATUS_WORDS ? m.status : 'disconnected';
@@ -392,17 +401,17 @@ function renderTabs() {
   };
 
   $('tabs').replaceChildren(...[
-    tab(SHARED, sharedLabel(), { fixed: true, extra: unmappedFor('').length ? 'broken' : '', title: holdPolicy() ? 'Template: what "+ Add a machine" copies into a new machine tab. Machines without a tab are held, not mapped with this.' : 'The shared mapping: every machine that has no own tab' }),
+    tab(SHARED, sharedLabel(), { fixed: true, unid: state.scope ? state.status?.unidentified?.[''] ?? 0 : unidentifiedList().length, extra: unmappedFor('').length ? 'broken' : '', title: holdPolicy() ? 'Template: what "+ Add a machine" copies into a new machine tab. Machines without a tab are held, not mapped with this.' : 'The shared mapping: every machine that has no own tab' }),
     ...state.machineConfigs.filter(m => m.machineId.toLowerCase().includes(state.findMachine.trim().toLowerCase())).map(m => {
       const waiting = unmappedFor(m.machineId);
       const alert = !m.readable || waiting.length > 0;
       const status = connectionOf(m.machineId);
       return tab(m.machineId, m.machineId, {
         close: true, extra: alert ? 'broken' : '', status, auto: m.autoCopiedFrom != null,
-        unid: m.machineId === state.scope ? unidentifiedList().length : 0,
+        unid: m.machineId === state.scope ? unidentifiedList().length : state.status?.unidentified?.[m.machineId] ?? 0,
         title: !m.readable ? `${m.machineId}: its files can't be read (${m.error})`
           : waiting.length ? `${m.machineId}: data held, tags not mapped yet: ${[...new Set(waiting.flatMap(u => u.tags))].join(', ')}`
-          : `${m.machineId} (${STATUS_WORDS[status]}): its own mapping and outbox`,
+          : `${m.machineId} (${STATUS_WORDS[status]}): its own mapping and records sent to MES`,
       });
     }),
   ]);
@@ -424,9 +433,8 @@ function renderTabs() {
     }) : null,
   ].filter(Boolean));
 
-  const all = state.machineConfigs.length;
-  const online = state.machineConfigs.filter(m => connectionOf(m.machineId) !== 'disconnected').length;
-  $('machineCount').textContent = all ? `${online} of ${all} connected` : '';
+  const count = machineCount();
+  $('machineCount').textContent = count.all ? `${count.online} of ${count.all} connected` : '';
   const failed = $('failedPill');
   failed.textContent = state.failedCount.toLocaleString();
   failed.className = state.failedCount ? 'pill count' : 'pill quiet';
@@ -589,14 +597,14 @@ function renderBanner() {
   banner.replaceChildren(
     h('div', { class: 'split' },
       h('button', { type: 'button', class: mapping ? 'on' : '', onclick: () => switchView(state.lastMapping ?? 'point-map') }, icon('i-map'), `${name} Mapping`),
-      h('button', { type: 'button', class: mapping ? '' : 'on', onclick: () => switchView('outbox') }, icon('i-tray'), 'Outbox')),
+      h('button', { type: 'button', class: mapping ? '' : 'on', onclick: () => switchView('outbox') }, icon('i-tray'), 'Sent to MES')),
     mapping
       ? h('div', { class: 'views' },
           viewButton(state.view === 'point-map' && !unidView, 'i-map', 'PointMap', () => { state.group['point-map'] = ALL; switchView('point-map'); }, dirty('point-map')),
           viewButton(state.view === 'timestamp-rules', 'i-clock', 'TimeStamp', () => switchView('timestamp-rules'), dirty('timestamp-rules')),
           viewButton(unidView, 'i-question', 'Unidentified', async () => { state.group['point-map'] = UNID; await loadUnidentified(); switchView('point-map'); },
             h('span', { class: unid ? 'pill count' : 'pill quiet', id: 'unidCount', textContent: String(unid) })))
-      : h('div', { class: 'views' }, h('button', { type: 'button', class: 'on' }, icon('i-tray'), 'Records for MES')));
+      : h('div', { class: 'views' }, h('button', { type: 'button', class: 'on' }, icon('i-tray'), 'Records: sent, waiting, rejected')));
 }
 
 // Left of the work area on a machine tab: who it is, how it is doing, what it sends live.
@@ -719,7 +727,7 @@ function renderMachines(view) {
   const stat = (label, value, small, cls) => h('div', { class: `stat${cls ? ' ' + cls : ''}` }, h('span', { textContent: label }), h('b', {}, value, small ? h('small', { textContent: ` ${small}` }) : null));
   const rate = state.status?.stats?.inPerSec;
   view.append(h('div', { class: 'stats' },
-    stat('Connected', String(data.machines.filter(m => m.status !== 'disconnected').length), `of ${data.machines.length}`),
+    stat('Connected', String(machineCount().online), `of ${machineCount().all}`),
     stat('Lines in', rate == null ? '—' : rate < 10 ? rate.toFixed(1) : Math.round(rate).toLocaleString(), '/ s'),
     stat('Held (no tab)', String(state.held.length), null, state.held.length ? 'bad' : ''),
     stat('Time warnings', sum('badTimes').toLocaleString(), null, sum('badTimes') ? 'warn' : ''),
@@ -756,7 +764,7 @@ function renderMachines(view) {
   const online = data.machines.filter(m => m.status !== 'disconnected').length;
   const openConnections = data.connections.filter(c => c.open).length;
   view.append(h('p', { class: 'section-note', textContent:
-    `${data.machines.length} machines (${online} connected) · ${openConnections} open connections` }));
+    `${data.machines.length} machine(s) sent data since the gateway started (${online} connected now) · ${openConnections} open connections` }));
 
   view.append(machines.length ? table(
     ['machine', 'tab', 'connection', 'last message', 'messages', 'to MES / MQTT', 'per s', 'issues', 'data sources'],
@@ -930,18 +938,18 @@ async function renderOutbox(view) {
   if (day) {
     const stat = (label, value, cls) => h('div', { class: `stat${cls ? ' ' + cls : ''}` }, h('span', { textContent: label }), h('b', { textContent: value }));
     view.append(h('div', { class: 'stats' },
-      stat('Records this day', day.rows.toLocaleString()),
+      stat(`${state.tab === SHARED ? 'Records' : `${state.scope} records`} this day`, day.rows.toLocaleString()),
       stat('Waiting for MES', day.waiting.toLocaleString(), day.waiting ? 'warn' : ''),
       stat('Rejected by MES', (day.failed ?? 0).toLocaleString(), day.failed ? 'bad' : ''),
       stat('Day file', `${day.megabytes} MB`),
       stat('Days kept', o.days.length.toLocaleString())));
   }
 
-  setTools(scopeSelect, daySelect, machineInput, groupSelect, sourceInput, statusSelect,
+  setTools(scopeSelect, daySelect, state.tab === SHARED ? machineInput : null, groupSelect, // a machine's own records are all its own sourceInput, statusSelect,
     h('button', { type: 'button', class: 'btn small', textContent: 'Refresh', onclick: () => { o.days = null; render(); } }));
 
   if (!o.days.length) {
-    view.append(h('div', { class: 'empty', textContent: 'The outbox is empty.' }));
+    view.append(h('div', { class: 'empty', textContent: 'Nothing for MES yet.' }));
     return;
   }
 
@@ -1128,12 +1136,15 @@ async function failedAction(action, rows) {
 // Log: everything the gateway printed, problems in red.
 function renderLog(view) {
   state.seenErrors = state.errorCount;
+  state.seenLogId = state.logs.at(-1)?.id ?? state.seenLogId;
   updateErrorBadge();
 
   const problems = state.logs.filter(l => l.isError).length;
   setTools(seg([[false, 'All'], [true, `Problems (${problems})`]], state.errorsOnly, v => { state.errorsOnly = v; render(); }, 'Show'));
 
-  const lines = state.logs.filter(l => (!state.errorsOnly || l.isError) && matches(l.text));
+  // Problems also show the line that says one is over, and a problem that is over says "solved".
+  const solved = solvedProblems(state.logs);
+  const lines = state.logs.filter(l => (!state.errorsOnly || l.isError || solved.has(l.id)) && matches(l.text));
   const box = h('div', { class: 'log', id: 'logBox' });
   if (!lines.length)
     box.append(h('div', { class: 'empty', style: 'padding:12px', textContent: state.logs.length ? 'No lines match.' : 'No log lines yet.' }));
@@ -1141,10 +1152,11 @@ function renderLog(view) {
     // "[config] text": the part in brackets gets its own column, coloured by who wrote it.
     const m = line.text.match(/^\[([^\]]+)\]\s*(.*)$/s);
     const who = m ? m[1] : '';
-    box.append(h('div', { class: line.isError ? 'log-line err' : 'log-line' },
+    const done = line.isError && solved.has(line.id), back = !line.isError && RECOVERED.test(line.text);
+    box.append(h('div', { class: `log-line${line.isError ? ' err' : ''}${done ? ' solved' : ''}${back ? ' back' : ''}` },
       h('span', { class: 't', textContent: new Date(line.time).toLocaleTimeString() }),
       h('span', { class: 'm', style: line.isError ? '' : `color:${LOG_COLORS[who.split(' ')[0]] ?? 'var(--muted)'}`, textContent: who }),
-      h('span', { class: 'x', textContent: m ? m[2] : line.text })));
+      h('span', { class: 'x' }, done ? h('span', { class: 'pill ok', textContent: 'solved' }) : null, done ? ' ' : null, m ? m[2] : line.text)));
   }
 
   view.append(box);
@@ -1200,8 +1212,39 @@ function renderAlerts() {
 
 function updateErrorBadge() {
   const unseen = state.errorCount - state.seenErrors;
+  // All of them over already (MES / MQTT came back): said so, without the alarm colour.
+  const fresh = state.logs.filter(l => l.isError && l.id > state.seenLogId);
+  const solved = solvedProblems(state.logs);
+  const over = unseen > 0 && fresh.length === unseen && fresh.every(l => solved.has(l.id));
+  const s = unseen === 1 ? '' : 's';
   $('errBadge').hidden = unseen <= 0;
-  $('errBadge').replaceChildren(icon('i-info'), `${unseen} new problem${unseen === 1 ? '' : 's'}`);
+  $('errBadge').classList.toggle('solved', over);
+  $('errBadge').replaceChildren(icon('i-info'), over ? `${unseen} solved` : `${unseen} new problem${s}`);
+  $('errBadge').title = over ? `${unseen} new problem${s} in the log, all over already (MES / MQTT came back). Click to see them.` : 'Click to see them in the log.';
+}
+
+// A problem that came back on its own: a later "MES reachable again" from the same forwarder, or MQTT
+// connected again after an [mqtt] / [twin] problem. Fixed texts in MesForwarder.cs / MqttPublisher*.cs.
+const RECOVERED = /^\[forwarder[^\]]*\] MES reachable again |^\[mqtt\] connected to /;
+function problemKind(text) {
+  const who = text.match(/^\[([^\]]+)\]/)?.[1] ?? '';
+  return who.startsWith('forwarder') ? who : /^(mqtt|twin)\b/.test(who) ? 'mqtt' : null;
+}
+// Ids of the problems that are over, and of the lines that ended them.
+function solvedProblems(lines) {
+  const solved = new Set(), open = new Map(); // kind -> its problem ids since it last came back
+  for (const line of lines) {
+    const kind = problemKind(line.text);
+    if (!kind) continue;
+    if (RECOVERED.test(line.text)) {
+      if (open.has(kind)) [...open.get(kind), line.id].forEach(id => solved.add(id));
+      open.delete(kind);
+    } else if (line.isError) {
+      if (!open.has(kind)) open.set(kind, []);
+      open.get(kind).push(line.id);
+    }
+  }
+  return solved;
 }
 
 async function pollLogs() {
@@ -2334,7 +2377,7 @@ async function testMqtt() {
     btn.querySelector('span').textContent = 'Connect';
   }
 }
-$('errBadge').addEventListener('click', () => switchView('log'));
+$('errBadge').addEventListener('click', () => { state.errorsOnly = true; switchView('log'); });
 $('restartNow').addEventListener('click', restartGateway);
 $('restartLater').addEventListener('click', () => {
   $('restartDialog').close();

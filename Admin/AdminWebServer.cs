@@ -213,6 +213,9 @@ public sealed class AdminWebServer
                 tcpPort = _gateway.Machine.TcpPort,
                 held = _machines.Held.Count,         // machines sending without a tab (data held)
                 unmapped = _machines.Unmapped.Count, // machines whose data is held for tags not mapped yet
+                // tab -> tags it received that its mapping doesn't know (the machine list's red count; "" = Template)
+                unidentified = _machines.Ids.Select(id => (id, n: _machines.UnidentifiedFor(id)?.Count ?? 0)).Prepend((id: "", n: _unidentified.Count))
+                    .Where(x => x.n > 0).ToDictionary(x => x.id, x => x.n),
                 failed = FailedCount(),              // messages MES rejected as invalid, waiting for re-send / discard
                 mappingPasswordSet = _gateway.Machine.MappingPassword.Length > 0, // ⇄ on a confirmed tab asks for it
                 mqttConnected = _gateway.MqttConnected, // null while no run is going

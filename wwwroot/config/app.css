@@ -106,6 +106,7 @@ button.link { height: auto; padding: 0; border: 0; background: none; color: var(
 .gw-stats b.bad { color: var(--bad-text); }
 .problem { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: 5px; border: 1px solid rgba(244, 124, 110, .5); color: var(--bad-text); font-size: 12px; background: rgba(244, 124, 110, .06); }
 .problem:hover { background: rgba(244, 124, 110, .14); }
+.problem.solved { border-color: var(--line); color: var(--muted); background: none; } /* every new problem is over already */
 
 /* ---------- machine list | work area (the list is resizable: --w-tabs, set by app.js) ---------- */
 .window { display: grid; grid-template-columns: var(--w-tabs, 260px) 6px minmax(0, 1fr); min-height: 0; }
@@ -345,6 +346,9 @@ pre.json { margin: 0; max-height: 420px; overflow: auto; padding: 8px; border-ra
 .log-line .m { font-weight: 600; color: var(--muted); }
 .log-line.err { background: rgba(244, 124, 110, .08); box-shadow: inset 0 0 0 1px rgba(244, 124, 110, .4); }
 .log-line.err .m, .log-line.err .x { color: var(--bad-text); }
+.log-line.err.solved { background: none; box-shadow: none; }
+.log-line.err.solved .m, .log-line.err.solved .x { color: var(--muted); }
+.log-line.back .x { color: var(--ok-text); }
 
 .empty { padding: 18px 4px; color: var(--muted); }
 .empty-g { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px; color: var(--muted); }

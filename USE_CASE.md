@@ -166,7 +166,7 @@ All files are in the `Config\` folder **next to the running exe**, e.g. `bin\Rel
 - **Best:** register a machine before it starts sending. Same model as an existing machine (NXT103 next to NXT101): open that machine's tab and press **+**. New model: get the field list, press **+**, fill in the incoming tags.
 - **Register a held machine:** General → Machines → pick whose mapping to copy (a machine with a similar name is suggested) → **register**. The machine gets its tab, the gateway closes its connection so the adapter reconnects and sends the held data again, and that data is processed with the new tab. The tags it sent are listed under its PointMap → ⚠ Unidentified, to map.
 - IO/motion lines are never held: they don't use the mapping.
-- The **×** on a machine's tab removes its tab (with `hold`, its data is held again). Its files are kept in `Config\machines-removed\`, and whatever is in its outbox is still delivered (visible under Template → Outbox).
+- The **×** on a machine's tab removes its tab (with `hold`, its data is held again). Its files are kept in `Config\machines-removed\`, and whatever is in its outbox is still delivered (visible under Template → Sent to MES).
 - If a machine's own files can't be read, or break a rule the config page checks (edited by hand, e.g. a Span rule without `endField`), its lines are held the same way until the files are fixed. The tab is red with the file and the problem. The same mistake in the shared files stops the gateway (it retries every 60 s) until fixed.
 
 **A tag the mapping doesn't know** (e.g. the data team adds `source_ref`) — GatewayConfig `unmappedTags`:
@@ -201,8 +201,8 @@ Open **http://localhost:5100/config/**. It only opens on the gateway PC itself.
 | Tab | What's in it |
 |---|---|
 | **General** (opens first) | **MQTTConfig**, **GatewayConfig** (the gateway's own settings), **Machines**, **MES failures**, **Log**: everything that is the same for all machines |
-| **Template** | **PointMap**, **TimeStamp**, **Outbox** of the template mapping (what **+** copies). Called **Other machines** when `unregisteredMachines` is `shared` (then every machine without a tab uses it) |
-| **One tab per machine** (e.g. `NXT101`) | That machine's own **PointMap**, **TimeStamp** and **Outbox**. Only that machine uses them |
+| **Template** | **PointMap**, **TimeStamp**, **Sent to MES** of the template mapping (what **+** copies). Called **Other machines** when `unregisteredMachines` is `shared` (then every machine without a tab uses it) |
+| **One tab per machine** (e.g. `NXT101`) | That machine's own **PointMap**, **TimeStamp** and **Sent to MES** (its outbox). Only that machine uses them |
 | **+** | Gives a machine its own tab, copied from the mapping of the tab you are on |
 | **⚠ N not registered** (red, only when it happens) | Machines sending without a tab: their data is held. Click to see them in General → Machines and register them |
 | **⚠ N rejected by MES** (red, only when it happens) | Records MES refused as invalid. Click to see them in General → MES failures |
@@ -289,7 +289,7 @@ Open **http://localhost:5100/config/**. It only opens on the gateway PC itself.
 | A machine tab shows ⚠ / its data stopped | Its messages are held for unknown tags: open the tab, **show them**, map each tag or set it to ignore, save. |
 | A machine's data never reaches MES | Look for `[ingest] ... rejected: no machine_id` in the Log. Does each message have `machine_id`? |
 | Not sure every line arrived | Config page → **Machines** → **Connections**: **lines** must equal what the source sent. Check **rejected**, **repeats** and **unreadable** too. |
-| Need to see what MES got for a machine | Config page → **Outbox** → pick the day, type the machine, click a row. |
+| Need to see what MES got for a machine | Config page → the machine → **Sent to MES** → pick the day, click a row. |
 | Red "⚠ N rejected by MES" | General → **MES failures**: read what MES said, fix, **re-send** (or **discard** with a reason). |
 | Backlog grows, nothing delivered | MES down or unreachable: Log shows `[forwarder] send failed ...`. Rows wait; tries slow down to once a minute. Nothing to do on the gateway. |
 
