@@ -201,8 +201,8 @@ Open **http://localhost:5100/config/**. It only opens on the gateway PC itself.
 | Tab | What's in it |
 |---|---|
 | **General** (opens first) | **MQTTConfig**, **GatewayConfig** (the gateway's own settings), **Machines**, **MES failures**, **Log**: everything that is the same for all machines |
-| **Template** | **PointMap**, **TimeStamp**, **Sent to MES** of the template mapping (what **+** copies). Called **Other machines** when `unregisteredMachines` is `shared` (then every machine without a tab uses it) |
-| **One tab per machine** (e.g. `NXT101`) | That machine's own **PointMap**, **TimeStamp** and **Sent to MES** (its outbox). Only that machine uses them |
+| **Template** | **PointMap** (with each group's time rule), **Unidentified**, **Sent to MES** of the template mapping (what **+** copies). Called **Other machines** when `unregisteredMachines` is `shared` (then every machine without a tab uses it) |
+| **One tab per machine** (e.g. `NXT101`) | That machine's own **PointMap** (with its time rules), **Unidentified** and **Sent to MES** (its outbox). Only that machine uses them |
 | **+** | Gives a machine its own tab, copied from the mapping of the tab you are on |
 | **⚠ N not registered** (red, only when it happens) | Machines sending without a tab: their data is held. Click to see them in General → Machines and register them |
 | **⚠ N rejected by MES** (red, only when it happens) | Records MES refused as invalid. Click to see them in General → MES failures |
@@ -215,19 +215,19 @@ Open **http://localhost:5100/config/**. It only opens on the gateway PC itself.
 1. **MES fields:** every column of that group's MES table (the MES format), already filled in. Type only the **incoming tag** next to each one; several tags for one field are comma-separated (`MACHINE_STATUS, current_status_code`). A field with no tag is sent to MES as `null`. "set by TimeStamp rule" marks fields the gateway fills itself (start/end/record times).
    - **×** on a MES field takes its incoming tag(s) off, on this tab only: the tag becomes an extra field (not sent), ready to **assign it** again. The MES field itself stays (sent as null until it has a tag).
    - **+ MES field** adds a column to the MES format **for every machine** (when MES adds one to a table), saved with **save**. MES fields can't be removed on the page.
-   - **save** on a machine tab (PointMap or TimeStamp) asks where the change goes: **just this machine**, **similar machines** (same name start, listed), or **all machines + Template**. Only what you changed is copied; the others keep the rest of their mapping. The pop-up says for how many it worked and names any that failed.
+   - **save** on a machine tab's PointMap (mapping and time rules together) asks where the change goes: **just this machine**, **similar machines** (same name start, listed), or **all machines + Template**. Only what you changed is copied; the others keep the rest of their mapping. The pop-up says for how many it worked and names any that failed.
 2. **Extra fields:** tags with no MES column (e.g. Nexim `event_name`): incoming tag + a field name of your choice, for this tab only. They are **not sent to MES**: the payload has only the MES fields. Time fields the TimeStamp rule adds without a MES column (`record_timestamp` …) are not sent either. Type in the blank row to add one, **×** removes one. Groups that are no MES table (MOTION, IO, new groups) only have this list.
    - Several tags on one MES field (`line_name, module_no`) are alternatives: if a message carries both, the later one in the message wins.
    - **Join with `+`:** `line_no+process_id` puts both values in the field, joined with `_` (`001` + `xxxx` = `001_xxxx`). Only when every part is in the message; otherwise the field keeps its last value (never half a value). The parts count as mapped and can still be mapped on their own too.
 3. **+ New group…** adds a group. If the group has no timestamp rule, the page offers **Add rule**.
 4. **⚠ Unidentified (N)** lists tags this machine sent that aren't mapped yet (their messages are held). Pick a group and a field (the box suggests that group's MES columns), or **ignore (never sent)**, then save. The held messages are then sent again.
 
-**TimeStamp**
-1. Pick a group, then set the mode:
-   - SinglePoint: set `timestampField`.
-   - Span: set `triggerField`, `startField` and `endField`.
-2. Set `sendEveryMs`: how often this group's changes go to MES (empty = 1000). It applies as soon as you save.
-3. Use **remove rule** to delete a rule.
+**Time rules** (in PointMap, at the top of each group's panel)
+1. One line shows the group's rule (e.g. "Span on alarm_status · sent every 1 s"). Click it (**Edit**) to open it, then set the mode:
+   - Single point: set the field the time goes to (`timestampField`).
+   - Span: set the trigger (`triggerField`), and where the start and end times go (`startField`, `endField`).
+2. Set **send to MES at most every (ms)** (`sendEveryMs`): how often this group's changes go to MES (empty = 1000). Save on PointMap saves the mapping and the time rules together; it applies as soon as you save.
+3. **Remove time rule** deletes it (the group's records then get `record_timestamp`); a group without one shows **Add a time rule**.
 
 **MQTTConfig / GatewayConfig** (General tab)
 1. Edit the values. Each setting has a plain name, its name in the file underneath (e.g. `mesUrl`), and a help line. The settings with fixed choices (`unregisteredMachines`, `unmappedTags`) are drop-downs. GatewayConfig is `Config\machine-config.json`: gatewayId, listen address + port, MES URL, default data source, timestamps without a zone, outbox keep days, `unregisteredMachines` (`hold` or `shared`, see "A new machine" above). There is no machineId: which machine a line is from comes from the line's `machine_id`.

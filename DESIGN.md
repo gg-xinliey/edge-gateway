@@ -367,7 +367,7 @@ Compact and solid; the label carries the weight (600).
 
 ### Pills, Badges and Dots
 - **Pills** (16px tall, fully rounded, 11px / 600): auto (amber), count (solid coral), quiet, ok (dark green with ok text).
-- **Rule badges** in group headers (4px corners): cyan for a Span rule, quiet for single point or no rule.
+- **Time rule strip** under each MES group's header: a 5% group-colour band, clock icon, a mode chip (Span / Single point, 22% group colour), the trigger or time field in bold, "sent every …", and a cyan Edit that opens the rule's rows in place (dashed top line). No rule: "No time rule: each record gets record_timestamp" with an Add link. Rows the rule fills say "set by the time rule" with a clock; the trigger row has a "starts / ends the span" chip; a Span group's slot has a small clock top right. MQTT-only groups keep a quiet "MQTT · live only" badge.
 - **Dots** (8px): connected green with its live ring, idle amber, disconnected slate, disconnected-with-problem coral. Every dot carries an accessible label and title.
 - **Dirty dot** (7px amber circle): beside a top-bar page with unsaved changes.
 
@@ -405,7 +405,7 @@ Compact and solid; the label carries the weight (600).
 A button per MES group in an auto-fit row. A 40px tile with the group icon in the group colour on a 14% wash with a 40% border; a count badge (filled / total, solid group colour, dark text) at top-left; the short group name in 11px muted; a 3px two-tone fill bar (solid for tags, 45% for gateway-filled, Track Slate for the rest). Empty: dashed faint tile and a quiet count. Hover: Hover Line border and a lifted navy. Selected: a gold border plus gold inset ring. Clicking selects the group and flashes its panel gold.
 
 ### Group Panel (signature)
-A card with its header tinted 12% by the group colour, a group icon and name in the group colour, the fill count in muted 12px, and the rule badge. Rows are a four-column grid: the 8px two-tone mark, the MES field name (with a cyan "set by the gateway" note where it applies), the value input, and a 26px remove button that tints coral on hover. Below, a sub-header introduces extras not sent to MES, and a footer holds the add action.
+A card with its header tinted 12% by the group colour, a group icon and name in the group colour, the fill count in muted 12px, and below it the time rule strip. Rows are a four-column grid: the 8px two-tone mark, the MES field name (with a cyan "set by the gateway" note where it applies), the value input, and a 26px remove button that tints coral on hover. Below, a sub-header introduces extras not sent to MES, and a footer holds the add action.
 
 ### Log
 A mono panel with three-column lines (time, module, message), zebra rows, and error lines tinted coral with a coral inset outline.

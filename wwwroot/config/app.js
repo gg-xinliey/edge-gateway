@@ -28,6 +28,7 @@ const state = {
   versions: {},             // file key -> its version (ETag) as loaded / saved: a save sends it back (If-Match)
   numberKeys: {},           // file key -> keys that must stay numbers (form views)
   dirty: new Set(),         // file keys with unsaved edits
+  ruleOpen: new Set(),      // groups whose time rule is opened in their PointMap panel
   findMachine: '',          // the machine list's filter
   waiting: {}, waitingAt: {}, // outbox scope -> rows waiting for MES, and when that was read
   group: { 'point-map': null, 'timestamp-rules': null },
@@ -600,8 +601,7 @@ function renderBanner() {
       h('button', { type: 'button', class: mapping ? '' : 'on', onclick: () => switchView('outbox') }, icon('i-tray'), 'Sent to MES')),
     mapping
       ? h('div', { class: 'views' },
-          viewButton(state.view === 'point-map' && !unidView, 'i-map', 'PointMap', () => { state.group['point-map'] = ALL; switchView('point-map'); }, dirty('point-map')),
-          viewButton(state.view === 'timestamp-rules', 'i-clock', 'TimeStamp', () => switchView('timestamp-rules'), dirty('timestamp-rules')),
+          viewButton(state.view === 'point-map' && !unidView, 'i-map', 'PointMap', () => { state.group['point-map'] = ALL; switchView('point-map'); }, dirty('point-map') ?? dirty('timestamp-rules')),
           viewButton(unidView, 'i-question', 'Unidentified', async () => { state.group['point-map'] = UNID; await loadUnidentified(); switchView('point-map'); },
             h('span', { class: unid ? 'pill count' : 'pill quiet', id: 'unidCount', textContent: String(unid) })))
       : h('div', { class: 'views' }, h('button', { type: 'button', class: 'on' }, icon('i-tray'), 'Records: sent, waiting, rejected')));
@@ -648,7 +648,8 @@ function renderProfile() {
       row('i-db', 'Waiting for MES', state.waiting[id || '']?.toLocaleString() ?? '—', state.waiting[id || ''] ? 'color:var(--warn-text)' : null),
       row('i-question', 'Unidentified tags', String(unid), unid ? 'color:var(--bad-text)' : null),
       live?.held ? row('i-db', 'Held', live.held.toLocaleString(), 'color:var(--bad-text)') : null,
-      id ? row('i-clock', 'Time warnings', String(live?.badTimes ?? 0)) : null,
+      id ? row('i-clock', 'Time warnings (10 min)', String(live?.timeWarnings ?? 0), live?.timeWarnings ? 'color:var(--warn-text)' : null) : null,
+      id ? row('i-copy', 'Repeats (10 min)', String(live?.repeats ?? 0), live?.repeats ? 'color:var(--warn-text)' : null) : null,
     ].filter(Boolean)));
 
   const twin = rows.filter(r => TWIN_GROUPS.includes(r.dataGroup) && (r.tag ?? '').trim());
@@ -656,13 +657,14 @@ function renderProfile() {
     h('div', { class: 'head' }, icon('i-wave'), 'Twin (MQTT)', h('span', { class: 'badge quiet', textContent: 'live only' })),
     h('div', { class: 'chips' }, ...(twin.length
       ? twin.map(r => h('button', { type: 'button', class: 'chip', textContent: r.tag, title: `${r.dataGroup} / ${r.fieldName}: published live, never sent to MES`,
-          onclick: () => { state.group['point-map'] = ALL; state.focusGroup = r.dataGroup; switchView('point-map'); } }))
+          onclick: () => { state.group['point-map'] = ALL; state.onlyGroup = null; state.focusGroup = r.dataGroup; switchView('point-map'); } }))
       : [h('span', { class: 'empty', textContent: 'No live data for the twin.' })])));
 
   el.replaceChildren(portrait, stats, twinCard);
 }
 
 function render() {
+  if (state.view === 'timestamp-rules') state.view = 'point-map'; // the time rules are in PointMap's group panels
   updateNav();
   setTools();
   const view = $('view');
@@ -679,7 +681,6 @@ function render() {
   renderProfile();
 
   if (state.view === 'point-map') renderPointMap(view);
-  else if (state.view === 'timestamp-rules') renderTimestamp(view);
   else if (isLog) renderLog(view);
   else if (state.view === 'machines') renderMachines(view);
   else if (state.view === 'outbox') renderOutbox(view);
@@ -692,7 +693,7 @@ function render() {
     state.view === 'machines' ? 'Counts since the gateway exe started (a restart from this page keeps them). Updates every 4 s.' :
     state.view === 'outbox' ? 'Read-only. One file per day, kept 7 days after everything in it was delivered. Times shown in this PC\'s local time.' :
     FILES[state.view].restartToApply ? 'Applies after the gateway restarts (shared by all machines).' :
-    state.scope ? `Applies as soon as you save. Only ${state.scope} uses this mapping. MES fields: the MES format, shared by all machines.` :
+    state.scope ? `Applies as soon as you save. Only ${state.scope} uses this mapping and its time rules. MES fields: the MES format, shared by all machines.` :
     holdPolicy() ? 'Template: "+" copies this into a new machine tab. Machines without a tab are held, not mapped with this.' :
     'Applies as soon as you save. Used by every machine that has no own mapping.';
 }
@@ -730,8 +731,7 @@ function renderMachines(view) {
     stat('Connected', String(machineCount().online), `of ${machineCount().all}`),
     stat('Lines in', rate == null ? '—' : rate < 10 ? rate.toFixed(1) : Math.round(rate).toLocaleString(), '/ s'),
     stat('Held (no tab)', String(state.held.length), null, state.held.length ? 'bad' : ''),
-    stat('Time warnings', sum('badTimes').toLocaleString(), null, sum('badTimes') ? 'warn' : ''),
-    stat('Repeats ignored', sum('duplicates').toLocaleString())));
+    stat('Time warnings', sum('timeWarnings').toLocaleString(), 'last 10 min', sum('timeWarnings') ? 'warn' : '')));
 
   // First: machines sending without a tab. Their data is held (not processed, not
   // answered) until someone registers them here.
@@ -777,8 +777,9 @@ function renderMachines(view) {
       h('td', { class: 'num', textContent: `${m.mes.toLocaleString()} / ${m.mqtt.toLocaleString()}` }),
       h('td', { class: 'num', textContent: m.perSecond.toFixed(1) }),
       h('td', {
-        class: m.held ? 'small bad' : (m.duplicates || m.badTimes) ? 'small warn' : 'small',
-        textContent: issues([[m.held, 'held'], [m.duplicates, 'repeats'], [m.badTimes ?? 0, 'time warnings']]),
+        class: m.held ? 'small bad' : (m.repeats || m.timeWarnings) ? 'small warn' : 'small',
+        textContent: issues([[m.held, 'held'], [m.repeats, 'repeats'], [m.timeWarnings, 'time warnings']]),
+        title: 'Held: waiting right now. Repeats and time warnings: the last 10 minutes.',
         title: 'held: messages waiting right now (no tab, or tags not mapped), counted as messages once they go through\n' +
                'repeats: message_id already received in the last 10 min, ignored\n' +
                'time warnings: timestamp unreadable (arrival time used) or over an hour from arrival (used as sent); the log says which',
@@ -1139,15 +1140,16 @@ function renderLog(view) {
   state.seenLogId = state.logs.at(-1)?.id ?? state.seenLogId;
   updateErrorBadge();
 
-  const problems = state.logs.filter(l => l.isError).length;
+  // Problems = the ones still going on: one that is over (MES / MQTT came back) clears by itself.
+  // All keeps every line, a problem that is over marked "solved".
+  const solved = solvedProblems(state.logs);
+  const problems = state.logs.filter(l => l.isError && !solved.has(l.id)).length;
   setTools(seg([[false, 'All'], [true, `Problems (${problems})`]], state.errorsOnly, v => { state.errorsOnly = v; render(); }, 'Show'));
 
-  // Problems also show the line that says one is over, and a problem that is over says "solved".
-  const solved = solvedProblems(state.logs);
-  const lines = state.logs.filter(l => (!state.errorsOnly || l.isError || solved.has(l.id)) && matches(l.text));
+  const lines = state.logs.filter(l => (!state.errorsOnly || (l.isError && !solved.has(l.id))) && matches(l.text));
   const box = h('div', { class: 'log', id: 'logBox' });
   if (!lines.length)
-    box.append(h('div', { class: 'empty', style: 'padding:12px', textContent: state.logs.length ? 'No lines match.' : 'No log lines yet.' }));
+    box.append(h('div', { class: 'empty', style: 'padding:12px', textContent: state.errorsOnly && !problems ? 'No problems going on right now.' : state.logs.length ? 'No lines match.' : 'No log lines yet.' }));
   for (const line of lines) {
     // "[config] text": the part in brackets gets its own column, coloured by who wrote it.
     const m = line.text.match(/^\[([^\]]+)\]\s*(.*)$/s);
@@ -1211,16 +1213,13 @@ function renderAlerts() {
 }
 
 function updateErrorBadge() {
-  const unseen = state.errorCount - state.seenErrors;
-  // All of them over already (MES / MQTT came back): said so, without the alarm colour.
-  const fresh = state.logs.filter(l => l.isError && l.id > state.seenLogId);
+  // New problems still going on: one that is over (MES / MQTT came back) clears by itself.
+  // Problems no longer in the page's lines can't be checked: they count as going on.
   const solved = solvedProblems(state.logs);
-  const over = unseen > 0 && fresh.length === unseen && fresh.every(l => solved.has(l.id));
-  const s = unseen === 1 ? '' : 's';
-  $('errBadge').hidden = unseen <= 0;
-  $('errBadge').classList.toggle('solved', over);
-  $('errBadge').replaceChildren(icon('i-info'), over ? `${unseen} solved` : `${unseen} new problem${s}`);
-  $('errBadge').title = over ? `${unseen} new problem${s} in the log, all over already (MES / MQTT came back). Click to see them.` : 'Click to see them in the log.';
+  const over = state.logs.filter(l => l.isError && l.id > state.seenLogId && solved.has(l.id)).length;
+  const open = state.errorCount - state.seenErrors - over;
+  $('errBadge').hidden = open <= 0;
+  $('errBadge').replaceChildren(icon('i-info'), `${open} new problem${open === 1 ? '' : 's'}`);
 }
 
 // A problem that came back on its own: a later "MES reachable again" from the same forwarder, or MQTT
@@ -1297,7 +1296,7 @@ function renderPointMap(view) {
 
   const panels = h('div', { class: 'groups' });
   let shown = 0;
-  for (const g of groups) shown += renderGroupFields(panels, g);
+  for (const g of groups.filter(g => !state.onlyGroup || g === state.onlyGroup)) shown += renderGroupFields(panels, g);
   view.append(panels);
   if (!shown)
     view.append(h('div', { class: 'empty', textContent: state.search.trim() ? 'Nothing matches the search.' : 'Nothing to show with this filter.' }));
@@ -1377,6 +1376,7 @@ function groupFill(group) {
 }
 
 function loadoutSlot(group) {
+  const only = state.onlyGroup;
   const f = groupFill(group);
   const filled = f.tags + f.gw;
   const pct = n => (f.total ? `${(n / f.total) * 100}%` : '0');
@@ -1384,25 +1384,78 @@ function loadoutSlot(group) {
     f.gw ? `${f.gw} set by the gateway: ${f.gwFields.join(', ')}` : '',
     f.empty.length ? `no tag (sent as null): ${f.empty.join(', ')}` : ''].filter(Boolean).join('\n');
   return h('button', {
-    type: 'button', role: 'listitem', class: `slot${filled ? '' : ' empty'}${state.selGroup === group ? ' sel' : ''}`,
-    style: `--c:${gcolor(group)}`, title: tip, 'aria-label': tip,
-    onclick: () => { state.selGroup = group; state.focusGroup = group; render(); },
+    type: 'button', role: 'listitem', class: `slot${filled ? '' : ' empty'}${only === group ? ' sel' : only ? ' off' : ''}`,
+    style: `--c:${gcolor(group)}`, title: `${tip}\n${only === group ? 'Click again to show every group.' : 'Click to show only this group.'}`, 'aria-label': tip,
+    'aria-pressed': String(only === group),
+    onclick: () => { state.onlyGroup = only === group ? null : group; render(); },
   },
     h('span', { class: 'lv', textContent: `${filled}/${f.total}` }),
+    // Every MES group has a time rule; a Span one (times from a trigger) is worth a mark on its slot.
+    state.data['timestamp-rules']?.[group]?.mode === 'Span' ? h('span', { class: 'clock', title: `Span on ${state.data['timestamp-rules'][group].triggerField}` }, icon('i-clock')) : null,
     h('span', { class: 'tile' }, icon(`g-${gkey(group)}`)),
     h('span', { class: 'nm', textContent: SHORT_GROUP[group] ?? group }),
     h('span', { class: 'bar' }, h('i', { style: `width:${pct(f.tags)}` }), h('i', { class: 'gw', style: `width:${pct(f.gw)}` })));
 }
 
-// The badge in a group's header: how its records are time-stamped and paced.
-function ruleBadge(group) {
-  if (TWIN_GROUPS.includes(group)) return h('span', { class: 'badge quiet', textContent: 'MQTT · live only' });
-  const rule = state.data['timestamp-rules']?.[group];
-  if (!rule) return mesColumns(group) ? h('span', { class: 'badge quiet', textContent: 'no time rule' }) : null;
-  const every = rule.sendEveryMs != null ? ` · ${fmtMs(rule.sendEveryMs)}` : '';
-  return rule.mode === 'Span'
-    ? h('span', { class: 'badge', textContent: `Span · ${rule.triggerField || '?'}${every}` })
-    : h('span', { class: 'badge quiet', textContent: `Single point${every}` });
+// The group's time rule (how its records get their times, how often they go to MES), folded to one
+// line at the top of its PointMap panel; Edit opens it there. A change redraws the panel and the slots
+// (fields set by the rule follow).
+function ruleStrip(group) {
+  const rules = state.data['timestamp-rules'];
+  const rule = rules[group];
+  if (!rule)
+    return h('div', { class: 'rule none' }, h('div', { class: 'rule-sum' }, icon('i-clock'),
+      h('span', { class: 'rule-text' }, 'No time rule: each record gets ', h('b', { textContent: 'record_timestamp' })),
+      h('button', { type: 'button', class: 'link', textContent: 'Add a time rule', onclick: () => addTimestampRule(group) })));
+
+  rule.mode ??= 'SinglePoint';
+  const span = rule.mode === 'Span';
+  const open = state.ruleOpen.has(group);
+  const sum = h('button', {
+    type: 'button', class: 'rule-sum', 'aria-expanded': String(open),
+    onclick: () => { if (open) state.ruleOpen.delete(group); else state.ruleOpen.add(group); refreshGroup(group); },
+  }, icon('i-clock'), h('span', { class: 'rule-kind', textContent: span ? 'Span' : 'Single point' }),
+    h('span', { class: 'rule-text' }, ...(span ? ['on ', h('b', { textContent: rule.triggerField || '?' })] : ['time → ', h('b', { textContent: rule.timestampField || 'record_timestamp' })]),
+      ` · sent every ${fmtMs(rule.sendEveryMs ?? 1000)}`),
+    h('span', { class: 'rule-edit' }, open ? 'Close' : 'Edit', icon('i-down')));
+  if (!open) return h('div', { class: 'rule' }, sum);
+
+  const changed = () => { markDirty('timestamp-rules'); refreshGroup(group); };
+  const kv = (label, input) => h('div', { class: 'kv' }, h('span', { textContent: label }), input);
+  const text = (key, placeholder) => h('input', {
+    value: rule[key] ?? '', placeholder: placeholder ?? '', 'aria-label': `${group} ${key}`,
+    oninput: e => { rule[key] = e.target.value; markDirty('timestamp-rules'); },
+    onchange: changed, // leaving the box: the summary and the fields set by the rule follow
+  });
+  const note = !span ? 'Every change gets the machine\'s time (the arrival time when it sent none).'
+    : group === 'ALARM' ? `When ${rule.triggerField || 'the trigger'} goes on, the alarm starts; when it goes off, the record gets its start and clear time.`
+    : `When ${rule.triggerField || 'the trigger'} changes, the running span ends and a new one starts.${group === 'PRODUCTION' ? ' cycle_time = how long it was on.' : ''}`;
+  return h('div', { class: 'rule open' }, sum, h('div', { class: 'rule-body' },
+    kv('Mode', select([['SinglePoint', 'Single point: the time of each change'], ['Span', 'Span: start / end of each value']], rule.mode,
+      v => { rule.mode = v; changed(); }, `${group} mode`)),
+    ...(span
+      ? [kv('Span changes when', text('triggerField')), kv('Start time goes to', text('startField')), kv('End time goes to', text('endField')),
+         kv('Previous value goes to', text('previousField', `previous_${rule.triggerField || '<trigger>'} (default)`))]
+      : [kv('Time goes to', text('timestampField', 'record_timestamp'))]),
+    kv('Send to MES at most every (ms)', h('input', {
+      type: 'number', min: '0', step: '1', value: rule.sendEveryMs ?? '', placeholder: '1000 (default)', 'aria-label': `${group} sendEveryMs`,
+      oninput: e => {
+        if (e.target.value === '') delete rule.sendEveryMs;
+        else rule.sendEveryMs = Number(e.target.value);
+        markDirty('timestamp-rules');
+      },
+      onchange: changed,
+    })),
+    h('div', { class: 'grp-note', textContent: `${note} Times the machine sends itself win.` }),
+    h('div', { class: 'grp-foot' }, h('button', {
+      type: 'button', class: 'link', textContent: 'Remove time rule',
+      onclick: () => {
+        if (!confirm(`Remove the time rule of ${group}? Its records then get record_timestamp.`)) return;
+        delete rules[group];
+        state.ruleOpen.delete(group);
+        changed();
+      },
+    }))));
 }
 
 // One group's panel. Returns how many rows it shows (0 = left out by the search or filter).
@@ -1414,7 +1467,12 @@ function renderGroupFields(container, group) {
   const panel = h('article', { class: 'card grp', id: `grp-${group}`, style: `--c:${gcolor(group)}` });
   const fill = columns ? groupFill(group) : null;
   panel.append(h('div', { class: 'head' }, icon(`g-${gkey(group)}`), h('span', { class: 'gname', textContent: group }),
-    fill ? h('span', { class: 'fill', textContent: `${fill.tags + fill.gw} / ${fill.total}` }) : null, ruleBadge(group)));
+    fill ? h('span', { class: 'fill', textContent: `${fill.tags + fill.gw} / ${fill.total}` }) : null,
+    twin ? h('span', { class: 'badge quiet', textContent: 'MQTT · live only' }) : null));
+  if (!twin && (columns || state.data['timestamp-rules'][group])) panel.append(ruleStrip(group));
+  const rule = state.data['timestamp-rules'][group];
+  const ruleFields = !rule ? [] : rule.mode === 'Span'
+    ? [rule.startField, rule.endField, rule.previousField || `previous_${rule.triggerField}`] : [rule.timestampField || 'record_timestamp'];
   let shown = 0;
 
   if (columns && filter !== 'extras') {
@@ -1439,7 +1497,8 @@ function renderGroupFields(container, group) {
             title: `Mapped automatically (${auto.map(r => `${r.tag}: ${r.auto}`).join(', ')}). Click to confirm it, then save.`,
             onclick: () => { auto.forEach(r => delete r.auto); markDirty('point-map'); render(); },
           }) : null,
-          gw ? h('span', { class: 'note-gw', textContent: 'set by the gateway' }) : null),
+          gw ? h('span', { class: 'note-gw' }, ...(ruleFields.includes(column) ? [icon('i-clock'), 'set by the time rule'] : ['set by the gateway'])) : null,
+          rule?.mode === 'Span' && column === rule.triggerField ? h('span', { class: 'trig', textContent: 'starts / ends the span' }) : null),
         h('textarea', {
           rows: 1, value: tags.join(', '), 'aria-label': `incoming tag for ${column}`, title: tags.join(', '),
           onkeydown: e => { if (e.key === 'Enter') { e.preventDefault(); e.target.blur(); } },
@@ -1457,8 +1516,7 @@ function renderGroupFields(container, group) {
     }
     if (!searching && filter === 'all')
       panel.append(h('div', { class: 'grp-foot' },
-        h('button', { type: 'button', class: 'link', textContent: '+ MES field', title: `Add a column to the MES format of ${group} (all machines)`, onclick: () => addMesField(group) }),
-        !twin && !state.data['timestamp-rules'][group] ? h('button', { type: 'button', class: 'link', textContent: 'Add a time rule', onclick: () => addTimestampRule(group) }) : null));
+        h('button', { type: 'button', class: 'link', textContent: '+ MES field', title: `Add a column to the MES format of ${group} (all machines)`, onclick: () => addMesField(group) })));
   }
 
   // Extra fields: no MES column (never in the MES payload); "assign it" puts the tag on a MES field.
@@ -1706,79 +1764,6 @@ function fieldOptions(group, text) {
   return list;
 }
 
-// TimeStamp: one panel per rule (how a group's records get their times, and how often they go to MES).
-function renderTimestamp(view) {
-  const rules = state.data['timestamp-rules'];
-  setTools(h('button', { type: 'button', class: 'btn ghost small', onclick: addNewGroup }, icon('i-plus'), 'New group'));
-
-  // Same row as PointMap, here with each group's timing: SPAN, or how often it is sent.
-  const mesGroups = Object.keys(state.mesSchema ?? {});
-  view.append(h('div', { class: 'loadout', role: 'list', 'aria-label': 'Time rules per group' }, ...mesGroups.map(g => {
-    const rule = rules[g];
-    const label = !rule ? 'none' : rule.mode === 'Span' ? 'SPAN' : fmtMs(rule.sendEveryMs ?? 1000);
-    return h('button', {
-      type: 'button', role: 'listitem', class: `slot${rule ? '' : ' empty'}`, style: `--c:${gcolor(g)}`,
-      title: rule ? `${g}: ${rule.mode === 'Span' ? `Span on ${rule.triggerField}` : 'Single point'}` : `${g}: no time rule (records get record_timestamp). Click to add one.`,
-      onclick: () => { if (!rule) addTimestampRule(g); else { state.focusGroup = g; render(); } },
-    }, h('span', { class: 'lv', textContent: label }), h('span', { class: 'tile' }, icon(`g-${gkey(g)}`)),
-      h('span', { class: 'nm', textContent: SHORT_GROUP[g] ?? g }), h('span', { class: 'bar' }, h('i', { style: `width:${rule ? 100 : 0}%` })));
-  })));
-
-  const names = Object.keys(rules).filter(g => matches(`${g} ${JSON.stringify(rules[g])}`));
-  if (!names.length) {
-    view.append(h('div', { class: 'empty', textContent: Object.keys(rules).length ? 'No time rule matches the search.' : 'No time rules yet. Use "New group" or a slot above to add one.' }));
-    return;
-  }
-
-  const panels = h('div', { class: 'groups' });
-  for (const group of names) {
-    const rule = rules[group];
-    rule.mode ??= 'SinglePoint';
-    const span = rule.mode === 'Span';
-    const kv = (label, input) => h('div', { class: 'kv' }, h('span', { textContent: label }), input);
-    const text = (key, placeholder) => h('input', {
-      value: rule[key] ?? '', 'aria-label': `${group} ${key}`, placeholder,
-      oninput: e => { rule[key] = e.target.value; markDirty('timestamp-rules'); },
-    });
-    panels.append(h('article', { class: 'card grp', id: `grp-${group}`, style: `--c:${gcolor(group)}` },
-      h('div', { class: 'head' }, icon(`g-${gkey(group)}`), h('span', { class: 'gname', textContent: group }),
-        h('span', { class: span ? 'badge' : 'badge quiet', textContent: span ? 'Span' : 'Single point' })),
-      kv('Mode', select([['SinglePoint', 'Single point: the time of each change'], ['Span', 'Span: start / end of each value']], rule.mode,
-        v => { rule.mode = v; markDirty('timestamp-rules'); render(); }, `${group} mode`)),
-      ...(span
-        ? [kv('Span changes when', text('triggerField')), kv('Start time goes to', text('startField')), kv('End time goes to', text('endField')),
-           kv('Previous value goes to', text('previousField', `previous_${rule.triggerField || '<trigger>'} (default)`))]
-        : [kv('Time goes to', text('timestampField', 'record_timestamp'))]),
-      kv('Send to MES at most every (ms)', h('input', {
-        type: 'number', min: '0', step: '1', value: rule.sendEveryMs ?? '', placeholder: '1000 (default)', 'aria-label': `${group} sendEveryMs`,
-        oninput: e => {
-          if (e.target.value === '') delete rule.sendEveryMs;
-          else rule.sendEveryMs = Number(e.target.value);
-          markDirty('timestamp-rules');
-        },
-      })),
-      h('div', { class: 'grp-note', textContent: span
-        ? `When ${rule.triggerField || 'the trigger'} changes, the running span ends and a new one starts.${group === 'PRODUCTION' ? ' cycle_time = how long it was on.' : ''}`
-        : 'Every change gets the machine\'s time (the arrival time when it sent none).' }),
-      h('div', { class: 'grp-foot' }, h('button', {
-        type: 'button', class: 'link', textContent: 'Remove rule',
-        onclick: () => {
-          if (!confirm(`Remove the timestamp rule for ${group}?`)) return;
-          delete rules[group];
-          markDirty('timestamp-rules');
-          render();
-        },
-      }))));
-  }
-  view.append(panels);
-
-  if (state.focusGroup) {
-    const panel = $(`grp-${state.focusGroup}`);
-    state.focusGroup = null;
-    if (panel) { panel.scrollIntoView({ block: 'start', behavior: 'smooth' }); panel.classList.add('flash'); }
-  }
-}
-
 // MQTTConfig / GatewayConfig settings in plain words. The file's own name stays
 // visible under each label: USE_CASE.md and the log use those names.
 // choices: the only values the gateway accepts (a drop-down, not free text).
@@ -1924,24 +1909,20 @@ function addNewGroup() {
   if (name) {
     if (state.view === 'point-map' && !pointMapGroups().includes(name))
       state.extraGroups.push(name);
-    if (state.view === 'timestamp-rules' && !state.data['timestamp-rules'][name]) {
-      state.data['timestamp-rules'][name] = { mode: 'SinglePoint', timestampField: 'record_timestamp' };
-      markDirty('timestamp-rules');
-    }
     state.group[state.view] = name;
   }
 
   render(); // also puts the picker back if the prompt was cancelled
 }
 
+// A new time rule for a group: opened in its PointMap panel to fill in.
 function addTimestampRule(group) {
   state.data['timestamp-rules'][group] ??= { mode: 'SinglePoint', timestampField: 'record_timestamp' };
   markDirty('timestamp-rules');
-  state.group['timestamp-rules'] = group;
-  state.search = '';
-  $('search').value = '';
-  switchView('timestamp-rules');
-  toast(`Rule added for ${group}. Check it and press save.`);
+  state.ruleOpen.add(group);
+  if (state.view === 'point-map' && $(`grp-${group}`)) refreshGroup(group);
+  else { state.focusGroup = group; switchView('point-map'); }
+  toast(`Time rule added for ${group}. Check it and press save.`);
 }
 
 // What gets PUT for each file; throws with a readable message when something is missing.
@@ -2003,19 +1984,21 @@ function buildBody(key) {
 }
 
 async function save() {
-  const key = state.view;
+  // PointMap holds the group time rules too: one Save writes both files, each only when it changed.
+  const both = ['point-map', 'timestamp-rules'].filter(k => state.dirty.has(k));
+  const keys = state.view !== 'point-map' ? [state.view] : both.length ? both : ['point-map'];
 
-  if (key === 'point-map' && state.group['point-map'] === UNID && !Object.values(state.unidEdits).some(e => e.dataGroup)) {
+  if (keys.includes('point-map') && state.group['point-map'] === UNID && !Object.values(state.unidEdits).some(e => e.dataGroup)) {
     toast('Pick a group for at least one unidentified tag first.', true);
     return;
   }
 
-  let body;
-  try { body = buildBody(key); }
+  const bodies = {};
+  try { for (const key of keys) bodies[key] = buildBody(key); }
   catch (e) { toast(e.message, true); return; }
 
   // The MES format (shared by all machines) was edited on PointMap: save it first.
-  if (key === 'point-map' && state.mesDirty) {
+  if (keys.includes('point-map') && state.mesDirty) {
     try {
       await request('/api/config/mes-schema', {
         method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(state.mesSchema),
@@ -2027,13 +2010,32 @@ async function save() {
     }
   }
 
-  // On a machine tab: this machine only, similar machines, or all (only what changed is copied).
-  const changes = MAPPING.has(key) && state.scope && state.saved[key] ? mappingChanges(key, state.saved[key], body) : null;
-  const targets = changes?.count ? await chooseSaveScope(changes.count) : [];
+  // On a machine tab: this machine only, similar machines, or all (only what changed is copied); one question for both files.
+  const changes = Object.fromEntries(keys.map(key =>
+    [key, MAPPING.has(key) && state.scope && state.saved[key] ? mappingChanges(key, state.saved[key], bodies[key]) : null]));
+  const count = keys.reduce((n, key) => n + (changes[key]?.count ?? 0), 0);
+  const targets = count ? await chooseSaveScope(count) : [];
   if (targets === null) return; // cancelled
 
-  // Saved as the copy it came from. Changed meanwhile (409: a tag mapped automatically, another save):
-  // PointMap / TimeStamp take the newer file plus only what was changed here, and save once more.
+  let restartToApply = false, reconnected = 0;
+  for (const key of keys) {
+    const result = await saveFile(key, bodies[key]);
+    if (!result) { render(); return; }
+    if (targets.length && changes[key]?.count) await applyToOthers(key, changes[key], targets);
+    restartToApply ||= !!result.restartToApply;
+    reconnected += result.reconnected ?? 0;
+  }
+  render();
+  if (reconnected > 0) {
+    toast(`Every held tag is mapped now: ${reconnected} connection(s) closed, the held messages are being sent again.`);
+    await loadUnmapped();
+  }
+  askRestart(restartToApply);
+}
+
+// PUTs one file, as the copy it came from. Changed meanwhile (409: a tag mapped automatically, another save):
+// PointMap / TimeStamp take the newer file plus only what was changed here, and save once more. null = not saved.
+async function saveFile(key, body) {
   const url = `/api/config/${key}${scopeQuery(key)}`;
   let result, rebased = false;
   for (;;) {
@@ -2043,7 +2045,7 @@ async function save() {
     } catch (e) {
       if (e.status !== 409 || rebased || !MAPPING.has(key) || !state.saved[key]) {
         toast(`Not saved: ${e.message}`, true);
-        return;
+        return null;
       }
       try {
         const latest = await requestVersioned(url);
@@ -2052,7 +2054,7 @@ async function save() {
         rebased = true;
       } catch (e2) {
         toast(`Not saved: ${e2.message}`, true);
-        return;
+        return null;
       }
     }
   }
@@ -2061,19 +2063,13 @@ async function save() {
 
   state.data[key] = body;
   if (MAPPING.has(key)) state.saved[key] = structuredClone(body);
-  if (targets.length) await applyToOthers(key, changes, targets);
   state.dirty.delete(key);
   if (key === 'point-map') {
     state.unidEdits = {};
     state.extraGroups = state.extraGroups.filter(g => !body.some(r => r.dataGroup === g));
     await loadUnidentified();
   }
-  render();
-  if (result.reconnected > 0) {
-    toast(`Every held tag is mapped now: ${result.reconnected} connection(s) closed, the held messages are being sent again.`);
-    await loadUnmapped();
-  }
-  askRestart(result.restartToApply);
+  return result;
 }
 
 // What a save of PointMap / TimeStamp changed, so that only this is copied to other machines.

@@ -106,7 +106,6 @@ button.link { height: auto; padding: 0; border: 0; background: none; color: var(
 .gw-stats b.bad { color: var(--bad-text); }
 .problem { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: 5px; border: 1px solid rgba(244, 124, 110, .5); color: var(--bad-text); font-size: 12px; background: rgba(244, 124, 110, .06); }
 .problem:hover { background: rgba(244, 124, 110, .14); }
-.problem.solved { border-color: var(--line); color: var(--muted); background: none; } /* every new problem is over already */
 
 /* ---------- machine list | work area (the list is resizable: --w-tabs, set by app.js) ---------- */
 .window { display: grid; grid-template-columns: var(--w-tabs, 260px) 6px minmax(0, 1fr); min-height: 0; }
@@ -223,6 +222,8 @@ button.chip:hover { border-color: var(--accent); }
 .slot.empty .tile { color: var(--faint); background: transparent; border-style: dashed; border-color: var(--line); }
 .slot.empty .lv { background: #2c3a50; color: var(--muted); }
 .slot.sel { border-color: var(--gold); box-shadow: inset 0 0 0 1px var(--gold); }
+.slot.off { opacity: .4; } /* another group is shown alone: click it to bring every group back */
+.slot.off:hover { opacity: .75; }
 
 /* ---------- group panels (PointMap, TimeStamp) ---------- */
 .groups { columns: 3 380px; column-gap: 10px; }
@@ -231,6 +232,23 @@ button.chip:hover { border-color: var(--accent); }
 .grp .head > svg { color: var(--c); }
 .grp .gname { color: var(--c); letter-spacing: .02em; }
 .grp .fill { color: var(--muted); font-size: 12px; font-weight: 500; }
+/* The group's time rule, at the top of its PointMap panel: one line, Edit opens it in place */
+.rule { border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--c, var(--panel)) 5%, var(--panel)); }
+.rule-sum { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 34px; padding: 6px 12px; border: 0; background: none; color: var(--muted); font-size: 12px; text-align: left; }
+button.rule-sum:hover { color: var(--text); }
+.rule-sum > svg.i { width: 14px; height: 14px; color: var(--c); }
+.rule-kind { flex: none; padding: 1px 7px; border-radius: 4px; background: color-mix(in srgb, var(--c) 22%, transparent); color: var(--text); font-size: 11px; font-weight: 600; }
+.rule-text { flex: 1; min-width: 0; }
+.rule-text b { color: var(--text); font-weight: 600; }
+.rule-edit { flex: none; display: inline-flex; align-items: center; gap: 4px; color: var(--accent); font-weight: 600; }
+.rule-edit svg.i { width: 14px; height: 14px; }
+.rule.open .rule-edit svg.i { transform: rotate(180deg); }
+.rule-body { border-top: 1px dashed var(--line); }
+.rule.none .rule-sum .link { margin-left: auto; }
+.note-gw svg.i { width: 12px; height: 12px; margin-right: 3px; vertical-align: -2px; }
+.trig { padding: 0 6px; border-radius: 8px; background: color-mix(in srgb, var(--c) 18%, transparent); color: var(--text); font-size: 11px; }
+.slot .clock { position: absolute; top: 6px; right: 6px; color: var(--muted); }
+.slot .clock svg.i { width: 12px; height: 12px; }
 .grp.flash { animation: flash 1.2s cubic-bezier(.16, 1, .3, 1); }
 @keyframes flash { 0% { box-shadow: 0 0 0 2px var(--gold); } 100% { box-shadow: 0 0 0 0 transparent; } }
 @media (prefers-reduced-motion: reduce) { .grp.flash { animation: none; } .toast, .switch::after { transition: none; } }
