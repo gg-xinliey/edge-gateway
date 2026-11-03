@@ -127,7 +127,7 @@ public sealed class IntervalSender
             }
 
             record = new Dictionary<string, object?>(snapshot);
-            config.TimeStamper.Stamp(machineId, dataGroup, record, at, source);
+            config.TimeStamper.Stamp(machineId, dataGroup, record, at, source, fields.Keys); // times this message brought win
             // Only the trigger changed: a record only if the stamp changed something MES gets (cycle_time
             // when a cycle ends), not when a cycle starts (MES would get a row that looks unchanged).
             // No row keeps that span then: open-spans.json does, so a restart mid-cycle still knows its start.

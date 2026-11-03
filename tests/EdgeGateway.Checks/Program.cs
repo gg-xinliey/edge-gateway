@@ -779,6 +779,47 @@ if (which is "all" or "race")
         $"version sent: {loadedVersion is not null}; save from the older copy -> {stale} (want 409), GOOD_QTY kept: {autoKept}; from the newer -> {current}; without If-Match -> {noCheck}");
 }
 
+if (which is "all" or "owntimes")
+{
+    // Start / clear times the message brings itself win over the gateway's; ones only left in the
+    // group's snapshot by an earlier message don't. "sent" = the fields this message carried.
+    var stamper = new TimeStamper(new Dictionary<string, TimestampRule>
+    {
+        ["ALARM"] = new() { Mode = TimestampMode.Span, TriggerField = "alarm_status", StartField = "alarm_start_time", EndField = "alarm_clear_time" },
+        ["MACHINE_STATUS"] = new() { Mode = TimestampMode.Span, TriggerField = "machine_status", StartField = "status_start_time", EndField = "status_end_time" },
+    });
+    DateTimeOffset T(int h, int m) => new(2026, 11, 2, h, m, 0, TimeSpan.Zero);
+    Dictionary<string, object?> Stamp(string machine, string group, Dictionary<string, object?> fields, DateTimeOffset at, params string[] sent)
+    {
+        stamper.Stamp(machine, group, fields, at, "", sent.Length > 0 ? sent : fields.Keys.ToArray());
+        return fields;
+    }
+    string Times(Dictionary<string, object?> f, string start, string end) => $"{f.GetValueOrDefault(start)} - {f.GetValueOrDefault(end)}";
+
+    // 1. An on at 09:58, then one message with the alarm's own start 10:00 and clear 10:05.
+    Stamp("A1", "ALARM", new() { ["alarm_status"] = 1.0 }, T(9, 58));
+    var both = Stamp("A1", "ALARM", new() { ["alarm_status"] = 0.0, ["alarm_start_time"] = "2026-11-02T10:00:00Z", ["alarm_clear_time"] = "2026-11-02T10:05:00Z" }, T(10, 6));
+    // 2. An on with its own start 10:00 (arriving 10:01), then an off at 10:05 without times.
+    Stamp("A2", "ALARM", new() { ["alarm_status"] = 1.0, ["alarm_start_time"] = "2026-11-02T10:00:00Z" }, T(10, 1));
+    var off = Stamp("A2", "ALARM", new() { ["alarm_status"] = 0.0 }, T(10, 5));
+    // 3. The snapshot still holds 08:00 - 08:05 from an older alarm; this on / off brought no times.
+    Stamp("A3", "ALARM", new() { ["alarm_status"] = 1.0, ["alarm_start_time"] = "2026-11-02T08:00:00Z", ["alarm_clear_time"] = "2026-11-02T08:05:00Z" }, T(10, 0), "alarm_status");
+    var stale = Stamp("A3", "ALARM", new() { ["alarm_status"] = 0.0, ["alarm_start_time"] = "2026-11-02T08:00:00Z", ["alarm_clear_time"] = "2026-11-02T08:05:00Z" }, T(10, 5), "alarm_status");
+    // 4. MACHINE_STATUS: RUN at 10:00, then STOP with its own end 10:09 (arriving 10:10).
+    Stamp("M1", "MACHINE_STATUS", new() { ["machine_status"] = "RUN" }, T(10, 0));
+    var change = Stamp("M1", "MACHINE_STATUS", new() { ["machine_status"] = "STOP", ["status_end_time"] = "2026-11-02T10:09:00Z" }, T(10, 10));
+
+    var want = (s: "2026-11-02T10:00:00.000Z", e: "2026-11-02T10:05:00.000Z");
+    Report("owntimes: alarm with its own start and clear after an earlier on keeps them", Times(both, "alarm_start_time", "alarm_clear_time") == $"{want.s} - {want.e}",
+        Times(both, "alarm_start_time", "alarm_clear_time"));
+    Report("owntimes: an on's own start is its off's start", Times(off, "alarm_start_time", "alarm_clear_time") == $"{want.s} - {want.e}",
+        Times(off, "alarm_start_time", "alarm_clear_time"));
+    Report("owntimes: times only left in the snapshot are replaced", Times(stale, "alarm_start_time", "alarm_clear_time") == $"{want.s} - {want.e}",
+        Times(stale, "alarm_start_time", "alarm_clear_time"));
+    Report("owntimes: a span change keeps the machine's own end", change.GetValueOrDefault("status_end_time") as string == "2026-11-02T10:09:00.000Z"
+        && change.GetValueOrDefault("previous_machine_status") as string == "RUN", $"end {change.GetValueOrDefault("status_end_time")}, previous {change.GetValueOrDefault("previous_machine_status")}");
+}
+
 if (which is "all" or "utc")
 {
     // Every time to UTC: a span start / end the machine sends (zone converted, none = UTC, other text as sent) ...
