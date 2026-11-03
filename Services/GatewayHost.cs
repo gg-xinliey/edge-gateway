@@ -265,7 +265,7 @@ public sealed class GatewayHost
                     var repeat = twin ? !_messageIds.TryAccept(key) : (ticket = acks.Begin(messageId, sender, key)) is null;
                     if (repeat)
                     {
-                        Duplicate(sender, TopLevelString(doc.RootElement, "machine_id") ?? MachineFromTopic(doc.RootElement), messageId);
+                        Duplicate(sender, TopLevelString(doc.RootElement, "machine_id") ?? MachineFromTopic(doc.RootElement), messageId, key, twin);
                         return;
                     }
                 }
@@ -293,7 +293,7 @@ public sealed class GatewayHost
                 if (messageId is not null && (ticket = acks.Begin(messageId, sender,
                         messageKey = RepeatKey(PeekString(rawTags, "machine_id"), PeekString(rawTags, "data_source"), messageId))) is null)
                 {
-                    Duplicate(sender, PeekString(rawTags, "machine_id"), messageId);
+                    Duplicate(sender, PeekString(rawTags, "machine_id"), messageId, messageKey, twin: false);
                     return;
                 }
             }
@@ -566,12 +566,17 @@ public sealed class GatewayHost
         var duplicates = new ThrottledLog(TimeSpan.FromSeconds(60));
 
         // Counting and logging only: a MES repeat is answered by the AckTracker
-        // (like its first copy); IO/motion lines never are.
-        void Duplicate(string sender, string? machineId, string messageId)
+        // (like its first copy); IO/motion lines never are. The log says what it got back.
+        void Duplicate(string sender, string? machineId, string messageId, string key, bool twin)
         {
             Stats.Duplicate();
             _traffic?.Duplicate(sender, machineId);
-            duplicates.Write($"dup|{sender}", $"[ingest] line from {sender} ignored: message_id {messageId} already received");
+            var ack = $"{{\"ack\":\"{messageId}\"}}";
+            var reply = twin ? "no reply (IO / motion lines never get one)"
+                : !_messageIds.Contains(key) ? "it gets the first copy's reply once that one is saved"
+                : replies.IsOpen(sender) ? $"replied {ack}, the same as its first copy"
+                : $"reply {ack} not delivered: its connection had already closed";
+            duplicates.Write($"dup|{sender}", $"[ingest] {machineId ?? "(no machine_id)"} from {sender}: message_id {messageId} already received, ignored; {reply}");
         }
 
         // Answered with {"nack":id,"reason":reason}; the id was never marked saved,

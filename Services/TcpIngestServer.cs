@@ -16,14 +16,14 @@ namespace EdgeGateway.Services;
 // tied to one lane, so lines from one machine are handled in the order sent,
 // also across a reconnect (#14). Adapters on one PC share its lane.
 //
-// A line longer than MaxLineChars (no line break) closes its connection (#13).
+// A line longer than MaxLineBytes (no line break) closes its connection (#13).
 //
 // Replies ({"ack":...} once a message is on disk) go back on the same
 // connection through ReplyHub; each connection has its own reply writer.
 public class TcpIngestServer
 {
     private const int LaneCapacity = 20_000; // per lane; when full the reader waits (back-pressure to the machine)
-    private const int MaxLineChars = 1_048_576; // real messages are ~1 KB; a sender that never sends '\n' must not fill the memory
+    private const int MaxLineBytes = 1_048_576; // real messages are ~1 KB; a sender that never sends '\n' must not fill the memory
 
     private readonly IPAddress _address;
     private readonly int _port;
@@ -32,6 +32,7 @@ public class TcpIngestServer
     private readonly ReplyHub? _replies;
     private readonly Channel<(string Line, string Sender)>[] _lanes;
     private readonly ThrottledLog _problems = new(TimeSpan.FromSeconds(60));
+    private readonly ThrottledLog _noLineBreak = new(TimeSpan.FromMinutes(10)); // per sender IP
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, TcpClient> _clients = new();
 
     // Closes one machine connection (ip:port). Its adapter reconnects and sends
@@ -115,7 +116,6 @@ public class TcpIngestServer
         {
             using (client)
             await using (var stream = client.GetStream())
-            using (var reader = new StreamReader(stream, Encoding.UTF8))
             {
                 // A peer that is gone without closing (power off, cable pulled) is noticed in
                 // about 90 s (60 s quiet + 3 probes 10 s apart), not left "open" forever (#18).
@@ -127,10 +127,14 @@ public class TcpIngestServer
                 var replying = _replies is null ? Task.CompletedTask : ReplyHub.WriteAsync(stream, _replies.Open(sender));
                 try
                 {
-                    await foreach (var line in ReadLinesAsync(reader, ct))
+                    await foreach (var (line, missing) in ReadLinesAsync(stream, ct))
                     {
                         if (string.IsNullOrWhiteSpace(line))
                             continue;
+                        if (missing is not null)
+                            _noLineBreak.Write($"nolb|{(endpoint as IPEndPoint)?.Address}",
+                                $"[tcp] {endpoint} sent a message with {missing} at its end: it is read only when the connection closes, " +
+                                "so its reply can't reach the sender, which then sends it again and again. Each message must end with \\n.");
                         _traffic?.LineReceived(sender);
                         await lane.Writer.WriteAsync((line, sender), ct);
                     }
@@ -163,37 +167,45 @@ public class TcpIngestServer
         _traffic?.Closed(sender);
     }
 
-    // Lines ending in '\n' or "\r\n", like StreamReader.ReadLineAsync, but a line over
-    // MaxLineChars throws, so the connection is closed instead of growing forever (#13).
-    private static async IAsyncEnumerable<string> ReadLinesAsync(StreamReader reader,
+    // Lines ending in '\n' or "\r\n", split on the '\n' byte the moment it arrives, then read as UTF-8
+    // ('\n' is never part of a multi-byte character). Not StreamReader: its ReadAsync waits for more
+    // after a full 1 KB read, so a line of exactly 1, 2 or 3 KB was read only when the sender closed,
+    // too late for its ack (SPI-LINE5-2B resent one message for hours).
+    // A line over MaxLineBytes throws, so the connection is closed instead of growing forever (#13).
+    // Missing: what the last line ended with when it had no '\n' (read at the close), else null.
+    private static async IAsyncEnumerable<(string Line, string? Missing)> ReadLinesAsync(Stream stream,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
     {
-        var buffer = new char[4096];
-        var line = new StringBuilder();
+        var buffer = new byte[4096];
+        var line = new MemoryStream();
         int read;
-        while ((read = await reader.ReadAsync(buffer, ct)) > 0)
+        while ((read = await stream.ReadAsync(buffer, ct)) > 0)
         {
             var start = 0;
-            for (var end = Array.IndexOf(buffer, '\n', 0, read); end >= 0; end = Array.IndexOf(buffer, '\n', start, read - start))
+            for (var end = Array.IndexOf(buffer, (byte)'\n', 0, read); end >= 0; end = Array.IndexOf(buffer, (byte)'\n', start, read - start))
             {
-                line.Append(buffer, start, end - start);
-                yield return TakeLine(line);
+                line.Write(buffer, start, end - start);
+                yield return (TakeLine(line), null);
                 start = end + 1;
             }
-            line.Append(buffer, start, read - start);
-            if (line.Length > MaxLineChars)
-                throw new InvalidDataException($"a line passed {MaxLineChars:N0} characters without a line break, connection closed");
+            line.Write(buffer, start, read - start);
+            if (line.Length > MaxLineBytes)
+                throw new InvalidDataException($"a line passed {MaxLineBytes:N0} bytes without a line break, connection closed");
         }
-        if (line.Length > 0)
-            yield return TakeLine(line); // last line without '\n'
+        if (line.Length > 0) // last line without '\n'
+        {
+            var missing = line.GetBuffer()[(int)line.Length - 1] == '\r' ? "a lone \\r (carriage return)" : "no line break"; // before TakeLine empties it
+            yield return (TakeLine(line), missing);
+        }
     }
 
-    private static string TakeLine(StringBuilder line)
+    private static string TakeLine(MemoryStream line)
     {
-        if (line.Length > 0 && line[line.Length - 1] == '\r')
-            line.Length--;
-        var text = line.ToString();
-        line.Clear();
+        var length = (int)line.Length;
+        if (length > 0 && line.GetBuffer()[length - 1] == '\r')
+            length--;
+        var text = Encoding.UTF8.GetString(line.GetBuffer(), 0, length).TrimStart('﻿'); // a UTF-8 BOM, dropped as StreamReader did
+        line.SetLength(0);
         return text;
     }
 

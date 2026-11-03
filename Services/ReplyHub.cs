@@ -35,6 +35,9 @@ public sealed class ReplyHub
         return queue.Reader;
     }
 
+    // Can a reply still reach this connection (ip:port)?
+    public bool IsOpen(string sender) => _connections.ContainsKey(sender);
+
     public void Close(string sender)
     {
         if (_connections.TryRemove(sender, out var queue))

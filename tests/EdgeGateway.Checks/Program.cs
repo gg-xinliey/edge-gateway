@@ -178,6 +178,35 @@ if (which is "all" or "13")
     }
     await Task.Delay(500);
     Report("#13 line endings", got.SequenceEqual(new[] { "a", "b", "c" }), string.Join(",", got));
+
+    // A line of exactly 1, 2 or 3 KB is read while its sender still waits for the reply, not at its
+    // close (StreamReader waited for more after a full 1 KB read: SPI-LINE5-2B never got its ack).
+    var late = new List<int>();
+    using (var c = new System.Net.Sockets.TcpClient())
+    {
+        await c.ConnectAsync(System.Net.IPAddress.Loopback, port);
+        foreach (var size in new[] { 1024, 2048, 3072 })
+        {
+            got.Clear();
+            await c.GetStream().WriteAsync(System.Text.Encoding.ASCII.GetBytes(new string('x', size - 1) + "\n"));
+            for (var i = 0; i < 20 && got.IsEmpty; i++) await Task.Delay(50);
+            if (got.IsEmpty) late.Add(size);
+        }
+    }
+    Report("#13 lines of exactly 1, 2, 3 KB", late.Count == 0, late.Count == 0 ? "each read within 1 s, connection open" : $"not read until the close: {string.Join(", ", late)} bytes");
+
+    // UTF-8: a BOM at the start is dropped, a Thai character split over two packets stays whole.
+    got.Clear();
+    using (var c = new System.Net.Sockets.TcpClient { NoDelay = true })
+    {
+        await c.ConnectAsync(System.Net.IPAddress.Loopback, port);
+        var bytes = System.Text.Encoding.UTF8.GetBytes("﻿{\"a\":\"ไทย\"}\n");
+        await c.GetStream().WriteAsync(bytes.AsMemory(0, 10)); // BOM (3) + {"a":" (6) + 1 of ไ's 3 bytes
+        await Task.Delay(100);
+        await c.GetStream().WriteAsync(bytes.AsMemory(10));
+        await Task.Delay(500);
+    }
+    Report("#13 UTF-8 BOM and a split character", got.SequenceEqual(new[] { "{\"a\":\"ไทย\"}" }), string.Join(",", got));
     stop.Cancel();
     try { await run; } catch { }
 }
@@ -787,14 +816,15 @@ if (which is "all" or "traffic")
     traffic.Opened("A:1"); traffic.Message("M1", "A:1", "MES", null); traffic.Closed("A:1");
     traffic.Opened("A:2"); traffic.Duplicate("A:2", "M1"); traffic.Duplicate("A:2", "M1");
     traffic.Opened("B:1"); traffic.Duplicate("B:1", "M2"); // known only from repeats (e.g. right after a gateway restart)
+    traffic.Opened("C:1"); traffic.Duplicate("C:1", "M3"); traffic.Closed("C:1"); // connects per message: closed, but sent just now
     var snap = System.Text.Json.JsonSerializer.SerializeToElement(traffic.Snapshot());
     string Info(string id)
     {
         var m = snap.GetProperty("machines").EnumerateArray().FirstOrDefault(x => x.GetProperty("machineId").GetString() == id);
         return m.ValueKind == System.Text.Json.JsonValueKind.Undefined ? "missing" : $"{m.GetProperty("status")} {m.GetProperty("connection")} repeats {m.GetProperty("repeats")}";
     }
-    Report("traffic: repeats keep a reconnected machine connected", Info("M1") == "connected A:2 repeats 2" && Info("M2") == "connected B:1 repeats 1",
-        $"M1: {Info("M1")}; M2: {Info("M2")}");
+    Report("traffic: repeats keep a reconnected machine connected", Info("M1") == "connected A:2 repeats 2" && Info("M2") == "connected B:1 repeats 1"
+        && Info("M3") == "connected C:1 repeats 1", $"M1: {Info("M1")}; M2: {Info("M2")}; M3 (closed, sent just now): {Info("M3")}");
 }
 
 if (which is "all" or "owntimes")

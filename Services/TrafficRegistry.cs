@@ -154,7 +154,9 @@ public sealed class TrafficRegistry
                 if (c is null) { open = false; closedAt = null; }
                 else lock (c) { open = c.Open; closedAt = c.ClosedAt; }
 
-                var status = !open ? "disconnected" : now - m.LastMessage > IdleAfter ? "idle" : "connected";
+                // Sending (a line, new or repeat, in the last 60 s; also an adapter that connects per
+                // message and closed already) / connected but quiet / gone.
+                var status = now - m.LastMessage <= IdleAfter ? "connected" : open ? "idle" : "disconnected";
                 return new
                 {
                     machineId = m.Id, status, connection = m.LastEndpoint, disconnectedAt = open ? null : closedAt,

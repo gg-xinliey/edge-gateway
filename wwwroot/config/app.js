@@ -357,7 +357,7 @@ async function removeMachine(id) {
 
 // The machine's connection, as on the Machines view: connected / idle (no message for 60 s) /
 // disconnected (also: never seen since the gateway started).
-const STATUS_WORDS = { connected: 'connected', idle: 'connected, no message for 60 s', disconnected: 'not connected' };
+const STATUS_WORDS = { connected: 'sending', idle: 'connected, nothing sent for 60 s', disconnected: 'not connected' };
 // One machine count for the whole page: every machine tab, plus machines sending without one.
 function machineCount() {
   const ids = new Map(state.machineConfigs.map(m => [m.machineId.toLowerCase(), m.machineId]));
