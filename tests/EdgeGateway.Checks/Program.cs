@@ -779,6 +779,24 @@ if (which is "all" or "race")
         $"version sent: {loadedVersion is not null}; save from the older copy -> {stale} (want 409), GOOD_QTY kept: {autoKept}; from the newer -> {current}; without If-Match -> {noCheck}");
 }
 
+if (which is "all" or "traffic")
+{
+    // A machine that only resends (repeats) after a reconnect still counts as sending, on its new
+    // connection: connected, not "not connected"; its repeats show as the last 10 min.
+    var traffic = new TrafficRegistry();
+    traffic.Opened("A:1"); traffic.Message("M1", "A:1", "MES", null); traffic.Closed("A:1");
+    traffic.Opened("A:2"); traffic.Duplicate("A:2", "M1"); traffic.Duplicate("A:2", "M1");
+    traffic.Opened("B:1"); traffic.Duplicate("B:1", "M2"); // known only from repeats (e.g. right after a gateway restart)
+    var snap = System.Text.Json.JsonSerializer.SerializeToElement(traffic.Snapshot());
+    string Info(string id)
+    {
+        var m = snap.GetProperty("machines").EnumerateArray().FirstOrDefault(x => x.GetProperty("machineId").GetString() == id);
+        return m.ValueKind == System.Text.Json.JsonValueKind.Undefined ? "missing" : $"{m.GetProperty("status")} {m.GetProperty("connection")} repeats {m.GetProperty("repeats")}";
+    }
+    Report("traffic: repeats keep a reconnected machine connected", Info("M1") == "connected A:2 repeats 2" && Info("M2") == "connected B:1 repeats 1",
+        $"M1: {Info("M1")}; M2: {Info("M2")}");
+}
+
 if (which is "all" or "owntimes")
 {
     // Start / clear times the message brings itself win over the gateway's; ones only left in the

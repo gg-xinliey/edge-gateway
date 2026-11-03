@@ -11,8 +11,9 @@ namespace EdgeGateway.Services;
 //               (no machine_id / no message_id), duplicates (message_id seen
 //               in the last 10 min), lines that could not be read, last line
 //   machine:    which connection it last used (so: connected or not), first
-//               and last message, messages total / to MES / to MQTT,
-//               duplicates, messages per second (last 10 s), data_sources seen
+//               and last line (repeats too: it is still sending), messages total /
+//               to MES / to MQTT, repeats and time warnings of the last 10 min
+//               (only issues still going on), messages per second (last 10 s), data_sources seen
 public sealed class TrafficRegistry
 {
     private const int MaxClosedConnections = 200;
@@ -52,14 +53,28 @@ public sealed class TrafficRegistry
             lock (c) c.Rejected++;
     }
 
-    // A line whose message_id was seen in the last 10 min (ignored).
+    // A line whose message_id was seen in the last 10 min (ignored). The machine is still
+    // sending, on this connection: it counts as connected (also when it only resends after a
+    // reconnect or a gateway restart).
     public void Duplicate(string endpoint, string? machineId)
     {
-        if (_connections.TryGetValue(endpoint, out var c))
+        _connections.TryGetValue(endpoint, out var c);
+        if (c is not null)
             lock (c) c.Duplicates++;
+        if (string.IsNullOrWhiteSpace(machineId))
+            return;
 
-        if (!string.IsNullOrWhiteSpace(machineId) && _machines.TryGetValue(machineId, out var m))
-            lock (m) m.Duplicates++;
+        var now = DateTimeOffset.Now;
+        var m = _machines.GetOrAdd(machineId, id => new Machine(id, now));
+        lock (m)
+        {
+            m.LastEndpoint = endpoint;
+            m.LastMessage = now;
+            m.Duplicates++;
+            m.Repeats.Add(now);
+        }
+        if (c is not null)
+            lock (c) c.Machines.Add(machineId);
     }
 
     // A new message, accepted. kind: "MES" or "MQTT". Counted once: repeats
@@ -109,8 +124,9 @@ public sealed class TrafficRegistry
     // A message whose "timestamp" can't be read, or is over an hour from its arrival.
     public void BadTime(string machineId)
     {
-        var m = _machines.GetOrAdd(machineId, id => new Machine(id, DateTimeOffset.Now));
-        lock (m) m.BadTimes++;
+        var now = DateTimeOffset.Now;
+        var m = _machines.GetOrAdd(machineId, id => new Machine(id, now));
+        lock (m) { m.BadTimes++; m.TimeWarnings.Add(now); }
     }
 
     // ---- read by the config page ----
@@ -144,12 +160,41 @@ public sealed class TrafficRegistry
                     machineId = m.Id, status, connection = m.LastEndpoint, disconnectedAt = open ? null : closedAt,
                     firstSeen = m.FirstSeen, lastMessage = m.LastMessage,
                     total = m.Total, mes = m.Mes, mqtt = m.Mqtt, held = m.HeldIds.Count, duplicates = m.Duplicates, badTimes = m.BadTimes, perSecond = m.PerSecond(now),
+                    repeats = m.Repeats.Count(now), timeWarnings = m.TimeWarnings.Count(now), // last 10 min: issues still going on
                     dataSources = m.DataSources.OrderByDescending(d => d.Value).Select(d => new { name = d.Key, count = d.Value }).ToList()
                 };
             }
         }).OrderBy(m => m.status == "connected" ? 0 : m.status == "idle" ? 1 : 2).ThenBy(m => m.machineId).ToList();
 
         return new { machines, connections };
+    }
+
+    // How many in the last 10 minutes, in one-minute buckets: an issue that stopped clears by itself.
+    public sealed class Recent
+    {
+        private readonly long[] _minutes = new long[10];
+        private long _current; // the minute (Unix) of the newest bucket
+
+        public void Add(DateTimeOffset now)
+        {
+            Advance(now);
+            _minutes[_current % _minutes.Length]++;
+        }
+
+        public long Count(DateTimeOffset now)
+        {
+            Advance(now);
+            return _minutes.Sum();
+        }
+
+        private void Advance(DateTimeOffset now)
+        {
+            var minute = now.ToUnixTimeSeconds() / 60;
+            if (minute <= _current) return;
+            if (minute - _current >= _minutes.Length) Array.Clear(_minutes);
+            else for (var m = _current + 1; m <= minute; m++) _minutes[m % _minutes.Length] = 0;
+            _current = minute;
+        }
     }
 
     private void PruneClosed()
@@ -183,6 +228,8 @@ public sealed class TrafficRegistry
         public DateTimeOffset LastMessage;
         public long Total, Mes, Mqtt, Duplicates, BadTimes;                        // Total = new messages accepted (each once)
         public HashSet<string> HeldIds { get; } = new(StringComparer.Ordinal);    // message_ids waiting (held) right now
+        public Recent Repeats { get; } = new();
+        public Recent TimeWarnings { get; } = new();
         public Dictionary<string, long> DataSources { get; } = new(StringComparer.OrdinalIgnoreCase);
 
         public void CountSecond(DateTimeOffset now)
