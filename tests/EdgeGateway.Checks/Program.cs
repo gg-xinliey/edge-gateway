@@ -1684,5 +1684,58 @@ if (which is "all" or "msglog")
         byMachine == "(no machine_id) 1, (unreadable) 1, M1 1, M2 1", $"counted: {byMachine}");
 }
 
+if (which is "all" or "mesurls")
+{
+    // MES has one API per data group. Which address each group gets, and the settings check.
+    var config = new MachineConfig { MesUrl = "http://mes/all", MesUrls = new() { ["alarm"] = "http://mes/alarm", ["QUALITY"] = " " } };
+    var none = new MachineConfig { MesUrl = "", MesUrls = new() { ["ALARM"] = "http://mes/alarm" } };
+    var picked = $"{config.MesUrlFor("ALARM")} {config.MesUrlFor("QUALITY")} {none.MesUrlFor("ALARM")} {none.MesUrlFor("QUALITY") ?? "none"}";
+    Report("mesUrls: a group's own address wins (any case), empty = mesUrl, none = null", picked == "http://mes/alarm http://mes/all http://mes/alarm none", picked);
+
+    var (_, json) = TempConfig();
+    string? Check(string fields) => EdgeGateway.Admin.ConfigValidator.Validate("machine-config", $$"""{"listenAddress":"0.0.0.0","tcpPort":9000,{{fields}}}""", json, 8080);
+    var cases = new (string Fields, bool Ok)[]
+    {
+        ("\"mesUrl\":\"http://mes/\"", true), ("\"mesUrl\":\"\",\"mesUrls\":{\"ALARM\":\"http://mes/alarm\"}", true),
+        ("\"mesUrl\":\"\"", false), ("\"mesUrl\":\"\",\"mesUrls\":{\"ALARM\":\"\"}", false),
+        ("\"mesUrl\":\"http://mes/\",\"mesUrls\":{\"ALARM\":\"mes/alarm\"}", false), ("\"mesUrl\":\"http://mes/\",\"mesUrls\":{\"ALARM\":\"\"}", true),
+    };
+    var wrong = cases.Where(c => (Check(c.Fields) is null) != c.Ok).Select(c => $"{c.Fields} -> {Check(c.Fields) ?? "accepted"}").ToList();
+    Report("mesUrls: checked on save", wrong.Count == 0, wrong.Count == 0 ? $"{cases.Length} cases as expected" : string.Join("; ", wrong));
+
+    // One machine, oldest first: ALARM (its API is down), QUALITY (no API yet), then MACHINE_STATUS.
+    // MACHINE_STATUS must still reach its own API right away, ALARM and QUALITY wait in the outbox,
+    // and a MACHINE_STATUS row coming later isn't held up by ALARM's growing retry wait.
+    var port = 19900 + Random.Shared.Next(90);
+    var dead = 19990 + Random.Shared.Next(9); // nothing listens: connection refused
+    var atMes = new System.Collections.Concurrent.ConcurrentQueue<string>();
+    var mes = FakeMes(port, body => { atMes.Enqueue(body); return 200; });
+    var dir = Path.Combine(Path.GetTempPath(), "gw-mesurls", Guid.NewGuid().ToString("N"));
+    var outbox = new Outbox(dir);
+    await QueueRow(outbox, "M1", "ALARM", 0, 0);
+    await QueueRow(outbox, "M1", "QUALITY", 0, 1);
+    await QueueRow(outbox, "M1", "MACHINE_STATUS", 0, 2);
+    await QueueRow(outbox, "M1", "MACHINE_STATUS", 0, 3);
+    var urls = new MachineConfig { MesUrl = "", MesUrls = new() { ["MACHINE_STATUS"] = $"http://localhost:{port}/status", ["ALARM"] = $"http://localhost:{dead}/alarm" } };
+    using var stop = new CancellationTokenSource();
+    var forwarder = new MesForwarder(new HttpClient { Timeout = TimeSpan.FromSeconds(5) }, urls.MesUrlFor, outbox, new GatewayStats(), "M1").RunAsync(stop.Token);
+    await Task.Delay(1500);
+    var first = Counts(dir);
+    var groups = string.Join(",", atMes.Select(b => System.Text.Json.JsonDocument.Parse(b).RootElement.GetProperty("data_group").GetString()));
+    Report("mesUrls: a group goes to its own API, past an older group whose API is down and one with no API",
+        first.Sent == 2 && first.Waiting == 2 && groups == "MACHINE_STATUS,MACHINE_STATUS", $"sent {first.Sent} (want 2), waiting {first.Waiting} (want 2), MES got [{groups}]");
+
+    await Task.Delay(7000); // ALARM failed a few times by now: its wait is up to 8 s
+    var queuedAt = DateTime.UtcNow;
+    await QueueRow(outbox, "M1", "MACHINE_STATUS", 0, 4);
+    var later = Counts(dir);
+    while (later.Sent < 3 && DateTime.UtcNow - queuedAt < TimeSpan.FromSeconds(5)) { await Task.Delay(100); later = Counts(dir); }
+    var took = DateTime.UtcNow - queuedAt;
+    stop.Cancel(); try { await forwarder; } catch { }
+    mes.Stop(); await outbox.DisposeAsync(); Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+    Report("mesUrls: a down API's retry wait doesn't slow the other groups", later.Sent == 3 && took < TimeSpan.FromSeconds(1.5),
+        $"new MACHINE_STATUS row sent after {took.TotalMilliseconds:0} ms (want < 1500), waiting {later.Waiting} (want 2: ALARM, QUALITY)");
+}
+
 Console.WriteLine(failed == 0 ? "ALL PASS" : $"{failed} FAILED");
 return failed == 0 ? 0 : 1;

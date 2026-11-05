@@ -3,7 +3,7 @@ namespace EdgeGateway.Services;
 // One MES path: an outbox folder, its MES sender, and the interval state
 // (changes, spans, sendEveryMs pacing) for one mapping. The shared mapping has
 // one (outbox/), every machine with its own mapping has its own
-// (outbox/<machine_id>/). All of them send to the same MES.
+// (outbox/<machine_id>/). All of them send to the same MES addresses (one per data group).
 //
 // A machine whose own mapping was removed keeps its pipeline until the
 // gateway restarts, and at start an outbox folder with rows gets one too, so
@@ -15,13 +15,13 @@ public sealed class MesPipeline : IAsyncDisposable
     private IntervalSender? _sender;
     private GatewayConfigStore? _senderStore;
 
-    public MesPipeline(string? machineId, string outboxFolder, int keepSentDays, HttpClient http, string mesUrl,
+    public MesPipeline(string? machineId, string outboxFolder, int keepSentDays, HttpClient http, Func<string, string?> mesUrlFor,
         EnvelopeBuilder envelopes, GatewayStats stats, CancellationToken ct, int stuckRowTries = 5, int stuckRowMinutes = 10)
     {
         MachineId = machineId;
         _envelopes = envelopes;
         Outbox = new Outbox(outboxFolder, keepSentDays, stats);
-        Running = new MesForwarder(http, mesUrl, Outbox, stats, machineId,
+        Running = new MesForwarder(http, mesUrlFor, Outbox, stats, machineId,
             TimeSpan.FromMinutes(stuckRowMinutes), stuckRowTries).RunAsync(ct);
     }
 

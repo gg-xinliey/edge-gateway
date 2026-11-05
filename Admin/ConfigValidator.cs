@@ -149,8 +149,13 @@ public static class ConfigValidator
             return "tcpPort must be between 1 and 65535.";
         if (machine.TcpPort == adminPort)
             return $"tcpPort cannot be {adminPort}; the config page uses it.";
-        if (!Uri.TryCreate(machine.MesUrl, UriKind.Absolute, out var mes) || (mes.Scheme != "http" && mes.Scheme != "https"))
-            return "mesUrl must be a full http:// or https:// address.";
+        if (!string.IsNullOrWhiteSpace(machine.MesUrl) && !IsHttpUrl(machine.MesUrl))
+            return "mesUrl must be empty (groups without their own address wait in the outbox) or a full http:// or https:// address.";
+        foreach (var (group, url) in machine.MesUrls ?? new())
+            if (string.IsNullOrWhiteSpace(group) || (!string.IsNullOrWhiteSpace(url) && !IsHttpUrl(url)))
+                return $"mesUrls: '{group}' needs a data group name and a full http:// or https:// address (or empty = mesUrl).";
+        if (string.IsNullOrWhiteSpace(machine.MesUrl) && !(machine.MesUrls ?? new()).Values.Any(u => !string.IsNullOrWhiteSpace(u)))
+            return "No MES address: set mesUrl, or an address for at least one data group (mesUrls).";
         if (machine.OutboxKeepSentDays < 1)
             return "outboxKeepSentDays must be at least 1.";
         if (machine.MesStuckRowTries < 1)
@@ -168,4 +173,7 @@ public static class ConfigValidator
 
         return null;
     }
+
+    private static bool IsHttpUrl(string url) =>
+        Uri.TryCreate(url.Trim(), UriKind.Absolute, out var uri) && uri.Scheme is "http" or "https";
 }

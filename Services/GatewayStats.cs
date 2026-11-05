@@ -25,6 +25,11 @@ public sealed class GatewayStats
     private long _lastDeliveredTicks;
     public long LastDeliveredTicks => Interlocked.Read(ref _lastDeliveredTicks);
 
+    // The same per MES address (one API per data group): that API is up.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<Uri, long> _lastDeliveredTo = new();
+    public void MesDeliveredTo(Uri endpoint) => _lastDeliveredTo[endpoint] = DateTimeOffset.UtcNow.UtcTicks;
+    public long LastDeliveredTicksTo(Uri endpoint) => _lastDeliveredTo.GetValueOrDefault(endpoint);
+
     public StatsRates Latest { get; private set; } = new(0, 0, 0, 0, 0, 0, 0, 0, null);
 
     private long _lastSample = System.Diagnostics.Stopwatch.GetTimestamp();

@@ -18,7 +18,19 @@ public class MachineConfig
     public string DataSource { get; set; } = "TCP-BRIDGE-01";
 
     public string ProtocolLabel { get; set; } = "TCP/JSON-CSV";
+    // Where MES records go: MesUrls[data group] when that group has its own address
+    // (MES: one API per data group), else MesUrl. MesUrl empty = a group without its own
+    // address is kept in the outbox, not sent, until it gets one. Read at start.
     public string MesUrl { get; set; } = "http://localhost:5000/api/v1/machine-events";
+    public Dictionary<string, string> MesUrls { get; set; } = new();
+
+    // The address for one data group, or null = keep it in the outbox (no address yet).
+    public string? MesUrlFor(string dataGroup)
+    {
+        var own = (MesUrls ?? new()).FirstOrDefault(p => p.Key.Trim().Equals(dataGroup, StringComparison.OrdinalIgnoreCase)).Value;
+        var url = string.IsNullOrWhiteSpace(own) ? MesUrl : own;
+        return string.IsNullOrWhiteSpace(url) ? null : url.Trim();
+    }
 
     // A machine_id that has no tab (no own mapping) sends MES data:
     //   "hold"   (default) not processed, not answered, shown on the config page:

@@ -222,15 +222,17 @@ public sealed class Outbox : IAsyncDisposable
     //     restart or before sendEveryMs was made shorter (SVI-99);
     //   * at most a fair share of `limit` per machine: one machine whose rows MES keeps
     //     refusing must not fill the whole read and stop every other machine (SVI-97).
+    // skip(state_key) true = not read now (the forwarder: waiting to retry, or no MES address yet).
+    // Group in the result = the row's state_key (null for rows from before it existed).
     // A group not read to its end in a file (a row not due yet, or its machine's share
     // used up) is not read in newer files either: its rows there must wait for the older
     // ones (a restart just before midnight, MES down overnight; SVI-99).
     // Across groups the faster group goes first.
     private const int MinShare = 100;
 
-    public List<(OutboxKey Key, Envelope Envelope)> ReadUnsent(int limit = 100)
+    public List<(OutboxKey Key, Envelope Envelope, string? Group)> ReadUnsent(int limit = 100, Func<string?, bool>? skip = null)
     {
-        var results = new List<(OutboxKey, Envelope)>();
+        var results = new List<(OutboxKey, Envelope, string?)>();
         var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         var held = new HashSet<string?>(); // groups with older rows left in an earlier file
         foreach (var file in PendingFiles())
@@ -239,7 +241,7 @@ public sealed class Outbox : IAsyncDisposable
             var groups = PendingGroups(conn);
             var share = Math.Max(Math.Min(MinShare, limit), (limit - results.Count) / Math.Max(1, groups.Select(MachineOf).Distinct().Count()));
             var perMachine = new Dictionary<string, int>();
-            var rows = new List<(long Id, Envelope Envelope)>();
+            var rows = new List<(long Id, Envelope Envelope, string? Group)>();
 
             using var cmd = conn.CreateCommand();
             cmd.CommandText = "SELECT id, body, send_after FROM outbox WHERE sent = 0 AND failed_at IS NULL AND discarded_at IS NULL AND state_key IS $key ORDER BY id LIMIT $room;";
@@ -249,6 +251,11 @@ public sealed class Outbox : IAsyncDisposable
             {
                 if (held.Contains(key))
                     continue;
+                if (skip?.Invoke(key) == true)
+                {
+                    held.Add(key); // not in newer files either: they must not go before this file's rows
+                    continue;
+                }
                 var machine = MachineOf(key);
                 var room = share - perMachine.GetValueOrDefault(machine);
                 if (room <= 0)
@@ -272,7 +279,7 @@ public sealed class Outbox : IAsyncDisposable
                         taken++;
                         var envelope = JsonSerializer.Deserialize<Envelope>(reader.GetString(1));
                         if (envelope is not null)
-                            rows.Add((reader.GetInt64(0), envelope));
+                            rows.Add((reader.GetInt64(0), envelope, key));
                     }
                 }
                 perMachine[machine] = perMachine.GetValueOrDefault(machine) + taken;
@@ -280,8 +287,8 @@ public sealed class Outbox : IAsyncDisposable
                     held.Add(key);
             }
 
-            foreach (var (id, envelope) in rows.OrderBy(r => r.Id).Take(limit - results.Count))
-                results.Add((new OutboxKey(file, id), envelope));
+            foreach (var (id, envelope, group) in rows.OrderBy(r => r.Id).Take(limit - results.Count))
+                results.Add((new OutboxKey(file, id), envelope, group));
 
             // Nothing due is not "all delivered": rows may still wait for send_after.
             if (rows.Count == 0 && !HasUnsent(conn))

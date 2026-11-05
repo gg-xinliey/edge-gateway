@@ -1787,7 +1787,8 @@ const SETTINGS = {
   tcpPort: { label: 'Machine TCP port', help: 'Machines connect to listen address : this port.' },
   dataSource: { label: 'Default data source', help: 'Used for a message that has no data_source.' },
   protocolLabel: { label: 'Protocol label', help: 'Written into every MES record (protocol).' },
-  mesUrl: { label: 'MES address (URL)', help: 'Where the records are sent, e.g. http://mes-server/api/v1/machine-events.' },
+  mesUrl: { label: 'MES address (URL)', help: 'Where the records are sent, e.g. http://mes-server/api/v1/machine-events. A data group with its own address below goes there instead. Empty = only groups with their own address are sent; the others wait in the outbox (nothing lost) until they get one. Applied on Restart Gateway.' },
+  mesUrls: { label: 'MES address per data group', help: "MES has one API per data group: type that group's address. Empty = the MES address above. Each group is sent and retried on its own, so one API that is down or not open yet doesn't hold up the others. Applied on Restart Gateway." },
   unregisteredMachines: { label: 'Machine without a tab', choices: [['hold', 'hold its data until it gets a tab'], ['shared', 'map it with the Template']] },
   unmappedTags: { label: 'Tag not in the mapping', choices: [['send', 'send the known tags, leave it out'], ['hold', 'hold the whole message until it is mapped']] },
   outboxKeepSentDays: { label: 'Keep sent records (days)', help: 'A day file is deleted when it is this many days old and everything in it was sent.' },
@@ -1808,7 +1809,7 @@ const FORM_SECTIONS = {
   ],
   'machine-config': [
     ['i-robot', 'Machines in', ['gatewayId', 'listenAddress', 'tcpPort', 'dataSource', 'protocolLabel', 'unregisteredMachines', 'unmappedTags']],
-    ['i-db', 'MES', ['mesUrl', 'outboxKeepSentDays', 'mesStuckRowTries', 'mesStuckRowMinutes']],
+    ['i-db', 'MES', ['mesUrl', 'mesUrls', 'outboxKeepSentDays', 'mesStuckRowTries', 'mesStuckRowMinutes']],
     ['i-tag', 'Name matching', ['nameMatchThreshold', 'nameMatchSynonyms']],
     ['i-bell', 'Alerts and safety', ['alarmWebhookUrl', 'mappingPassword']],
   ],
@@ -1826,6 +1827,7 @@ function renderForm(view) {
     const value = data[name];
     const info = SETTINGS[name] ?? {};
     if (!(name in data)) return null;
+    if (name === 'mesUrls') return mesUrlRows(key, data, info);
     if (!matches(`${name} ${info.label ?? ''} ${typeof value === 'object' ? JSON.stringify(value) : value}`)) return null;
     shown++;
     let input;
@@ -1862,9 +1864,29 @@ function renderForm(view) {
       info.help ? h('div', { class: 'help', textContent: info.help }) : null);
   };
 
+  // mesUrls: one row per MES data group (and any other group the file names), the help under the first.
+  function mesUrlRows(key, data, info) {
+    const urls = data.mesUrls ?? {};
+    const groups = [...new Set([...Object.keys(state.mesSchema ?? {}), ...Object.keys(urls)])]
+      .filter(g => matches(`mesUrls ${info.label} ${g} ${urls[g] ?? ''}`));
+    shown += groups.length;
+    return groups.map((g, i) => h('div', { class: 'form-row' },
+      h('div', { class: 'label' }, h('b', { textContent: `MES address for ${g}` }), h('code', { textContent: `mesUrls.${g}` })),
+      h('input', {
+        value: urls[g] ?? '', placeholder: 'empty = the MES address above', 'aria-label': `MES address for ${g}`,
+        oninput: e => {
+          const text = e.target.value.trim();
+          data.mesUrls = { ...(data.mesUrls ?? {}) };
+          if (text) data.mesUrls[g] = text; else delete data.mesUrls[g];
+          markDirty(key);
+        },
+      }),
+      i === 0 ? h('div', { class: 'help', textContent: info.help }) : null));
+  }
+
   const panels = h('div', { class: 'forms' });
   for (const [ic, title, names] of [...sections, ...(other.length ? [['i-sliders', 'Other settings', other]] : [])]) {
-    const rows = names.map(row).filter(Boolean);
+    const rows = names.flatMap(row).filter(Boolean);
     if (rows.length) panels.append(h('article', { class: 'card grp' }, h('div', { class: 'head' }, icon(ic), title), ...rows));
   }
 
