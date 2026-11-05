@@ -61,6 +61,7 @@ public class MesForwarder
 
     // MES addresses per data group (null = none yet), and the addresses failing now: since when, tries.
     private readonly Func<string, string?> _urlFor;
+    private readonly Func<string, MesApiLogin>? _loginFor;
     private readonly ConcurrentDictionary<string, Uri?> _endpoints = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<Uri, (long SinceTicks, long Tries)> _down = new();
 
@@ -85,11 +86,13 @@ public class MesForwarder
         : this(http, _ => mesUrl, outbox, stats, label, stuckLimit, stuckTries) { }
 
     // urlFor: data group -> its MES address, null or empty = none yet (MachineConfig.MesUrlFor).
+    // loginFor: data group -> its MES login (MachineConfig.MesLoginFor); null = no login.
     // label: the machine_id of the machine's own pipeline; null for the shared one.
     // stuckLimit / stuckTries: the stuck-row rule above (machine-config mesStuckRowMinutes / mesStuckRowTries).
     public MesForwarder(HttpClient http, Func<string, string?> urlFor, Outbox outbox, GatewayStats? stats = null, string? label = null,
-        TimeSpan? stuckLimit = null, int? stuckTries = null)
+        TimeSpan? stuckLimit = null, int? stuckTries = null, Func<string, MesApiLogin>? loginFor = null)
     {
+        _loginFor = loginFor;
         _stuckLimit = stuckLimit ?? DefaultStuckLimit;
         _stuckTries = stuckTries ?? DefaultStuckTries;
         _http = http;
@@ -264,10 +267,12 @@ public class MesForwarder
         try
         {
             var json = JsonSerializer.Serialize(envelope, EnvelopeJson.Options);
-            using var response = await _http.PostAsync(
-                endpoint,
-                new StringContent(json, Encoding.UTF8, "application/json"),
-                ct);
+            using var request = new HttpRequestMessage(HttpMethod.Post, endpoint)
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json"),
+            };
+            _loginFor?.Invoke(envelope.data_group).Apply(request.Headers);
+            using var response = await _http.SendAsync(request, ct);
 
             if (response.IsSuccessStatusCode)
                 return (SendResult.Delivered, null);
@@ -294,6 +299,7 @@ public class MesForwarder
             problemKey = $"status{status} {endpoint}";
             problem = $"{_tag} MES returned {status} for {envelope.event_id} ({envelope.machine_id}/{envelope.data_group}) at {endpoint}" +
                 (status is 404 or 405 ? $" (check the MES address for {envelope.data_group}, mesUrls / mesUrl: MES does not know it)"
+                    : status is 401 or 403 ? $" (check the MES login for {envelope.data_group}, mesLogins / mesLogin: MES refused it)"
                     : status is 413 ? " (request too large: check the MES / proxy size limit)" : "");
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -303,7 +309,7 @@ public class MesForwarder
         catch (Exception ex)
         {
             problemKey = $"send {endpoint}";
-            problem = $"{_tag} send failed for {envelope.event_id} ({envelope.data_group}) to {endpoint}: {ex.Message}";
+            problem = $"{_tag} send failed for {envelope.event_id} ({envelope.data_group}) to {endpoint}: {MesHttp.Why(ex)}";
         }
 
         var wait = WaitBeforeRetry(group);

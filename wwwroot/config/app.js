@@ -1787,8 +1787,8 @@ const SETTINGS = {
   tcpPort: { label: 'Machine TCP port', help: 'Machines connect to listen address : this port.' },
   dataSource: { label: 'Default data source', help: 'Used for a message that has no data_source.' },
   protocolLabel: { label: 'Protocol label', help: 'Written into every MES record (protocol).' },
-  mesUrl: { label: 'MES address (URL)', help: 'Where the records are sent, e.g. http://mes-server/api/v1/machine-events. A data group with its own address below goes there instead. Empty = only groups with their own address are sent; the others wait in the outbox (nothing lost) until they get one. Applied on Restart Gateway.' },
-  mesUrls: { label: 'MES address per data group', help: "MES has one API per data group: type that group's address. Empty = the MES address above. Each group is sent and retried on its own, so one API that is down or not open yet doesn't hold up the others. Applied on Restart Gateway." },
+  mesUrls: { label: 'MES APIs', help: 'MES has one API per data group. Open a line to set its address and login; Test checks it without sending a record. A group without its own address or login uses the default. Each group is sent and retried on its own, so one API that is down or not open yet does not hold up the others. Applied on Restart Gateway.' },
+  mesCaFile: { label: 'MES: company CA file (https)', help: "Empty = the CAs this PC already trusts. MES with a company certificate: put the CA's .crt / .pem in the data Config folder (Docker: data\\Config) and type its file name here, or a full path. Applied on Restart Gateway." },
   unregisteredMachines: { label: 'Machine without a tab', choices: [['hold', 'hold its data until it gets a tab'], ['shared', 'map it with the Template']] },
   unmappedTags: { label: 'Tag not in the mapping', choices: [['send', 'send the known tags, leave it out'], ['hold', 'hold the whole message until it is mapped']] },
   outboxKeepSentDays: { label: 'Keep sent records (days)', help: 'A day file is deleted when it is this many days old and everything in it was sent.' },
@@ -1809,11 +1809,109 @@ const FORM_SECTIONS = {
   ],
   'machine-config': [
     ['i-robot', 'Machines in', ['gatewayId', 'listenAddress', 'tcpPort', 'dataSource', 'protocolLabel', 'unregisteredMachines', 'unmappedTags']],
-    ['i-db', 'MES', ['mesUrl', 'mesUrls', 'outboxKeepSentDays', 'mesStuckRowTries', 'mesStuckRowMinutes']],
+    ['i-db', 'MES', ['mesUrls', 'mesUrl', 'mesLogin', 'mesLogins', 'mesCaFile', 'outboxKeepSentDays', 'mesStuckRowTries', 'mesStuckRowMinutes']],
     ['i-tag', 'Name matching', ['nameMatchThreshold', 'nameMatchSynonyms']],
     ['i-bell', 'Alerts and safety', ['alarmWebhookUrl', 'mappingPassword']],
   ],
 };
+
+// MES APIs (GatewayConfig -> MES): the default address + login, then one per MES data group (MES has
+// one API per group). Each is one closed line (name, address, login, last test) that opens to edit,
+// so ten APIs don't fill the page. The file keeps mesUrl / mesLogin and mesUrls / mesLogins.<group>.
+const MES_API_KEYS = new Set(['mesUrl', 'mesLogin', 'mesLogins']); // shown inside the list, not as rows
+const LOGIN_TYPES = [['none', 'No login'], ['bearer', 'Bearer token'], ['basic', 'Username + password'], ['header', 'API key header']];
+const loginName = login => {
+  const type = (login?.type ?? '').trim().toLowerCase();
+  return LOGIN_TYPES.find(([v]) => v === type)?.[1] ?? (type || 'No login');
+};
+const formRow = (label, input, help) => h('div', { class: 'form-row' },
+  h('div', { class: 'label' }, h('b', { textContent: label })), input, help ? h('div', { class: 'help', textContent: help }) : null);
+
+function mesApi(key, data, group) {
+  const id = group ?? '';
+  const name = group ?? 'Default';
+  state.mesOpen ??= new Set();
+  state.mesTests ??= {};
+  const url = () => (group ? data.mesUrls?.[group] : data.mesUrl) ?? '';
+  const login = () => (group ? data.mesLogins?.[group] : data.mesLogin) ?? { type: '' };
+  const changed = () => { delete state.mesTests[id]; markDirty(key); refresh(); };
+  const setUrl = text => {
+    if (!group) data.mesUrl = text;
+    else { data.mesUrls = { ...(data.mesUrls ?? {}) }; if (text) data.mesUrls[group] = text; else delete data.mesUrls[group]; }
+    changed();
+  };
+  const setLogin = next => {
+    if (!group) data.mesLogin = next;
+    else { data.mesLogins = { ...(data.mesLogins ?? {}) }; if (next.type) data.mesLogins[group] = next; else delete data.mesLogins[group]; }
+    changed();
+  };
+
+  const urlText = h('span', { class: 'api-url' });
+  const loginText = h('span', { class: 'api-login' });
+  const testText = h('span', { class: 'api-test' });
+  const result = h('span', { class: 'api-result', role: 'status' });
+  const refresh = () => {
+    const address = url();
+    urlText.textContent = address || (group ? 'default address' : 'none: groups without their own address wait');
+    urlText.classList.toggle('quiet', !address);
+    urlText.title = address;
+    const own = group ? login().type : 'set';
+    loginText.textContent = own ? loginName(login()) : 'default login';
+    loginText.classList.toggle('quiet', !own);
+    const test = state.mesTests[id];
+    for (const el of [testText, result]) el.classList.toggle('ok', !!test?.ok), el.classList.toggle('bad', !!test && !test.ok);
+    testText.textContent = test ? (test.ok ? '✓ OK' : '✗ failed') : '';
+    testText.title = test?.text ?? '';
+    result.textContent = test?.text ?? '';
+  };
+
+  const testBtn = h('button', {
+    type: 'button', class: 'btn small ghost', textContent: 'Test',
+    onclick: async () => {
+      let settings;
+      try { settings = buildBody(key); } catch (e) { toast(e.message, true); return; }
+      testBtn.disabled = true;
+      testBtn.textContent = 'Testing…';
+      try { state.mesTests[id] = await request('/api/mes/test', { method: 'POST', body: JSON.stringify({ group: id, settings }) }); }
+      catch (e) { state.mesTests[id] = { ok: false, text: e.message }; }
+      finally { testBtn.disabled = false; testBtn.textContent = 'Test'; refresh(); }
+    },
+  });
+
+  const body = h('div', { class: 'api-body' });
+  const renderBody = () => {
+    const own = login();
+    const type = (own.type ?? '').trim().toLowerCase();
+    const secret = { type: 'password', autocomplete: 'new-password' };
+    const field = (label, prop, extra = {}) => formRow(label, h('input', {
+      value: own[prop] ?? '', 'aria-label': `${label} for ${name}`, ...extra,
+      oninput: e => setLogin({ ...login(), [prop]: prop === 'secret' ? e.target.value : e.target.value.trim() }),
+    }));
+    const options = group ? [['', `Same as default (${loginName(data.mesLogin)})`], ...LOGIN_TYPES] : LOGIN_TYPES;
+    body.replaceChildren(...[ // replaceChildren would write null as text
+      formRow('Address', h('input', {
+        value: url(), 'aria-label': `MES address for ${name}`,
+        placeholder: group ? 'empty = the default address' : 'e.g. https://mes-server/api/v1/machine-events',
+        oninput: e => setUrl(e.target.value.trim()),
+      }), group ? null : 'Empty = only groups with their own address are sent; the others wait in the outbox (nothing lost).'),
+      formRow('Login', select(options, group ? type : type || 'none', v => { setLogin({ ...login(), type: v }); renderBody(); }, `Login for ${name}`)),
+      type === 'bearer' ? field('Token', 'secret', secret) : null,
+      type === 'basic' ? field('Username', 'username') : null,
+      type === 'basic' ? field('Password', 'secret', secret) : null,
+      type === 'header' ? field('Header name', 'header', { placeholder: 'X-API-Key' }) : null,
+      type === 'header' ? field('Key', 'secret', secret) : null,
+      h('div', { class: 'api-foot' }, testBtn, result)].filter(Boolean));
+  };
+  renderBody();
+  refresh();
+
+  const details = h('details', {
+    class: 'api', open: state.mesOpen.has(id),
+    ontoggle: () => (details.open ? state.mesOpen.add(id) : state.mesOpen.delete(id)),
+  }, h('summary', {}, icon('i-right'), h('span', { class: 'api-name', textContent: name }), urlText, loginText, testText), body);
+  details.style.setProperty('--c', group ? `var(--g-${group}, var(--accent))` : 'var(--accent)');
+  return details;
+}
 
 function renderForm(view) {
   const key = state.view;
@@ -1827,7 +1925,8 @@ function renderForm(view) {
     const value = data[name];
     const info = SETTINGS[name] ?? {};
     if (!(name in data)) return null;
-    if (name === 'mesUrls') return mesUrlRows(key, data, info);
+    if (name === 'mesUrls') return mesApiRows(key, data, info);
+    if (MES_API_KEYS.has(name)) return null; // inside the MES APIs list
     if (!matches(`${name} ${info.label ?? ''} ${typeof value === 'object' ? JSON.stringify(value) : value}`)) return null;
     shown++;
     let input;
@@ -1864,24 +1963,12 @@ function renderForm(view) {
       info.help ? h('div', { class: 'help', textContent: info.help }) : null);
   };
 
-  // mesUrls: one row per MES data group (and any other group the file names), the help under the first.
-  function mesUrlRows(key, data, info) {
-    const urls = data.mesUrls ?? {};
-    const groups = [...new Set([...Object.keys(state.mesSchema ?? {}), ...Object.keys(urls)])]
-      .filter(g => matches(`mesUrls ${info.label} ${g} ${urls[g] ?? ''}`));
-    shown += groups.length;
-    return groups.map((g, i) => h('div', { class: 'form-row' },
-      h('div', { class: 'label' }, h('b', { textContent: `MES address for ${g}` }), h('code', { textContent: `mesUrls.${g}` })),
-      h('input', {
-        value: urls[g] ?? '', placeholder: 'empty = the MES address above', 'aria-label': `MES address for ${g}`,
-        oninput: e => {
-          const text = e.target.value.trim();
-          data.mesUrls = { ...(data.mesUrls ?? {}) };
-          if (text) data.mesUrls[g] = text; else delete data.mesUrls[g];
-          markDirty(key);
-        },
-      }),
-      i === 0 ? h('div', { class: 'help', textContent: info.help }) : null));
+  // MES APIs: the default, then every MES data group (and any other group the file names).
+  function mesApiRows(key, data, info) {
+    const groups = [...new Set([...Object.keys(state.mesSchema ?? {}), ...Object.keys(data.mesUrls ?? {}), ...Object.keys(data.mesLogins ?? {})])];
+    const apis = [null, ...groups].filter(g => matches(`mes api address login ${info.label} ${g ?? 'default'} ${(g ? data.mesUrls?.[g] : data.mesUrl) ?? ''}`));
+    shown += apis.length;
+    return apis.length ? [h('div', { class: 'api-help', textContent: info.help }), ...apis.map(g => mesApi(key, data, g))] : null;
   }
 
   const panels = h('div', { class: 'forms' });

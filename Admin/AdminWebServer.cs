@@ -301,6 +301,41 @@ public sealed class AdminWebServer
             return;
         }
 
+        // The Test button on a MES API (GatewayConfig -> MES): one GET to that API with the settings
+        // typed there (not saved yet; the dots mean the stored secret). No record is sent.
+        if (path.Equals("/api/mes/test", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!HttpMethodsEqual(context, "POST"))
+            {
+                await WriteJsonAsync(context.Response, 405, new { error = "Method not allowed" });
+                return;
+            }
+            MachineConfig config;
+            string group;
+            try
+            {
+                using var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding ?? Encoding.UTF8);
+                var body = JsonNode.Parse(await reader.ReadToEndAsync()) as JsonObject ?? new JsonObject();
+                group = ((string?)body["group"] ?? "").Trim();
+                var settings = body["settings"] as JsonObject ?? new JsonObject();
+                var stored = Path.Combine(_configRoot, "machine-config.json");
+                RestoreMasked(settings, File.Exists(stored) ? JsonNode.Parse(await File.ReadAllTextAsync(stored)) : null);
+                config = JsonSerializer.Deserialize<MachineConfig>(settings, _jsonOptions) ?? new MachineConfig();
+            }
+            catch (Exception ex) when (ex is JsonException or InvalidOperationException or FormatException)
+            {
+                await WriteJsonAsync(context.Response, 400, new { error = $"Can't read the settings: {ex.Message}" });
+                return;
+            }
+            var url = group == "" ? config.MesUrl : config.MesUrlFor(group);
+            var login = group == "" ? config.MesLogin ?? new MesApiLogin() : config.MesLoginFor(group);
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            var (ok, text) = await MesHttp.TestAsync(url, login, config.MesCaFile, timeout.Token);
+            Console.WriteLine($"[config] MES test {(group == "" ? "default" : group)} {url}: {text}");
+            await WriteJsonAsync(context.Response, 200, new { ok, text, url });
+            return;
+        }
+
         // Another mapping for a machine's tab: a copy of copyFrom's (another tab, or the template when
         // empty). A confirmed tab needs the password (#31), an automatic one doesn't (#30).
         if (path.Equals("/api/machine-configs/reassign", StringComparison.OrdinalIgnoreCase))
@@ -603,6 +638,8 @@ public sealed class AdminWebServer
             var result = WithDefaults(key, fromFile);
             if (PasswordSettings.TryGetValue(key, out var secret))
                 MaskPassword(result, secret);
+            if (key.Equals("machine-config", StringComparison.OrdinalIgnoreCase))
+                MaskSecrets(result); // MES logins
             if (result is null)
             {
                 await WriteJsonAsync(context.Response, 404, new { error = $"Missing Config/{fileName}" });
@@ -621,6 +658,11 @@ public sealed class AdminWebServer
                 var raw = await reader.ReadToEndAsync();
                 if (PasswordSettings.TryGetValue(key, out var secret))
                     raw = KeepStoredPassword(raw, filePath, secret);
+                if (raw.Contains(PasswordMask) && JsonNode.Parse(raw) is JsonObject incoming)
+                {
+                    RestoreMasked(incoming, File.Exists(filePath) ? JsonNode.Parse(await File.ReadAllTextAsync(filePath)) : null);
+                    raw = incoming.ToJsonString();
+                }
                 using var document = JsonDocument.Parse(raw);
 
                 // Load it the way the gateway will, before touching the file.
@@ -755,6 +797,37 @@ public sealed class AdminWebServer
             : "";
         incoming[name] = stored;
         return incoming.ToJsonString();
+    }
+
+    // MES logins (machine-config mesLogin, mesLogins.<group>): every "secret" is masked like a password.
+    public static void MaskSecrets(JsonNode? node)
+    {
+        if (node is not JsonObject settings)
+            return;
+        foreach (var (name, value) in settings.ToList())
+        {
+            if (name.Equals("secret", StringComparison.OrdinalIgnoreCase) && value is JsonValue text
+                && text.TryGetValue<string>(out var secret) && secret.Length > 0)
+                settings[name] = PasswordMask;
+            else
+                MaskSecrets(value);
+        }
+    }
+
+    // A mask sent back unchanged (save, Test button) = the stored value at the same place (names
+    // matched ignoring case), or "" when there is none (e.g. a group that had no login yet).
+    public static void RestoreMasked(JsonNode? incoming, JsonNode? stored)
+    {
+        if (incoming is not JsonObject settings)
+            return;
+        foreach (var (name, value) in settings.ToList())
+        {
+            var before = stored is JsonObject file ? file.FirstOrDefault(p => p.Key.Equals(name, StringComparison.OrdinalIgnoreCase)).Value : null;
+            if (value is JsonValue text && text.TryGetValue<string>(out var sent) && sent == PasswordMask)
+                settings[name] = before is JsonValue kept && kept.TryGetValue<string>(out var keep) ? keep : "";
+            else
+                RestoreMasked(value, before);
+        }
     }
 
     private static string? PasswordKey(JsonObject settings, string key) =>

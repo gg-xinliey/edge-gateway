@@ -251,7 +251,7 @@ button.rule-sum:hover { color: var(--text); }
 .slot .clock svg.i { width: 12px; height: 12px; }
 .grp.flash { animation: flash 1.2s cubic-bezier(.16, 1, .3, 1); }
 @keyframes flash { 0% { box-shadow: 0 0 0 2px var(--gold); } 100% { box-shadow: 0 0 0 0 transparent; } }
-@media (prefers-reduced-motion: reduce) { .grp.flash { animation: none; } .toast, .switch::after { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .grp.flash { animation: none; } .toast, .switch::after, .api > summary > .i { transition: none; } }
 table.data td.disc { width: 20px; color: var(--faint); }
 
 .frow { display: grid; grid-template-columns: 14px minmax(110px, 1fr) minmax(0, 1.3fr) 26px; align-items: center; gap: 8px; padding: 4px 8px 4px 12px; }
@@ -296,6 +296,35 @@ table.data td.disc { width: 20px; color: var(--faint); }
 .form-row input, .form-row select, .input { width: 100%; height: 32px; padding: 0 9px; border: 1px solid var(--line); border-radius: 5px; background: var(--inset); color: var(--text); }
 .form-row input:focus, .form-row select:focus { border-color: var(--accent); outline: none; }
 .form-row input[readonly] { color: var(--muted); }
+
+/* MES APIs (GatewayConfig -> MES): one line each (name, address, login, last test) that opens to edit. */
+.api-help { padding: 8px 12px 6px; color: var(--faint); font-size: 12px; }
+.api { border-top: 1px solid var(--line-soft); }
+.api:last-of-type { border-bottom: 1px solid var(--line-soft); }
+.api > summary { display: flex; align-items: center; gap: 4px 10px; min-width: 0; padding: 7px 12px; cursor: pointer; list-style: none; }
+.api > summary::-webkit-details-marker { display: none; }
+.api > summary:hover { background: rgba(255, 255, 255, .03); }
+.api > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.api > summary > .i { width: 14px; height: 14px; color: var(--faint); transition: transform .15s; }
+.api[open] > summary > .i { transform: rotate(90deg); }
+.api-name { flex: none; width: 118px; overflow: hidden; text-overflow: ellipsis; color: var(--c); font-size: 12px; font-weight: 600; letter-spacing: .02em; }
+.api-url { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 12px "Cascadia Mono", Consolas, monospace; }
+.api-url.quiet { color: var(--faint); font-family: inherit; }
+.api-login { flex: none; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.api-login.quiet { color: var(--faint); }
+.api-test { flex: none; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.api-test:empty { display: none; }
+.api-test.ok, .api-result.ok { color: var(--ok-text); }
+.api-test.bad, .api-result.bad { color: var(--bad-text); }
+.api-body { margin: 0 0 8px 31px; border-left: 2px solid color-mix(in srgb, var(--c) 45%, transparent); }
+.api-body .form-row { padding: 6px 12px; }
+.api-foot { display: flex; align-items: center; gap: 10px; padding: 6px 12px 2px; }
+.api-result { min-width: 0; font-size: 12px; }
+@media (max-width: 560px) {
+  .api > summary { flex-wrap: wrap; }
+  .api-url { flex-basis: 100%; order: 5; padding-left: 24px; }
+  .api-body { margin-left: 12px; }
+}
 .switch { position: relative; width: 34px; height: 18px; padding: 0; border: 0; border-radius: 9px; background: #2c3a50; flex: none; }
 .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--muted); transition: left .15s cubic-bezier(.16, 1, .3, 1); }
 .switch[aria-checked="true"] { background: #1f6f88; }

@@ -1737,5 +1737,123 @@ if (which is "all" or "mesurls")
         $"new MACHINE_STATUS row sent after {took.TotalMilliseconds:0} ms (want < 1500), waiting {later.Waiting} (want 2: ALARM, QUALITY)");
 }
 
+if (which is "all" or "meslogin")
+{
+    // MES login per API: the default login, a group's own, "none" on purpose, sent with every record.
+    var port = 19900 + Random.Shared.Next(90);
+    var seen = new System.Collections.Concurrent.ConcurrentDictionary<string, string>();
+    var mes = new System.Net.HttpListener(); mes.Prefixes.Add($"http://localhost:{port}/"); mes.Start();
+    _ = Task.Run(async () =>
+    {
+        while (mes.IsListening)
+        {
+            try
+            {
+                var c = await mes.GetContextAsync();
+                seen[c.Request.Url!.AbsolutePath.Trim('/')] = $"{c.Request.Headers["Authorization"]}|{c.Request.Headers["X-API-Key"]}";
+                c.Response.StatusCode = 200; c.Response.Close();
+            }
+            catch { break; }
+        }
+    });
+    var config = new MachineConfig
+    {
+        MesUrl = $"http://localhost:{port}/default",
+        MesUrls = new() { ["ALARM"] = $"http://localhost:{port}/alarm", ["MAINTENANCE"] = $"http://localhost:{port}/maint", ["QUALITY"] = $"http://localhost:{port}/quality" },
+        MesLogin = new() { Type = "bearer", Secret = "T1" },
+        MesLogins = new() { ["alarm"] = new() { Type = "basic", Username = "u", Secret = "p" }, ["MAINTENANCE"] = new() { Type = "header", Header = "X-API-Key", Secret = "k" },
+                            ["QUALITY"] = new() { Type = "none" }, ["PROCESS"] = new() { Type = "" } },
+    };
+    var dir = Path.Combine(Path.GetTempPath(), "gw-meslogin", Guid.NewGuid().ToString("N"));
+    var outbox = new Outbox(dir);
+    foreach (var group in new[] { "MACHINE_STATUS", "ALARM", "MAINTENANCE", "QUALITY" })
+        await QueueRow(outbox, "M1", group);
+    using var stop = new CancellationTokenSource();
+    var forwarder = new MesForwarder(new HttpClient(), config.MesUrlFor, outbox, null, "M1", loginFor: config.MesLoginFor).RunAsync(stop.Token);
+    for (var i = 0; i < 30 && seen.Count < 4; i++) await Task.Delay(100);
+    stop.Cancel(); try { await forwarder; } catch { }
+    mes.Stop(); await outbox.DisposeAsync(); Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+    var got = string.Join(", ", seen.OrderBy(p => p.Key).Select(p => $"{p.Key}={p.Value}"));
+    Report("meslogin: each API gets its login (default, own, none on purpose)",
+        got == "alarm=Basic dTpw|, default=Bearer T1|, maint=|k, quality=|" && config.MesLoginFor("PROCESS").Type == "bearer", got);
+
+    // Saved with the page: types and their fields checked; secrets masked, and a mask sent back keeps the stored one.
+    var (_, json) = TempConfig();
+    string? Check(string login) => EdgeGateway.Admin.ConfigValidator.Validate("machine-config",
+        $$$"""{"listenAddress":"0.0.0.0","tcpPort":9000,"mesUrl":"http://mes/","mesLogins":{"ALARM":{{{login}}}}}""", json, 8080);
+    var cases = new (string Login, bool Ok)[]
+    {
+        ("""{"type":""}""", true), ("""{"type":"none"}""", true), ("""{"type":"bearer","secret":"t"}""", true), ("""{"type":"bearer"}""", false),
+        ("""{"type":"basic","username":"u","secret":"p"}""", true), ("""{"type":"basic","secret":"p"}""", false),
+        ("""{"type":"header","header":"X-API-Key","secret":"k"}""", true), ("""{"type":"header","header":"X API","secret":"k"}""", false),
+        ("""{"type":"oauth","secret":"k"}""", false), ("""{"type":"bearer","secret":"a\nb"}""", false),
+    };
+    var wrong = cases.Where(c => (Check(c.Login) is null) != c.Ok).Select(c => $"{c.Login} -> {Check(c.Login) ?? "accepted"}").ToList();
+    Report("meslogin: logins checked on save", wrong.Count == 0, wrong.Count == 0 ? $"{cases.Length} cases as expected" : string.Join("; ", wrong));
+
+    var stored = System.Text.Json.Nodes.JsonNode.Parse("""{"mesLogin":{"type":"bearer","secret":"T1"},"mesLogins":{"ALARM":{"type":"basic","username":"u","secret":"p"}}}""");
+    var page = stored!.DeepClone();
+    EdgeGateway.Admin.AdminWebServer.MaskSecrets(page);
+    var masked = page.ToJsonString();
+    page["mesLogins"]!["ALARM"]!["username"] = "u2";                                   // edited, password left as dots
+    page["mesLogins"]!["MAINTENANCE"] = System.Text.Json.Nodes.JsonNode.Parse($$"""{"type":"header","header":"K","secret":"{{EdgeGateway.Admin.AdminWebServer.PasswordMask}}"}""");
+    EdgeGateway.Admin.AdminWebServer.RestoreMasked(page, stored);
+    var back = page.ToJsonString();
+    Report("meslogin: secrets masked on the page, kept when sent back as dots",
+        !masked.Contains("T1") && !masked.Contains("\"p\"") && back.Contains("\"secret\":\"T1\"") && back.Contains("\"username\":\"u2\",\"secret\":\"p\"")
+        && back.Contains("\"header\":\"K\",\"secret\":\"\""), $"page: {masked}; saved: {back}");
+
+    // https with a company certificate (no system trusts it): only mesCaFile makes it trusted. Test button path.
+    var tlsPort = 19900 + Random.Shared.Next(90);
+    using var key = RSA.Create(2048);
+    var csr = new CertificateRequest("CN=localhost", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+    var san = new SubjectAlternativeNameBuilder();
+    san.AddDnsName("localhost");
+    csr.CertificateExtensions.Add(san.Build());
+    csr.CertificateExtensions.Add(new X509BasicConstraintsExtension(true, false, 0, true));
+    csr.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(new OidCollection { new Oid("1.3.6.1.5.5.7.3.1") }, false));
+    using var cert = csr.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
+    using var serverCert = new X509Certificate2(cert.Export(X509ContentType.Pfx));
+    var caFile = Path.Combine(Path.GetTempPath(), $"gw-mesca-{Guid.NewGuid():N}.crt");
+    File.WriteAllText(caFile, cert.ExportCertificatePem());
+    var tls = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, tlsPort); tls.Start();
+    _ = Task.Run(async () =>
+    {
+        while (true)
+        {
+            System.Net.Sockets.TcpClient client;
+            try { client = await tls.AcceptTcpClientAsync(); } catch { break; }
+            _ = Task.Run(async () =>
+            {
+                using (client)
+                    try
+                    {
+                        using var ssl = new System.Net.Security.SslStream(client.GetStream());
+                        await ssl.AuthenticateAsServerAsync(serverCert);
+                        var request = new byte[8192];
+                        var read = await ssl.ReadAsync(request);
+                        var auth = System.Text.Encoding.ASCII.GetString(request, 0, read).Contains("Authorization: Bearer good");
+                        await ssl.WriteAsync(System.Text.Encoding.ASCII.GetBytes($"HTTP/1.1 {(auth ? "200 OK" : "401 Unauthorized")}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"));
+                    }
+                    catch { }
+            });
+        }
+    });
+    var good = new MesApiLogin { Type = "bearer", Secret = "good" };
+    var withCa = await MesHttp.TestAsync($"https://localhost:{tlsPort}/alarm", good, caFile, CancellationToken.None);
+    var noCa = await MesHttp.TestAsync($"https://localhost:{tlsPort}/alarm", good, "", CancellationToken.None);
+    var wrongName = await MesHttp.TestAsync($"https://127.0.0.1:{tlsPort}/alarm", good, caFile, CancellationToken.None);
+    var badLogin = await MesHttp.TestAsync($"https://localhost:{tlsPort}/alarm", new MesApiLogin { Type = "bearer", Secret = "bad" }, caFile, CancellationToken.None);
+    var missing = await MesHttp.TestAsync($"https://localhost:{tlsPort}/alarm", good, "no-such-ca.crt", CancellationToken.None);
+    tls.Stop();
+    Report("meslogin: https with the company CA file works, login checked",
+        withCa.Ok && withCa.Text.Contains("TLS OK, 200") && !badLogin.Ok && badLogin.Text.Contains("login was refused"),
+        $"with CA: {withCa.Text}; wrong token: {badLogin.Text}");
+    Report("meslogin: https refuses an untrusted or misnamed certificate, says why",
+        !noCa.Ok && noCa.Text.Contains("not trusted by this PC") && !wrongName.Ok && wrongName.Text.Contains("certificate is for")
+        && !missing.Ok && missing.Text.Contains("not found"),
+        $"no CA: {noCa.Text}; wrong name: {wrongName.Text}; missing CA file: {missing.Text}");
+}
+
 Console.WriteLine(failed == 0 ? "ALL PASS" : $"{failed} FAILED");
 return failed == 0 ? 0 : 1;

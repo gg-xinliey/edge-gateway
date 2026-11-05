@@ -156,6 +156,12 @@ public static class ConfigValidator
                 return $"mesUrls: '{group}' needs a data group name and a full http:// or https:// address (or empty = mesUrl).";
         if (string.IsNullOrWhiteSpace(machine.MesUrl) && !(machine.MesUrls ?? new()).Values.Any(u => !string.IsNullOrWhiteSpace(u)))
             return "No MES address: set mesUrl, or an address for at least one data group (mesUrls).";
+        foreach (var (name, login) in new[] { ("mesLogin", machine.MesLogin) }
+                     .Concat((machine.MesLogins ?? new()).Select(p => ($"mesLogins: {p.Key}", p.Value))))
+            if (MesLogin(login) is { } loginProblem)
+                return $"{name}: {loginProblem}";
+        if (!string.IsNullOrWhiteSpace(machine.MesCaFile) && !File.Exists(EdgeGateway.Services.MqttTls.CaPath(machine.MesCaFile.Trim())))
+            return $"mesCaFile: {EdgeGateway.Services.MqttTls.CaPath(machine.MesCaFile.Trim())} not found (put the CA's .crt / .pem in the data Config folder).";
         if (machine.OutboxKeepSentDays < 1)
             return "outboxKeepSentDays must be at least 1.";
         if (machine.MesStuckRowTries < 1)
@@ -171,6 +177,24 @@ public static class ConfigValidator
             && !(Uri.TryCreate(machine.AlarmWebhookUrl, UriKind.Absolute, out var hook) && hook.Scheme is "http" or "https"))
             return "alarmWebhookUrl must be empty (off) or a full http:// or https:// address.";
 
+        return null;
+    }
+
+    private static string? MesLogin(MesApiLogin? login)
+    {
+        var type = (login?.Type ?? "").Trim().ToLowerInvariant();
+        if (!MesApiLogin.Types.Contains(type))
+            return "the login type must be none, bearer, basic or header.";
+        if (type is "" or "none")
+            return null;
+        if (string.IsNullOrEmpty(login!.Secret))
+            return type switch { "bearer" => "the token is empty.", "basic" => "the password is empty.", _ => "the key is empty." };
+        if (type == "basic" && (string.IsNullOrWhiteSpace(login.Username) || login.Username.Contains(':')))
+            return "username + password needs a username (without ':').";
+        if (type == "header" && !System.Text.RegularExpressions.Regex.IsMatch(login.Header.Trim(), "^[A-Za-z0-9!#$%&'*+.^_`|~-]+$"))
+            return "the header name must be one word, e.g. X-API-Key.";
+        if (login.Secret.Any(char.IsControl))
+            return "the secret has a line break or other control character.";
         return null;
     }
 

@@ -15,13 +15,14 @@ public static class MqttTls
         if (!useTls)
             return builder;
         var ca = string.IsNullOrWhiteSpace(caFile) ? null : LoadCa(caFile);
-        return builder.WithTlsOptions(tls => tls.UseTls().WithCertificateValidationHandler(e => Trusted(e.Certificate, e.SslPolicyErrors, ca)));
+        return builder.WithTlsOptions(tls => tls.UseTls().WithCertificateValidationHandler(e =>
+            Trusted(e.Certificate, e.SslPolicyErrors, ca, "the broker", "the broker address", "TLS: company CA file")));
     }
 
     public static string CaPath(string caFile) =>
         Path.IsPathRooted(caFile) ? caFile : Path.Combine(DataFolder.Root, "Config", caFile);
 
-    private static X509Certificate2 LoadCa(string caFile)
+    public static X509Certificate2 LoadCa(string caFile)
     {
         var path = CaPath(caFile);
         if (!File.Exists(path))
@@ -29,27 +30,29 @@ public static class MqttTls
         return new X509Certificate2(path); // .crt / .cer / .pem, DER or PEM
     }
 
-    // Trusted by the system, or its chain ends at the CA from tlsCaFile (ca null = none given). A name
+    // Trusted by the system, or its chain ends at the CA from the CA file (ca null = none given). A name
     // that doesn't match, or no certificate, is refused either way. Refused: says why (the log and
-    // the Connect button show it), instead of the TLS library's "rejected by the callback".
-    private static bool Trusted(X509Certificate? certificate, SslPolicyErrors errors, X509Certificate2? ca)
+    // the Connect / Test buttons show it), instead of the TLS library's "rejected by the callback".
+    // who / address / caSetting: the words for the broker (MQTT) or MES.
+    public static bool Trusted(X509Certificate? certificate, SslPolicyErrors errors, X509Certificate2? ca,
+        string who, string address, string caSetting)
     {
         if (errors == SslPolicyErrors.None)
             return true;
         if (certificate is null || errors.HasFlag(SslPolicyErrors.RemoteCertificateNotAvailable))
-            throw new AuthenticationException("the broker sent no TLS certificate");
+            throw new AuthenticationException($"{who} sent no TLS certificate");
         if (errors.HasFlag(SslPolicyErrors.RemoteCertificateNameMismatch))
-            throw new AuthenticationException($"the broker's certificate is for {((X509Certificate2)certificate).GetNameInfo(X509NameType.DnsName, false)}, " +
-                                              "not for the broker address: use that name as the broker address");
+            throw new AuthenticationException($"{who}'s certificate is for {((X509Certificate2)certificate).GetNameInfo(X509NameType.DnsName, false)}, " +
+                                              $"not for {address}: use that name in {address}");
         if (ca is null)
-            throw new AuthenticationException("the broker's certificate is not trusted by this PC: put its CA's .crt in the data Config folder " +
-                                              "and its name in \"TLS: company CA file\"");
+            throw new AuthenticationException($"{who}'s certificate is not trusted by this PC: put its CA's .crt in the data Config folder " +
+                                              $"and its name in \"{caSetting}\"");
         using var chain = new X509Chain();
         chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
         chain.ChainPolicy.CustomTrustStore.Add(ca);
         chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck; // a company CA's revocation list is often unreachable
         return chain.Build(new X509Certificate2(certificate))
             ? true
-            : throw new AuthenticationException($"the broker's certificate is not from the CA in the CA file ({ca.Subject})");
+            : throw new AuthenticationException($"{who}'s certificate is not from the CA in the CA file ({ca.Subject})");
     }
 }

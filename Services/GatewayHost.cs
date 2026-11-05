@@ -164,7 +164,14 @@ public sealed class GatewayHost
         _mqttConnected = () => mqttPublisher.IsConnected && !mqttRelay.ConnectFailed;
 
         // 16 parallel sends; a hung MES must not hold a slot for the default 100 s.
-        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+        // https: trusted by this PC or by the company CA in mesCaFile.
+        using var http = new HttpClient(MesHttp.Handler(machine.MesCaFile)) { Timeout = TimeSpan.FromSeconds(15) };
+        var ownApis = (machine.MesUrls ?? new()).Where(p => !string.IsNullOrWhiteSpace(p.Value)).Select(p => p.Key)
+            .Concat((machine.MesLogins ?? new()).Where(p => !string.IsNullOrWhiteSpace(p.Value?.Type)).Select(p => p.Key))
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+        Console.WriteLine($"[gateway] MES: default {(string.IsNullOrWhiteSpace(machine.MesUrl) ? "none" : machine.MesUrl.Trim())} ({machine.MesLogin ?? new()})" +
+                          string.Concat(ownApis.Select(g => $"; {g.Trim().ToUpperInvariant()} {machine.MesUrlFor(g) ?? "none"} ({machine.MesLoginFor(g)})")) +
+                          (string.IsNullOrWhiteSpace(machine.MesCaFile) ? "" : $"; company CA {machine.MesCaFile.Trim()}"));
 
         // Own token for the parts, so one failing part can stop the others
         // without looking like a Restart().
@@ -181,7 +188,7 @@ public sealed class GatewayHost
         MesPipeline NewPipeline(string? machineId)
         {
             var pipeline = new MesPipeline(machineId, machineId is null ? outboxRoot : Path.Combine(outboxRoot, machineId),
-                machine.OutboxKeepSentDays, http, machine.MesUrlFor, envelopeBuilder, Stats, parts.Token,
+                machine.OutboxKeepSentDays, http, machine.MesUrlFor, machine.MesLoginFor, envelopeBuilder, Stats, parts.Token,
                 machine.MesStuckRowTries, machine.MesStuckRowMinutes);
             // A MES sender that dies stops this run (as the shared one always did), so it is seen.
             _ = pipeline.Running.ContinueWith(t => pipelineFailed.TrySetException(t.Exception!.InnerExceptions),

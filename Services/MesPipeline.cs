@@ -1,3 +1,5 @@
+using EdgeGateway.Models;
+
 namespace EdgeGateway.Services;
 
 // One MES path: an outbox folder, its MES sender, and the interval state
@@ -16,13 +18,14 @@ public sealed class MesPipeline : IAsyncDisposable
     private GatewayConfigStore? _senderStore;
 
     public MesPipeline(string? machineId, string outboxFolder, int keepSentDays, HttpClient http, Func<string, string?> mesUrlFor,
-        EnvelopeBuilder envelopes, GatewayStats stats, CancellationToken ct, int stuckRowTries = 5, int stuckRowMinutes = 10)
+        Func<string, MesApiLogin> mesLoginFor, EnvelopeBuilder envelopes, GatewayStats stats, CancellationToken ct,
+        int stuckRowTries = 5, int stuckRowMinutes = 10)
     {
         MachineId = machineId;
         _envelopes = envelopes;
         Outbox = new Outbox(outboxFolder, keepSentDays, stats);
         Running = new MesForwarder(http, mesUrlFor, Outbox, stats, machineId,
-            TimeSpan.FromMinutes(stuckRowMinutes), stuckRowTries).RunAsync(ct);
+            TimeSpan.FromMinutes(stuckRowMinutes), stuckRowTries, mesLoginFor).RunAsync(ct);
     }
 
     public string? MachineId { get; }  // null = the shared pipeline

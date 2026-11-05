@@ -32,6 +32,21 @@ public class MachineConfig
         return string.IsNullOrWhiteSpace(url) ? null : url.Trim();
     }
 
+    // How the gateway logs in to MES: MesLogins[data group] when that group has its own
+    // (type not empty), else MesLogin. Secrets are masked on the config page. Read at start.
+    public MesApiLogin MesLogin { get; set; } = new();
+    public Dictionary<string, MesApiLogin> MesLogins { get; set; } = new();
+
+    public MesApiLogin MesLoginFor(string dataGroup)
+    {
+        var own = (MesLogins ?? new()).FirstOrDefault(p => p.Key.Trim().Equals(dataGroup, StringComparison.OrdinalIgnoreCase)).Value;
+        return own is not null && !string.IsNullOrWhiteSpace(own.Type) ? own : MesLogin ?? new();
+    }
+
+    // https to MES with a company certificate: its CA's .crt / .pem in the data Config folder
+    // (or a full path). Empty = only CAs this PC trusts. Read at start.
+    public string MesCaFile { get; set; } = "";
+
     // A machine_id that has no tab (no own mapping) sends MES data:
     //   "hold"   (default) not processed, not answered, shown on the config page:
     //            the adapter keeps it and sends it again once the machine has a tab
@@ -77,4 +92,44 @@ public class MachineConfig
     // Password to change a confirmed tab's mapping (⇄ on the config page, #31). Empty = none asked.
     // Never sent back to the page (masked). Read at start.
     public string MappingPassword { get; set; } = "";
+}
+
+// The login for one MES API, sent with every record:
+//   "" / "none"  no login (in mesLogins "" = the default login, mesLogin)
+//   "bearer"     Authorization: Bearer <secret>          (a token)
+//   "basic"      Authorization: Basic <username:secret>  (username + password)
+//   "header"     <header>: <secret>                      (an API key, e.g. X-API-Key)
+public class MesApiLogin
+{
+    public static readonly string[] Types = { "", "none", "bearer", "basic", "header" };
+
+    public string Type { get; set; } = "";
+    public string Username { get; set; } = "";
+    public string Header { get; set; } = "";
+    public string Secret { get; set; } = "";
+
+    public void Apply(System.Net.Http.Headers.HttpRequestHeaders headers)
+    {
+        switch (Type.Trim().ToLowerInvariant())
+        {
+            case "bearer":
+                headers.Authorization = new("Bearer", Secret);
+                break;
+            case "basic":
+                headers.Authorization = new("Basic", Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes($"{Username}:{Secret}")));
+                break;
+            case "header":
+                headers.TryAddWithoutValidation(Header.Trim(), Secret);
+                break;
+        }
+    }
+
+    // For logs and the page: the kind of login, never the secret.
+    public override string ToString() => Type.Trim().ToLowerInvariant() switch
+    {
+        "bearer" => "bearer token",
+        "basic" => $"username {Username} + password",
+        "header" => $"{Header.Trim()} key",
+        _ => "no login",
+    };
 }
