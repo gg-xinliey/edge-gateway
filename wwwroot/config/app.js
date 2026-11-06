@@ -857,7 +857,8 @@ function ownTabLink(machineId) {
 // Machines of one kind: the same name before the first "-" (NEXIM-…), or, without a "-",
 // the same name without its trailing digits (NXT101 ~ NXT105). The gateway uses the same
 // rule (MachineRegistry.Family) for tabs it creates by itself.
-const familyOf = id => (id.includes('-') ? id.slice(0, id.indexOf('-')) : id.replace(/\d+$/, '')).toLowerCase();
+// Same rule as MachineRegistry.Family: the name before the first "-", else the name with its numbers left out.
+const familyOf = id => (id.includes('-') ? id.slice(0, id.indexOf('-')) : id.replace(/\d+/g, '#').replace(/[#_.]+$/, '')).toLowerCase();
 
 // A machine named like an existing tab most likely is the same model: suggest copying
 // that tab (a confirmed one first). Else the template.
@@ -2243,7 +2244,7 @@ function chooseSaveScope(count) {
         h('button', { type: 'button', class: 'btn primary', textContent: `Just ${me}`, onclick: () => done([]) }),
         h('button', { type: 'button', class: 'btn', textContent: `Similar machines (${similar.length})`, disabled: !similar.length, onclick: () => done(similar) }),
         h('button', { type: 'button', class: 'btn', textContent: `All machines (${others.length}) + Template`, onclick: () => done([...others, '']) })),
-      h('p', { class: 'dlg-small', textContent: similar.length ? `Similar (name starts like ${me}): ${names(similar)}` : 'No other machine has a similar name.' }),
+      h('p', { class: 'dlg-small', textContent: similar.length ? `Similar (same name as ${me}, numbers aside): ${names(similar)}` : 'No other machine has a similar name.' }),
       h('p', { class: 'dlg-small', textContent: 'Only what you changed here is copied; the other machines keep the rest of their settings.' }),
       h('div', { class: 'dlg-buttons' }, h('button', { type: 'button', class: 'btn ghost', textContent: 'Cancel', onclick: () => done(null) })));
     dialog.addEventListener('cancel', e => { e.preventDefault(); done(null); });

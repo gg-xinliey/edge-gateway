@@ -1573,8 +1573,11 @@ if (which is "all" or "namematch")
 
 if (which is "all" or "autotab")
 {
-    // Similar machines: same name before the first "-", else the name without trailing digits.
-    var families = new[] { ("NEXIM-08c4-aa", "nexim"), ("NEXIM-1", "nexim"), ("LINE01_NXT101", "line01_nxt"), ("NXT105", "nxt"), ("AOI", "aoi") };
+    // Similar machines: same name before the first "-", else the name with its numbers left out (sub lines too).
+    var families = new[] { ("NEXIM-08c4-aa", "nexim"), ("NEXIM-1", "nexim"), ("LINE01_NXT101", "line#_nxt"), ("NXT105", "nxt"), ("AOI", "aoi"),
+        ("AAA_BBB_LINE1", "aaa_bbb_line"), ("AAA_BBB_LINE3", "aaa_bbb_line"), ("AAA_BBB_LINE1_1", "aaa_bbb_line"), ("AAA_CCC_LINE1", "aaa_ccc_line"),
+        ("NEXIM_CS01_LINE01_NXT101_1", "nexim_cs#_line#_nxt"), ("NEXIM_CS01_LINE02_NXT102_1", "nexim_cs#_line#_nxt"),
+        ("op2.2", "op"), ("LDM_Robot2", "ldm_robot"), ("AOI-S500L02-TOP", "aoi") };
     var wrongFamily = families.Where(f => MachineRegistry.Family(f.Item1) != f.Item2).Select(f => $"{f.Item1} -> {MachineRegistry.Family(f.Item1)}").ToList();
     Report("auto tab: similar-machine rule", wrongFamily.Count == 0, wrongFamily.Count == 0 ? $"{families.Length} names as expected" : string.Join("; ", wrongFamily));
 

@@ -120,13 +120,14 @@ public sealed class MachineRegistry
         }
     }
 
-    // Machines of one kind: the same name before the first "-" (NEXIM-...), or, without a
-    // "-", the same name without its trailing digits (NXT101 ~ NXT105). The config page
+    // Machines of one kind: the same name before the first "-" (NEXIM-..., AOI-LINE1-TOP), or, without
+    // a "-", the same name with its numbers left out, wherever they are (NXT101 ~ NXT105, AAA_LINE1 ~
+    // AAA_LINE1_1, NEXIM_CS01_LINE01_NXT101_1 ~ NEXIM_CS01_LINE02_NXT102_1). The config page
     // uses the same rule (familyOf in app.js).
     public static string Family(string machineId)
     {
         var dash = machineId.IndexOf('-');
-        return (dash >= 0 ? machineId[..dash] : Regex.Replace(machineId, @"\d+$", "")).ToLowerInvariant();
+        return (dash >= 0 ? machineId[..dash] : Regex.Replace(Regex.Replace(machineId, @"\d+", "#"), @"[#_.]+$", "")).ToLowerInvariant();
     }
 
     // A readable tab of the same kind to copy for a new machine: one somebody confirmed
