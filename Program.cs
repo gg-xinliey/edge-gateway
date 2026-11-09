@@ -76,7 +76,8 @@ async Task RunAsync(CancellationToken stop)
 
     // Every line received (time + machine), searchable on General -> Machines, kept 7 days.
     await using var messageLog = new MessageLog(Path.Combine(DataFolder.Root, "traffic"));
-    var gateway = new GatewayHost(machines, jsonOptions, traffic, messageIds, messageLog);
+    await using var receivedLog = new ReceivedLog(); // received/: every line except IO / motion, whole
+    var gateway = new GatewayHost(machines, jsonOptions, traffic, messageIds, messageLog, receivedLog);
     var adminServer = new AdminWebServer(adminPort, "wwwroot", machines, gateway, log, jsonOptions, traffic, adminAllIps, messageLog);
 
     Console.WriteLine("Edge gateway starting — Ctrl+C to stop");

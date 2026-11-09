@@ -451,6 +451,48 @@ public sealed class AdminWebServer
             return;
         }
 
+        // Received view (read-only): every line except IO / motion, whole, as it arrived. Same scopes
+        // as the outbox: ?scope=<machine_id> = that machine's own folder; empty = the shared file.
+        if (HttpMethodsEqual(context, "GET") && path.Equals("/api/received/scopes", StringComparison.OrdinalIgnoreCase))
+        {
+            await WriteJsonAsync(context.Response, 200, ReceivedLog.Scopes());
+            return;
+        }
+
+        if (HttpMethodsEqual(context, "GET") && path.Equals("/api/received/days", StringComparison.OrdinalIgnoreCase))
+        {
+            var days = ReceivedLog.Days(context.Request.QueryString["scope"]);
+            if (days is null)
+                await WriteJsonAsync(context.Response, 404, new { error = "No such machine folder." });
+            else
+                await WriteJsonAsync(context.Response, 200, days);
+            return;
+        }
+
+        if (HttpMethodsEqual(context, "GET") && path.Equals("/api/received", StringComparison.OrdinalIgnoreCase))
+        {
+            var q = context.Request.QueryString;
+            var before = long.TryParse(q["before"], out var b) ? b : (long?)null;
+            var limit = int.TryParse(q["limit"], out var l) ? l : 100;
+            var page = ReceivedLog.Query(q["scope"], q["day"] ?? "", q["machine"], q["text"], before, limit);
+            if (page is null)
+                await WriteJsonAsync(context.Response, 404, new { error = "No received file for that day (older than the days kept, or not a yyyy-MM-dd day)." });
+            else
+                await WriteJsonAsync(context.Response, 200, page);
+            return;
+        }
+
+        if (HttpMethodsEqual(context, "GET") && path.Equals("/api/received/row", StringComparison.OrdinalIgnoreCase))
+        {
+            var q = context.Request.QueryString;
+            var line = long.TryParse(q["id"], out var id) ? ReceivedLog.Line(q["scope"], q["day"] ?? "", id) : null;
+            if (line is null)
+                await WriteJsonAsync(context.Response, 404, new { error = "Line not found." });
+            else
+                await WriteJsonAsync(context.Response, 200, new { line });
+            return;
+        }
+
         // Failed messages (MES rejected them as invalid), across all outboxes:
         // GET lists them (?limit=), POST /resend and /discard act on
         // {"rows":[{"scope","day","id"}]} or {"all":true}; discard needs a "reason".

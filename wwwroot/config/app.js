@@ -48,6 +48,7 @@ const state = {
   errorsOnly: false,
   machines: null,           // /api/machines
   outbox: { scope: '', scopes: null, days: null, day: null, machine: '', group: '', source: '', status: '', rows: [], more: false, open: {}, loading: false },
+  received: { scope: '', scopes: null, days: null, day: null, machine: '', text: '', rows: [], more: false, open: {}, loading: false },
   scope: '',                // PointMap / TimeStamp shown for: '' = shared, else a machine_id with its own mapping
   machineConfigs: [],       // machines with their own mapping: [{ machineId, readable, error }]
   mesSchema: {},            // the MES format: data group -> MES columns (Config/mes-schema.json, all machines)
@@ -590,7 +591,7 @@ function renderBanner() {
     return;
   }
   const name = state.scope || sharedLabel();
-  const mapping = state.view !== 'outbox';
+  const mapping = !['outbox', 'received'].includes(state.view);
   const unidView = state.view === 'point-map' && state.group['point-map'] === UNID;
   const dirty = key => state.dirty.has(key) ? h('span', { class: 'dirty', role: 'img', 'aria-label': 'unsaved changes', title: 'Unsaved changes' }) : null;
   const unid = unidentifiedList().length;
@@ -598,8 +599,11 @@ function renderBanner() {
   banner.replaceChildren(
     h('div', { class: 'split' },
       h('button', { type: 'button', class: mapping ? 'on' : '', onclick: () => switchView(state.lastMapping ?? 'point-map') }, icon('i-map'), `${name} Mapping`),
-      h('button', { type: 'button', class: mapping ? '' : 'on', onclick: () => switchView('outbox') }, icon('i-tray'), 'Sent to MES')),
-    mapping
+      h('button', { type: 'button', class: state.view === 'outbox' ? 'on' : '', onclick: () => switchView('outbox') }, icon('i-tray'), 'Sent to MES'),
+      h('button', { type: 'button', class: state.view === 'received' ? 'on' : '', onclick: () => switchView('received') }, icon('i-scroll'), 'Received')),
+    state.view === 'received'
+      ? h('div', { class: 'views' }, h('button', { type: 'button', class: 'on' }, icon('i-scroll'), 'Lines as they arrived (IO / motion not kept)'))
+      : mapping
       ? h('div', { class: 'views' },
           viewButton(state.view === 'point-map' && !unidView, 'i-map', 'PointMap', () => { state.group['point-map'] = ALL; switchView('point-map'); }, dirty('point-map') ?? dirty('timestamp-rules')),
           viewButton(unidView, 'i-question', 'Unidentified', async () => { state.group['point-map'] = UNID; await loadUnidentified(); switchView('point-map'); },
@@ -684,6 +688,7 @@ function render() {
   else if (isLog) renderLog(view);
   else if (state.view === 'machines') renderMachines(view);
   else if (state.view === 'outbox') renderOutbox(view);
+  else if (state.view === 'received') renderReceived(view);
   else if (state.view === 'failed') renderFailed(view);
   else renderForm(view);
 
@@ -692,6 +697,7 @@ function render() {
     state.view === 'failed' ? 'All machines. MES unreachable or slow is not a failure: those rows wait and are retried by themselves (2 s, growing to 60 s).' :
     state.view === 'machines' ? 'Counts since the gateway exe started (a restart from this page keeps them). Updates every 4 s.' :
     state.view === 'outbox' ? 'Read-only. One file per day, kept 7 days after everything in it was delivered. Times shown in this PC\'s local time.' :
+    state.view === 'received' ? 'Read-only. Every line except IO / motion (those go live to MQTT), whole, as it arrived; repeats and broken lines too. One file per day, kept 7 days. Times shown in this PC\'s local time.' :
     FILES[state.view].restartToApply ? 'Applies after the gateway restarts (shared by all machines).' :
     state.scope ? `Applies as soon as you save. Only ${state.scope} uses this mapping and its time rules. MES fields: the MES format, shared by all machines.` :
     holdPolicy() ? 'Template: "+" copies this into a new machine tab. Machines without a tab are held, not mapped with this.' :
@@ -980,10 +986,9 @@ async function renderOutbox(view) {
     view.append(h('button', { type: 'button', class: 'btn small', textContent: 'Load older rows', onclick: () => loadOutbox(true) }));
 }
 
-// The Outbox view loads again for the tab now shown.
+// The Outbox and Received views load again for the tab now shown.
 function resetOutbox() {
-  const o = state.outbox;
-  o.days = null; o.day = null; o.rows = []; o.open = {}; o.more = false;
+  for (const o of [state.outbox, state.received]) { o.days = null; o.day = null; o.rows = []; o.open = {}; o.more = false; }
 }
 
 async function loadOutbox(more) {
@@ -1015,6 +1020,113 @@ async function toggleRow(id) {
   try {
     const envelope = await request(`/api/outbox/row?scope=${encodeURIComponent(o.scope)}&day=${encodeURIComponent(o.day)}&id=${id}`);
     o.open[id] = JSON.stringify(envelope, null, 2);
+  } catch (e) {
+    toast(e.message, true);
+  }
+  render();
+}
+
+// ---------- Received: every line as it arrived (not IO / motion), per day ----------
+
+async function renderReceived(view) {
+  const o = state.received;
+  if (!o.days) {
+    view.append(h('div', { class: 'empty', textContent: 'Loading…' }));
+    if (state.tab === SHARED) {
+      // The shared file (machines without a tab, no machine_id, unreadable lines), plus folders of closed tabs.
+      const hasTab = s => state.machineConfigs.some(m => m.machineId.toLowerCase() === s.toLowerCase());
+      try { o.scopes = (await request('/api/received/scopes')).filter(s => !s || !hasTab(s)); } catch { o.scopes = ['']; }
+      if (!o.scopes.includes(o.scope)) o.scope = '';
+    } else {
+      o.scopes = null;
+      o.scope = state.scope; // this machine's own folder
+    }
+    try { o.days = await request(`/api/received/days?scope=${encodeURIComponent(o.scope)}`); } catch (e) { o.days = []; toast(e.message, true); }
+    if (!o.days.some(d => d.day === o.day)) o.day = o.days[0]?.day ?? null;
+    o.rows = [];
+    if (state.view !== 'received') return;
+    if (o.day) loadReceived(false);
+    render();
+    return;
+  }
+
+  const reload = () => loadReceived(false);
+  const scopeSelect = o.scopes && o.scopes.length > 1
+    ? select(o.scopes.map(s => [s, s ? `${s} (tab closed)` : 'Machines without a tab, unreadable lines']),
+        o.scope, v => { o.scope = v; o.days = null; render(); }, 'received')
+    : null;
+  const daySelect = select(o.days.map(d => [d.day, `${d.day}  (${d.lines.toLocaleString()} lines, ${d.megabytes} MB)`]),
+    o.day ?? '', v => { o.day = v; reload(); }, 'day');
+  const knownMachines = (state.machines?.machines ?? []).map(m => m.machineId);
+  const machineInput = combo(h('input', { value: o.machine, placeholder: 'all machines', 'aria-label': 'machine',
+    onchange: e => { o.machine = e.target.value.trim(); reload(); } }),
+    text => knownMachines.filter(m => m.toLowerCase().includes(text.toLowerCase())).map(m => ({ value: m })));
+  const textInput = h('input', { value: o.text, placeholder: 'find in lines (e.g. a message_id)', 'aria-label': 'find in lines',
+    onchange: e => { o.text = e.target.value.trim(); reload(); } });
+
+  const day = o.days.find(d => d.day === o.day);
+  if (day) {
+    const stat = (label, value) => h('div', { class: 'stat' }, h('span', { textContent: label }), h('b', { textContent: value }));
+    view.append(h('div', { class: 'stats' },
+      stat(`${state.tab === SHARED ? 'Lines' : `${state.scope} lines`} this day`, day.lines.toLocaleString()),
+      stat('Day file', `${day.megabytes} MB`),
+      stat('Days kept', o.days.length.toLocaleString())));
+  }
+
+  setTools(scopeSelect, daySelect, state.tab === SHARED ? machineInput : null, textInput,
+    h('button', { type: 'button', class: 'btn small', textContent: 'Refresh', onclick: () => { o.days = null; render(); } }));
+
+  if (!o.days.length) {
+    view.append(h('div', { class: 'empty', textContent: 'No lines received yet.' }));
+    return;
+  }
+
+  const rows = o.rows.filter(r => matches(`${r.machine} ${r.sender} ${r.preview}`));
+  view.append(rows.length ? table(
+    ['', 'arrived', 'machine', 'from', 'size', 'line'],
+    rows.flatMap(r => {
+      const open = o.open[r.id];
+      const tr = h('tr', { class: 'clickable', title: 'Click to show the whole line', onclick: () => toggleReceivedRow(r.id) },
+        h('td', { class: 'disc' }, icon(open ? 'i-down' : 'i-right')),
+        h('td', { class: 'nowrap', textContent: new Date(r.at).toLocaleTimeString() }),
+        h('td', { class: 'strong', textContent: r.machine }),
+        h('td', { class: 'nowrap', textContent: r.sender }),
+        h('td', { class: 'num', textContent: r.size >= 1024 ? `${(r.size / 1024).toFixed(1)} KB` : `${r.size} B` }),
+        h('td', { class: 'small preview', textContent: r.preview }));
+      return open ? [tr, h('tr', {}, h('td', { colSpan: 6 }, h('pre', { class: 'json', textContent: open })))] : [tr];
+    })
+  ) : h('div', { class: 'empty', textContent: o.loading ? 'Loading…' : 'No lines for these filters.' }));
+
+  if (o.more)
+    view.append(h('button', { type: 'button', class: 'btn small', textContent: 'Load older lines', onclick: () => loadReceived(true) }));
+}
+
+async function loadReceived(more) {
+  const o = state.received;
+  if (!o.day) return;
+  o.loading = true;
+  const params = new URLSearchParams({ scope: o.scope, day: o.day, limit: '100' });
+  if (o.machine) params.set('machine', o.machine);
+  if (o.text) params.set('text', o.text);
+  if (more && o.rows.length) params.set('before', o.rows[o.rows.length - 1].id);
+  try {
+    const page = (await request(`/api/received?${params}`)).rows;
+    o.rows = more ? o.rows.concat(page) : page;
+    o.more = page.length === 100;
+    if (!more) o.open = {};
+  } catch (e) {
+    toast(e.message, true);
+  }
+  o.loading = false;
+  if (state.view === 'received') render();
+}
+
+async function toggleReceivedRow(id) {
+  const o = state.received;
+  if (o.open[id]) { delete o.open[id]; render(); return; }
+  try {
+    // Exactly as it came, not re-formatted: this is the proof (JSON.parse would round big numbers).
+    o.open[id] = (await request(`/api/received/row?scope=${encodeURIComponent(o.scope)}&day=${encodeURIComponent(o.day)}&id=${id}`)).line;
   } catch (e) {
     toast(e.message, true);
   }

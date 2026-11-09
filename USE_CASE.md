@@ -204,8 +204,8 @@ Open **http://localhost:5100/config/**. It only opens on the gateway PC itself.
 | Tab | What's in it |
 |---|---|
 | **General** (opens first) | **MQTTConfig**, **GatewayConfig** (the gateway's own settings), **Machines**, **MES failures**, **Log**: everything that is the same for all machines |
-| **Template** | **PointMap** (with each group's time rule), **Unidentified**, **Sent to MES** of the template mapping (what **+** copies). Called **Other machines** when `unregisteredMachines` is `shared` (then every machine without a tab uses it) |
-| **One tab per machine** (e.g. `NXT101`) | That machine's own **PointMap** (with its time rules), **Unidentified** and **Sent to MES** (its outbox). Only that machine uses them |
+| **Template** | **PointMap** (with each group's time rule), **Unidentified**, **Sent to MES** and **Received** of the template mapping (what **+** copies; Received here also shows lines with no `machine_id` or that can't be read). Called **Other machines** when `unregisteredMachines` is `shared` (then every machine without a tab uses it) |
+| **One tab per machine** (e.g. `NXT101`) | That machine's own **PointMap** (with its time rules), **Unidentified**, **Sent to MES** (its outbox) and **Received** (the lines it sent). Only that machine uses them |
 | **+** | Gives a machine its own tab, copied from the mapping of the tab you are on |
 | **⚠ N not registered** (red, only when it happens) | Machines sending without a tab: their data is held. Click to see them in General → Machines and register them |
 | **⚠ N rejected by MES** (red, only when it happens) | Records MES refused as invalid. Click to see them in General → MES failures |
@@ -245,6 +245,7 @@ Open **http://localhost:5100/config/**. It only opens on the gateway PC itself.
      - **held** (red) = messages waiting right now (no tab, or tags not mapped);
      - **repeats** (orange) = lines ignored because their `message_id` was already received in the last 10 min;
    - **Messages received (kept 7 days):** every line the gateway received (MES, IO, motion; also repeats and broken lines), stored with its exact time and machine, not its content, in `data\traffic\traffic-<day>.db`. Pick a day, a from and to time, all machines or one, **Search**: the total, a count per machine and per hour, and the size of the stored days. Lines whose machine can't be read count as `(unreadable)` or `(no machine_id)`. Days older than 7 are deleted.
+   - **Received** (each machine tab, next to **Sent to MES**): every line the gateway received **except IO / motion** (those go live to MQTT), whole and exactly as it arrived, with its time and sender (IP:port); repeats and broken lines too. A machine with a tab: `data\received\<machine_id>\received-<day>.db`; the rest (no tab, no `machine_id`, unreadable): `data\received\received-<day>.db`, shown on the Template tab. Days older than `outboxKeepSentDays` (7) are deleted. Written in the background, so it never slows a line or its ack: a crash can lose the last moment of lines.
      - **time warnings** (orange) = messages whose `timestamp` couldn't be read (arrival time used) or was more than 1 h from arrival (wrong machine clock, local time sent without its offset, or an old message resent). The log says which.
    - **data sources** = how many messages came with each `data_source`.
 2. **Connections** lists each TCP connection (open first, plus the last 200 closed ones):
@@ -293,6 +294,7 @@ Open **http://localhost:5100/config/**. It only opens on the gateway PC itself.
 | A machine's data never reaches MES | Look for `[ingest] ... rejected: no machine_id` in the Log. Does each message have `machine_id`? |
 | Not sure every line arrived | Config page → **Machines** → **Connections**: **lines** must equal what the source sent. Check **rejected**, **repeats** and **unreadable** too. |
 | Need to see what MES got for a machine | Config page → the machine → **Sent to MES** → pick the day, click a row. |
+| Need to prove what a machine sent | Config page → the machine → **Received** → pick the day, type e.g. its `message_id` in **find in lines**, click the row: the whole line exactly as it arrived (IO / motion are not kept). |
 | Red "⚠ N rejected by MES" | General → **MES failures**: read what MES said, fix, **re-send** (or **discard** with a reason). |
 | Backlog grows, nothing delivered | MES down or unreachable: Log shows `[forwarder] send failed ...`. Rows wait; tries slow down to once a minute. Nothing to do on the gateway. |
 

@@ -1687,6 +1687,66 @@ if (which is "all" or "msglog")
         byMachine == "(no machine_id) 1, (unreadable) 1, M1 1, M2 1", $"counted: {byMachine}");
 }
 
+if (which is "all" or "received")
+{
+    // Received lines: every line except IO / motion, whole; a machine with a tab in its own folder,
+    // the rest in the shared file; repeats and broken lines too; found by text; old days deleted.
+    var (root, json) = TempConfig();
+    var tcp = 19800 + Random.Shared.Next(90);
+    File.WriteAllText(Path.Combine(root, "machine-config.json"),
+        $$"""{"gatewayId":"T","listenAddress":"127.0.0.1","tcpPort":{{tcp}},"mesUrl":"http://127.0.0.1:1/none","unregisteredMachines":"shared","unmappedTags":"send","outboxKeepSentDays":7}""");
+    File.WriteAllText(Path.Combine(root, "mqtt-config.json"),
+        """{"brokerAddress":"127.0.0.1","brokerPort":1,"clientIdSuffix":"checks","reconnectCooldownSeconds":60,"area":"T","keepaliveIntervalSeconds":60,"motionDeadband":0.01,"maxPublishRateMs":50}""");
+    DataFolder.Use(root);
+    var registry = new MachineRegistry(new GatewayConfigStore(root, json), new UnidentifiedTagTracker(), json);
+    var created = registry.Create("RCV-M1", null);
+    var received = new ReceivedLog();
+    var host = new GatewayHost(registry, json, null, new MessageIdFilter(), null, received);
+    using var stop = new CancellationTokenSource();
+    var run = host.RunAsync(stop.Token);
+    for (var i = 0; i < 50 && host.State != "running"; i++) await Task.Delay(100);
+    var mes = """{"message_id":"rc-1","machine_id":"rcv-m1","data":{"product_sn":"P1","big":12345678901234567890.10}}""";
+    using (var c = new System.Net.Sockets.TcpClient())
+    {
+        await c.ConnectAsync("127.0.0.1", tcp);
+        var w = new StreamWriter(c.GetStream()) { AutoFlush = true, NewLine = "\n" };
+        await w.WriteLineAsync(mes);
+        await w.WriteLineAsync(mes); // a repeat: received again, so recorded again
+        await w.WriteLineAsync("""{"topic":"svi/T/RCV-M1/motion/position","payload":{"timestamp":"2026-10-28 10:00:00.000","x":1}}""");
+        await w.WriteLineAsync("""{"message_id":"rc-3","machine_id":"NO-TAB","data":{"x":1}}""");
+        await w.WriteLineAsync("""{"message_id":"rc-4","data":{"x":1}}""");
+        await w.WriteLineAsync("""{"message_id":"rc-5", broken""");
+        await Task.Delay(1500);
+    }
+    stop.Cancel(); try { await run; } catch { }
+    await received.DisposeAsync();
+
+    var today = DateTime.Now.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+    string Lines(string scope, string? text = null) => System.Text.Json.JsonSerializer.Serialize(ReceivedLog.Query(scope, today, null, text, null, 100));
+    int Count(string scope, string? text = null) => System.Text.Json.JsonDocument.Parse(Lines(scope, text)).RootElement.GetProperty("rows").GetArrayLength();
+    long FirstId(string scope) => System.Text.Json.JsonDocument.Parse(Lines(scope)).RootElement.GetProperty("rows")[0].GetProperty("id").GetInt64();
+    var own = Count("RCV-M1");
+    var shared = Count("");
+    var exact = ReceivedLog.Line("RCV-M1", today, FirstId("RCV-M1")) == mes;
+    var motion = Lines("RCV-M1").Contains("motion") || Lines("").Contains("motion");
+    Report("received: a tab's lines in its own folder (repeat too), the rest shared, IO / motion not kept",
+        created is null && own == 2 && shared == 3 && !motion && Directory.Exists(Path.Combine(ReceivedLog.Folder, "RCV-M1")),
+        $"tab {created ?? "created"}; RCV-M1 {own} (want 2), shared {shared} (want 3: no tab, no machine_id, broken); motion kept: {motion}");
+    Report("received: the whole line exactly as sent, found by its text", exact && Count("", "RC-4") == 1 && Count("", "nothing-like-this") == 0,
+        $"exact: {exact}; 'RC-4' finds {Count("", "RC-4")} (want 1)");
+
+    var rcv = new ReceivedLog { KeepDays = 7 };
+    string Day(string folder, int daysAgo) => Path.Combine(ReceivedLog.Folder, folder, $"received-{DateTime.Now.AddDays(-daysAgo).ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture)}.db");
+    foreach (var f in new[] { Day("", 8), Day("", 6), Day("RCV-M1", 8) }) File.WriteAllText(f, "");
+    rcv.Purge();
+    await rcv.DisposeAsync();
+    Report("received: days older than 7 are deleted, in every folder",
+        !File.Exists(Day("", 8)) && File.Exists(Day("", 6)) && !File.Exists(Day("RCV-M1", 8)) && Count("RCV-M1") == 2,
+        $"8 days old kept: {File.Exists(Day("", 8))} / {File.Exists(Day("RCV-M1", 8))}; 6 days old kept: {File.Exists(Day("", 6))}");
+    Report("received: a scope that is not a machine_id is refused", ReceivedLog.Days("../Config") is null && ReceivedLog.Query("..", today, null, null, null, 10) is null,
+        "../Config and .. refused");
+}
+
 if (which is "all" or "mesurls")
 {
     // MES has one API per data group. Which address each group gets, and the settings check.

@@ -27,11 +27,13 @@ public sealed class GatewayHost
     private readonly TrafficRegistry? _traffic;
     private readonly MessageIdFilter _messageIds;
     private readonly MessageLog? _messageLog;
+    private readonly ReceivedLog? _receivedLog;
 
     public GatewayHost(MachineRegistry machines, JsonSerializerOptions jsonOptions, TrafficRegistry? traffic = null,
-        MessageIdFilter? messageIds = null, MessageLog? messageLog = null)
+        MessageIdFilter? messageIds = null, MessageLog? messageLog = null, ReceivedLog? receivedLog = null)
     {
         _messageLog = messageLog;
+        _receivedLog = receivedLog;
         _machines = machines;
         _configStore = machines.Shared;
         _jsonOptions = jsonOptions;
@@ -151,6 +153,8 @@ public sealed class GatewayHost
         LastError = null;
 
         var machine = LoadMachineConfig();
+        if (_receivedLog is not null)
+            _receivedLog.KeepDays = machine.OutboxKeepSentDays;
         var mqttJson = await File.ReadAllTextAsync(Path.Combine(_configStore.ConfigRoot, "mqtt-config.json"), runToken);
         var mqttOptions = JsonSerializer.Deserialize<MqttOptions>(mqttJson, _jsonOptions)!;
         var relayConfig = JsonSerializer.Deserialize<MqttConnectionConfig>(mqttJson, _jsonOptions)!;
@@ -224,9 +228,10 @@ public sealed class GatewayHost
             Stats.Received();
             AckTracker.Ticket? ticket = null; // MES lines with a message_id: answered once on disk
             string? lineMachine = null;       // for the message log; null = the line could not be read
+            var twinLine = false;             // IO / motion: goes live to MQTT, not recorded
             try
             {
-                Handle(raw, sender, ref ticket, ref lineMachine);
+                Handle(raw, sender, ref ticket, ref lineMachine, ref twinLine);
             }
             catch (Exception ex)
             {
@@ -246,10 +251,15 @@ public sealed class GatewayHost
             finally
             {
                 _messageLog?.Record(lineMachine ?? "(unreadable)");
+                // A machine with its own tab: its own folder, named like the tab (one folder per machine
+                // on Linux too). The rest share one file.
+                if (!twinLine)
+                    _receivedLog?.Record(lineMachine is null ? null : Path.GetFileName(_machines.FolderFor(lineMachine)),
+                        lineMachine ?? "(unreadable)", sender, raw);
             }
         }
 
-        void Handle(string raw, string sender, ref AckTracker.Ticket? ticket, ref string? lineMachine)
+        void Handle(string raw, string sender, ref AckTracker.Ticket? ticket, ref string? lineMachine, ref bool twinLine)
         {
             Dictionary<string, object?> rawTags;
             string? messageId;
@@ -260,7 +270,7 @@ public sealed class GatewayHost
                 using var doc = JsonDocument.Parse(raw);
                 lineMachine = TopLevelString(doc.RootElement, "machine_id")
                               ?? (TopLevelString(doc.RootElement, "topic") is null ? "(no machine_id)" : MachineFromTopic(doc.RootElement));
-                var twin = MqttRelay.IsTwinLine(doc.RootElement); // IO/motion: live data, never answered
+                var twin = twinLine = MqttRelay.IsTwinLine(doc.RootElement); // IO/motion: live data, never answered
 
                 // First of all: the same message_id (same machine and data_source) within 10 min =
                 // the same line again. MES lines: answered by the tracker (now, or with the first copy's answer).
