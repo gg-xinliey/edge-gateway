@@ -693,6 +693,7 @@ function render() {
   else renderForm(view);
 
   $('note').textContent =
+    isLog && state.errorsOnly === 'held' ? 'Last sent first. Kept in memory while held: after a gateway restart, messages still held come back as their adapters resend them. Updates every 4 s.' :
     isLog ? 'Newest at the bottom. Full history: logs\\gateway-<date>.log next to the exe (14 days).' :
     state.view === 'failed' ? 'All machines. MES unreachable or slow is not a failure: those rows wait and are retried by themselves (2 s, growing to 60 s).' :
     state.view === 'machines' ? 'Counts since the gateway exe started (a restart from this page keeps them). Updates every 4 s.' :
@@ -1257,7 +1258,10 @@ function renderLog(view) {
   // All keeps every line, a problem that is over marked "solved".
   const solved = solvedProblems(state.logs);
   const problems = state.logs.filter(l => l.isError && !solved.has(l.id)).length;
-  setTools(seg([[false, 'All'], [true, `Problems (${problems})`]], state.errorsOnly, v => { state.errorsOnly = v; render(); }, 'Show'));
+  const held = state.status?.heldMessages ?? 0;
+  setTools(seg([[false, 'All'], [true, `Problems (${problems})`], ['held', `Held (${held})`]], state.errorsOnly,
+    v => { state.errorsOnly = v; if (v === 'held') loadHeld(); render(); }, 'Show'));
+  if (state.errorsOnly === 'held') { renderHeld(view); return; }
 
   const lines = state.logs.filter(l => (!state.errorsOnly || (l.isError && !solved.has(l.id))) && matches(l.text));
   const box = h('div', { class: 'log', id: 'logBox' });
@@ -1276,6 +1280,33 @@ function renderLog(view) {
 
   view.append(box);
   box.scrollTop = box.scrollHeight;
+}
+
+// Log > Held: every MES message held right now, and why. One leaves by itself once it goes through.
+function renderHeld(view) {
+  if (!state.heldMessages) loadHeld();
+  const rows = (state.heldMessages ?? []).filter(r => matches(`${r.machineId} ${r.dataSource ?? ''} ${r.messageId} ${r.reason}`));
+  view.append(h('p', { class: 'section-note', textContent:
+    'Messages held right now: not processed and not answered, so the adapter keeps each one and sends it again. ' +
+    'Fix the reason (map the tags, give the machine a tab) and its next resend goes through; it then leaves this list by itself (also when it is rejected).' }));
+  view.append(rows.length ? table(['first held', 'last sent', 'machine', 'data source', 'message_id', 'why', 'times sent'],
+    rows.map(r => h('tr', {},
+      h('td', { class: 'nowrap', textContent: localTime(r.firstHeld) }),
+      h('td', { class: 'nowrap', textContent: new Date(r.lastHeld).toLocaleTimeString() }),
+      h('td', { class: 'strong', textContent: r.machineId }),
+      h('td', { textContent: r.dataSource ?? '—' }),
+      h('td', { class: 'small', textContent: r.messageId }),
+      h('td', { class: 'small', textContent: r.reason }),
+      h('td', { class: 'num', textContent: r.times.toLocaleString() }))))
+    : h('div', { class: 'empty', textContent: !state.heldMessages ? 'Loading…' : state.heldMessages.length ? 'No held messages match.' : 'Nothing held right now.' }));
+}
+
+async function loadHeld() {
+  let list;
+  try { list = await request('/api/held'); } catch { return; }
+  const changed = JSON.stringify(list) !== JSON.stringify(state.heldMessages);
+  state.heldMessages = list;
+  if (changed && state.view === 'log' && state.errorsOnly === 'held') render();
 }
 
 const LOG_COLORS = {
@@ -1377,7 +1408,8 @@ async function pollLogs() {
   fresh.forEach(trackProblem);
   renderAlerts();
 
-  if (state.view === 'log') {
+  if (state.view === 'log' && state.errorsOnly === 'held') await loadHeld(); // every 4 s, like the lines
+  else if (state.view === 'log') {
     if (fresh.length) {
       const box = $('logBox');
       const atBottom = !box || box.scrollHeight - box.scrollTop - box.clientHeight < 40;
@@ -1602,7 +1634,7 @@ function renderGroupFields(container, group) {
       const auto = rows.filter(r => r.auto != null);
       // "a+b" = joined (both needed, values sent as a_b); "a, b" = either tag fills the field.
       const joined = tags.find(t => t.includes('+'))?.split('+').map(p => p.trim()).filter(Boolean) ?? [];
-      panel.append(h('div', { class: `frow${tags.length ? '' : gw ? ' gwfill' : ' none'}${joined.length > 1 ? ' flag' : ''}` },
+      panel.append(h('div', { class: `frow${tags.length ? '' : gw ? ' gwfill' : ' none'}` },
         h('i', { class: 'mark' }),
         h('span', { class: 'fn', title: `MES column ${column}` }, column,
           auto.length ? h('button', {

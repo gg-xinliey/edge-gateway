@@ -88,6 +88,14 @@ public sealed class AdminWebServer
         _jsonOptions = jsonOptions;
     }
 
+    // After a machine's mapping changed (PointMap save, Change mapping): machines held for tags it now
+    // knows (mapped or ignore) are released and their connections closed, so the adapters send the held
+    // messages again (some only resend after a reconnect). Returns how many connections were closed.
+    private int ReleaseHeld(string? machineId) =>
+        (machineId is null ? _configStore : _machines.StoreFor(machineId)) is { } store
+            ? _machines.Unmapped.Resolve(machineId, store.Current.Normalizer.IsMapped).Count(_gateway.Disconnect)
+            : 0;
+
     // ?machine=<id> on PointMap / TimeStamp / Unidentified / Outbox calls: that
     // machine's own mapping (or outbox folder). Empty = the shared one.
     private static string? MachineParam(HttpListenerContext context)
@@ -201,6 +209,13 @@ public sealed class AdminWebServer
             return;
         }
 
+        // Log > Held: every MES message held right now, with why (gone once it goes through).
+        if (HttpMethodsEqual(context, "GET") && path.Equals("/api/held", StringComparison.OrdinalIgnoreCase))
+        {
+            await WriteJsonAsync(context.Response, 200, _gateway.HeldMessages.Snapshot());
+            return;
+        }
+
         if (HttpMethodsEqual(context, "GET") && path.Equals("/api/status", StringComparison.OrdinalIgnoreCase))
         {
             await WriteJsonAsync(context.Response, 200, new
@@ -212,6 +227,7 @@ public sealed class AdminWebServer
                 gatewayId = _gateway.Machine.GatewayId,
                 tcpPort = _gateway.Machine.TcpPort,
                 held = _machines.Held.Count,         // machines sending without a tab (data held)
+                heldMessages = _gateway.HeldMessages.Count, // messages held right now (Log > Held)
                 unmapped = _machines.Unmapped.Count, // machines whose data is held for tags not mapped yet
                 // tab -> tags it received that its mapping doesn't know (the machine list's red count; "" = Template)
                 unidentified = _machines.Ids.Select(id => (id, n: _machines.UnidentifiedFor(id)?.Count ?? 0)).Prepend((id: "", n: _unidentified.Count))
@@ -351,7 +367,7 @@ public sealed class AdminWebServer
 
             var problem = _machines.Reassign(MachineParam(context) ?? "", Text("copyFrom")?.Trim(), Text("password"), _gateway.Machine.MappingPassword);
             if (problem is null)
-                await WriteJsonAsync(context.Response, 200, new { ok = true });
+                await WriteJsonAsync(context.Response, 200, new { ok = true, reconnected = ReleaseHeld(MachineParam(context)) });
             else
                 await WriteJsonAsync(context.Response, problem == MachineRegistry.WrongPassword ? 403 : 400, new { error = problem });
             return;
@@ -776,16 +792,8 @@ public sealed class AdminWebServer
                     else
                         _machines.Reload(machineId);
 
-                    // Machines held for tags this mapping now knows (mapped or ignore):
-                    // close their connections so the adapters resend the held messages.
-                    if (key.Equals("point-map", StringComparison.OrdinalIgnoreCase)
-                        && (machineId is null ? _configStore : _machines.StoreFor(machineId)) is { } saved)
-                    {
-                        var normalizer = saved.Current.Normalizer;
-                        foreach (var connection in _machines.Unmapped.Resolve(machineId, normalizer.IsMapped))
-                            if (_gateway.Disconnect(connection))
-                                reconnected++;
-                    }
+                    if (key.Equals("point-map", StringComparison.OrdinalIgnoreCase))
+                        reconnected = ReleaseHeld(machineId);
                 }
 
                 await WriteJsonAsync(context.Response, 200, new

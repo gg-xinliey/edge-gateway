@@ -61,6 +61,7 @@ Paths are inside the data folder (`data\` in Docker, `--data` otherwise).
 |---|---|---|---|
 | Machines & Connections | Machines tab, sidebar dots | since the exe started | lines, rejected, repeats, unreadable, last line, msg/s per connection and machine |
 | Repeats / Time warnings | machine card | last **10 min** | count of repeated `message_id`s / machine times more than **1 h** off |
+| Held messages | Log → **Held** | max **5,000**; each leaves once it goes through (or is rejected) | every message held right now: machine, data source, message_id, **why**, first held, last sent, times sent |
 | Held machines | Machines tab (Held), pop-up | max **200** machines, **300** tags each | machines sending with no tab + the tags they sent |
 | Unidentified tags | machine → Unidentified | max **500** tags | tags not in the mapping, with their last value |
 | MQTT twin (IO / motion) | MQTT broker tab, banner | **not kept** at all | nothing; sent live or lost |
@@ -136,7 +137,7 @@ Paths are inside the data folder (`data\` in Docker, `--data` otherwise).
 | Gateway crash / power off | records already on disk are safe; unanswered lines are resent by the adapter | start it again |
 | MQTT broker down | yellow banner; IO/motion **lost** (not kept) | check the broker address / the broker PC |
 | New machine, no tab | holds it (or makes an auto tab) | check and **confirm** the tab |
-| Unknown tags | lists them under Unidentified | map each one or set it to ignore, Save |
+| Unknown tags | lists them under Unidentified (in `hold` mode: holds the message, see Log → Held) | map each one or set it to ignore, Save (or Change mapping): the held messages are sent again |
 | Machine shows "not connected" | nothing to fix on the gateway side | the machine/adapter must reconnect to port **9000** |
 | Same message sent twice | ignored (10 min window + `event_id`) | nothing |
 | Time not readable (e.g. `20261106021217`) | passes it on as text | ask the data team for ISO time (`2026-11-06T02:12:17Z`) |

@@ -270,7 +270,8 @@ Open **http://localhost:5100/config/**. It only opens on the gateway PC itself.
 6. Times show in this PC's local time. The envelope itself keeps UTC (`…Z`).
 
 **Log**
-1. Shows everything the gateway printed, with problems in red. Tick **Show problems only** to filter.
+1. Shows everything the gateway printed, with problems in red. **Problems** shows only the ones still going on.
+   - **Held (N)**: every MES message held right now (not processed, not answered, so the adapter keeps it and sends it again), one row per message: first held, last sent, machine, data source, `message_id`, **why** (no tab; 20 tabs already created automatically this hour; its tab can't be read; tags its mapping doesn't know, named), and how many times it was sent. A message leaves the list by itself once it goes through (or is rejected). Kept in memory: after a gateway restart, messages still held come back as the adapter resends them. At most 5,000.
 2. New problem lines are counted in the status area: **⚠ N new problems · view log**. Click it to open the Log. There is no pop-up per line.
 3. A problem that lasts shows as one banner at the top of every view until it is solved: **MES not reachable since …** (records wait in the outbox, with how many), **MQTT broker not reachable since …** (IO / motion data and the keepalive are not published), **Gateway stopped** (it tries again by itself), or the page lost its connection to the gateway. Pop-ups are only for what you just did (save, register, restart) and for records MES rejects.
 

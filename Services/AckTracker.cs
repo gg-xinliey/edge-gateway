@@ -25,11 +25,13 @@ public sealed class AckTracker
     private readonly ReplyHub _replies;
     private readonly MessageIdFilter _saved;
     private readonly ConcurrentDictionary<string, Ticket> _inFlight = new(StringComparer.Ordinal);
+    private readonly HeldMessages? _held; // Log > Held: a message answered (ack / nack) is no longer held
 
-    public AckTracker(ReplyHub replies, MessageIdFilter saved)
+    public AckTracker(ReplyHub replies, MessageIdFilter saved, HeldMessages? held = null)
     {
         _replies = replies;
         _saved = saved;
+        _held = held;
     }
 
     // A MES line with a message_id arrived. Returns its ticket when it must be
@@ -77,6 +79,7 @@ public sealed class AckTracker
         }
 
         public string MessageId { get; }
+        public string Key => _key;
 
         // Before handing a row to the outbox (so its save can never finish the ticket early).
         public void AddPart() => Interlocked.Increment(ref _parts);
@@ -87,6 +90,7 @@ public sealed class AckTracker
             if (Interlocked.Decrement(ref _parts) == 0)
             {
                 _owner._saved.MarkSaved(_key); // before the ticket goes: a later copy then finds it saved
+                _owner._held?.Clear(_key);
                 Finish(waiter => _owner._replies.Ack(waiter, MessageId));
             }
         }
@@ -95,7 +99,11 @@ public sealed class AckTracker
         public void Release() => PartDone();
 
         // Will never be accepted (e.g. no machine_id): tell every waiting sender why.
-        public void Reject(string reason) => Finish(waiter => _owner._replies.Nack(waiter, MessageId, reason));
+        public void Reject(string reason)
+        {
+            _owner._held?.Clear(_key);
+            Finish(waiter => _owner._replies.Nack(waiter, MessageId, reason));
+        }
 
         // Held, or processing failed: no reply. The adapter keeps the message and
         // sends it again; that copy is processed as new.

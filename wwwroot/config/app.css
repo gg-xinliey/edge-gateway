@@ -270,8 +270,7 @@ table.data td.disc { width: 20px; color: var(--faint); }
 .frow select { color: var(--text); font-weight: 400; text-align: left; }
 .frow.extra { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 26px; padding-left: 12px; }
 .frow.extra input { color: var(--text); font-weight: 400; text-align: left; }
-.frow.flag { outline: 1px solid var(--bad); outline-offset: -1px; background: rgba(244, 124, 110, .06); }
-.flagnote { padding: 0 12px 8px 34px; color: var(--bad-text); font-size: 12px; }
+.flagnote { padding: 0 12px 8px 34px; color: var(--muted); font-size: 12px; }
 .row-x { width: 26px; height: 26px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--faint); }
 .row-x:hover { background: rgba(244, 124, 110, .15); color: var(--bad); }
 .auto-mark { height: 18px; padding: 0 6px; border: 0; border-radius: 9px; background: var(--warn); color: #1f1606; font-size: 11px; font-weight: 600; }

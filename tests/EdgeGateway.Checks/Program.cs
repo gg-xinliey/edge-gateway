@@ -321,6 +321,21 @@ if (which is "all" or "20")
     Report("#20 unknown tag counted once per message", counts.SequenceEqual(new[] { "brand_new=1" }), string.Join(", ", counts));
 }
 
+if (which is "all" or "joinunid")
+{
+    // A tag used in a joined field (server_id+machine_name) leaves the Unidentified list once that
+    // mapping is saved, like a tag mapped on its own; other unknown tags stay.
+    var (root, json) = TempConfig();
+    var tracker = new UnidentifiedTagTracker();
+    var store = new GatewayConfigStore(root, json, tracker);
+    foreach (var tag in new[] { "server_id", "machine_name", "still_unknown" }) tracker.Record(tag, "x");
+    File.WriteAllText(Path.Combine(root, "point-map.json"),
+        """[{"tag":"server_id + machine_name","dataGroup":"TRACEABILITY","fieldName":"station_id"},{"tag":"product_sn","dataGroup":"TRACEABILITY","fieldName":"product_serial_number"}]""");
+    store.Reload();
+    var left = string.Join(", ", tracker.Snapshot().Select(t => t.Tag));
+    Report("unidentified: parts of a joined field are cleared on save", left == "still_unknown", $"left: {left} (want still_unknown)");
+}
+
 if (which is "all" or "16")
 {
     // #16: a file edited by hand that is valid JSON but breaks a rule (Span with no endField)
@@ -769,6 +784,92 @@ if (which is "all" or "autoconfirm")
     Report("auto tab counts as confirmed after 3 days", confirmed.SequenceEqual(new[] { "OLD" }) && again.Count == 0
         && !reg.IsAuto("OLD") && reg.IsAuto("NEW") && reg.IsAuto("NOAT"),
         $"confirmed [{string.Join(",", confirmed)}] (want OLD), then [{string.Join(",", again)}]; still auto: NEW {reg.IsAuto("NEW")}, NOAT {reg.IsAuto("NOAT")}");
+}
+
+if (which is "all" or "heldloop")
+{
+    // Field report: a machine's message was held for a tag its mapping didn't know; after the tag was
+    // mapped (page save), the adapter's resends of that same message must be processed and acked, not
+    // ignored as repeats forever. The adapter here resends every 0.7 s until it gets a reply, and
+    // reconnects when the gateway closes its connection.
+    var (root, json) = TempConfig();
+    var tcp = 19700 + Random.Shared.Next(90);
+    var port = 19600 + Random.Shared.Next(90);
+    File.WriteAllText(Path.Combine(root, "machine-config.json"),
+        $$"""{"gatewayId":"T","listenAddress":"127.0.0.1","tcpPort":{{tcp}},"mesUrl":"http://127.0.0.1:1/none","unregisteredMachines":"hold","unmappedTags":"hold"}""");
+    File.WriteAllText(Path.Combine(root, "mqtt-config.json"),
+        """{"brokerAddress":"127.0.0.1","brokerPort":1,"clientIdSuffix":"checks","reconnectCooldownSeconds":60,"area":"T","keepaliveIntervalSeconds":60,"motionDeadband":0.01,"maxPublishRateMs":50}""");
+    DataFolder.Use(root);
+    var registry = new MachineRegistry(new GatewayConfigStore(root, json), new UnidentifiedTagTracker(), json);
+    registry.Create("LOOP-M1", null);
+    var host = new GatewayHost(registry, json, null, new MessageIdFilter());
+    var page = new EdgeGateway.Admin.AdminWebServer(port, "wwwroot", registry, host, GatewayLog.Install(Path.Combine(root, "logs"), 1), json);
+    using var stop = new CancellationTokenSource();
+    var run = host.RunAsync(stop.Token);
+    var serving = page.RunAsync(stop.Token);
+    for (var i = 0; i < 50 && host.State != "running"; i++) await Task.Delay(100);
+
+    // One connection kept open (like the adapter); replies read in the background, so waiting for one
+    // never aborts the socket. The connection closed by the gateway = reconnect on the next send.
+    System.Net.Sockets.TcpClient? client = null;
+    System.Threading.Channels.Channel<string>? replies = null;
+    Task? reading = null;
+    async Task<string?> SendUntilReply(string line, int tries)
+    {
+        for (var i = 0; i < tries; i++)
+        {
+            if (client is null || reading!.IsCompleted)
+            {
+                client?.Dispose();
+                client = new System.Net.Sockets.TcpClient();
+                await client.ConnectAsync("127.0.0.1", tcp);
+                var r = new StreamReader(client.GetStream());
+                var channel = replies = System.Threading.Channels.Channel.CreateUnbounded<string>();
+                reading = Task.Run(async () => { try { while (await r.ReadLineAsync() is { } got) channel.Writer.TryWrite(got); } catch { } });
+            }
+            try { await client.GetStream().WriteAsync(System.Text.Encoding.UTF8.GetBytes(line + "\n")); }
+            catch (IOException) { client.Dispose(); client = null; continue; }
+            var next = replies!.Reader.ReadAsync().AsTask();
+            if (await Task.WhenAny(next, Task.Delay(700)) == next) return await next;
+        }
+        return null;
+    }
+
+    const string held = """{"message_id":"loop-1","machine_id":"LOOP-M1","data":{"product_sn":"P1","new_tag":"X"}}""";
+    var before = await SendUntilReply(held, 3);
+    using var http = new HttpClient { BaseAddress = new Uri($"http://localhost:{port}/") };
+    // Log > Held: listed once (3 sends counted), with why; gone once it went through.
+    var heldList = System.Text.Json.JsonDocument.Parse(await http.GetStringAsync("api/held")).RootElement;
+    var listed = heldList.EnumerateArray().Where(e => e.GetProperty("messageId").GetString() == "loop-1").ToList();
+    var listedOk = listed.Count == 1 && listed[0].GetProperty("times").GetInt64() == 3
+                   && listed[0].GetProperty("reason").GetString()!.Contains("new_tag") && listed[0].GetProperty("machineId").GetString() == "LOOP-M1";
+    var map = System.Text.Json.Nodes.JsonNode.Parse(await http.GetStringAsync("api/config/point-map?machine=LOOP-M1"))!.AsArray();
+    map.Add(System.Text.Json.Nodes.JsonNode.Parse("""{"tag":"new_tag","dataGroup":"TRACEABILITY","fieldName":"station_id"}"""));
+    using var saved = await http.PutAsync("api/config/point-map?machine=LOOP-M1", new StringContent(map.ToJsonString(), System.Text.Encoding.UTF8, "application/json"));
+    var after = await SendUntilReply(held, 8);
+    var stillListed = (await http.GetStringAsync("api/held")).Contains("loop-1");
+    Report("Log > Held: a held message is listed once with machine and why, and leaves once it went through",
+        listedOk && !stillListed, $"while held: {(listed.Count == 1 ? listed[0].ToString() : $"{listed.Count} rows")}; after its ack still listed: {stillListed}");
+    Report("held for an unknown tag, then mapped: the adapter's resend of the same message is acked",
+        before is null && (int)saved.StatusCode == 200 && after == """{"ack":"loop-1"}""",
+        $"before mapping: {before ?? "no reply"} (want none); save {(int)saved.StatusCode}; after mapping: {after ?? "no reply"} (want ack)");
+
+    // Fixed with "Change mapping" (a copy of a tab that knows the tag) instead of a PointMap save. An adapter
+    // that resends only after a reconnect must get its connection closed too, or it waits for ever.
+    client?.Dispose(); client = null;
+    using (var full = await http.PutAsync("api/config/point-map?machine=LOOP-M1", new StringContent(map.ToJsonString(), System.Text.Encoding.UTF8, "application/json"))) { }
+    registry.Create("LOOP-M2", null);
+    const string held2 = """{"message_id":"loop-2","machine_id":"LOOP-M2","data":{"product_sn":"P2","new_tag":"Y"}}""";
+    var before2 = await SendUntilReply(held2, 1);
+    using var reassigned = await http.PostAsync("api/machine-configs/reassign?machine=LOOP-M2",
+        new StringContent("""{"copyFrom":"LOOP-M1"}""", System.Text.Encoding.UTF8, "application/json"));
+    var closed = await Task.WhenAny(reading!, Task.Delay(3000)) == reading; // only a closed connection makes this adapter resend
+    var after2 = closed ? await SendUntilReply(held2, 3) : null;
+    stop.Cancel(); try { await run; } catch { } try { await serving; } catch { }
+    client?.Dispose();
+    Report("held, then fixed with Change mapping: the connection is closed, the resend is acked",
+        before2 is null && (int)reassigned.StatusCode == 200 && closed && after2 == """{"ack":"loop-2"}""",
+        $"before: {before2 ?? "no reply"}; Change mapping {(int)reassigned.StatusCode}; connection closed: {closed} (want True); resend: {after2 ?? "no reply"} (want ack)");
 }
 
 if (which is "all" or "race")

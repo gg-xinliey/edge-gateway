@@ -54,7 +54,8 @@ public sealed class GatewayConfigStore
         lock (_sync)
             _current = next;
 
-        _unidentified?.Forget(next.PointMap.Select(p => p.Tag));
+        // A joined field "a+b" maps a and b too: they leave the Unidentified list as well.
+        _unidentified?.Forget(next.PointMap.SelectMany(p => p.Tag.Split(Normalizer.JoinMark, StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)));
         Console.WriteLine(Label is null ? "[config] runtime configuration reloaded" : $"[config] {Label}: own mapping reloaded");
     }
 

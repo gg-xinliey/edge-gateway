@@ -29,6 +29,9 @@ public sealed class GatewayHost
     private readonly MessageLog? _messageLog;
     private readonly ReceivedLog? _receivedLog;
 
+    // Every MES message held right now, with why (config page: Log > Held). Lives as long as the process.
+    public HeldMessages HeldMessages { get; } = new();
+
     public GatewayHost(MachineRegistry machines, JsonSerializerOptions jsonOptions, TrafficRegistry? traffic = null,
         MessageIdFilter? messageIds = null, MessageLog? messageLog = null, ReceivedLog? receivedLog = null)
     {
@@ -215,7 +218,7 @@ public sealed class GatewayHost
         // Replies to the machines on their own connections: {"ack":id} once a
         // MES message is on disk, {"nack":id,"reason":...} when it never will be.
         var replies = new ReplyHub();
-        var acks = new AckTracker(replies, _messageIds);
+        var acks = new AckTracker(replies, _messageIds, HeldMessages);
 
         var rejected = new ThrottledLog(TimeSpan.FromSeconds(60));
         var unknownTags = new ThrottledLog(TimeSpan.FromSeconds(60)); // unmappedTags = send: once a minute per machine
@@ -342,6 +345,7 @@ public sealed class GatewayHost
             // mapping when GatewayConfig unregisteredMachines = "shared".
             GatewayConfigStore store;
             MesPipeline pipeline;
+            string? noTab = null; // why no tab was created automatically
             if (_machines.TryGetOwn(machineId, out var own, out _))
             {
                 if (own is null)
@@ -352,14 +356,14 @@ public sealed class GatewayHost
                 store = own;
                 pipeline = OwnPipeline(machineId);
             }
-            else if (machine.HoldUnregistered && AutoTab(machineId) is { } created)
+            else if (machine.HoldUnregistered && AutoTab(machineId, out noTab) is { } created)
             {
                 store = created;
                 pipeline = OwnPipeline(machineId);
             }
             else if (machine.HoldUnregistered)
             {
-                Hold(sender, ticket, machineId, rawTags, "is not registered (no tab)");
+                Hold(sender, ticket, machineId, rawTags, noTab ?? "is not registered (no tab)");
                 return;
             }
             else
@@ -464,13 +468,13 @@ public sealed class GatewayHost
         // (once a minute per machine, with a count) pops up there.
         void Hold(string sender, AckTracker.Ticket ticket, string machineId, Dictionary<string, object?> tags, string why)
         {
-            ticket.Drop();
-
             var dataSource = PeekString(tags, "data_source");
             var dataTags = tags.Where(t => !t.Key.Equals("data_source", StringComparison.OrdinalIgnoreCase)
                                         && !t.Key.Equals("timestamp", StringComparison.OrdinalIgnoreCase))
                                .ToDictionary(t => t.Key, t => t.Value);
             _machines.Held.Hold(machineId, sender, dataSource, dataTags);
+            HeldMessages.Hold(ticket.Key, machineId, dataSource, ticket.MessageId, why, sender);
+            ticket.Drop(); // after the listing: a copy acked meanwhile then clears it
             _traffic?.Held(machineId, sender, ticket.MessageId);
             held.Write($"held|{machineId}",
                 $"[ingest] {machineId} {why}: its data cannot be used until it has a tab on the config page (held: not processed, not answered, the adapter keeps it)");
@@ -528,8 +532,9 @@ public sealed class GatewayHost
         // can't create hundreds; past that, machines are held as before. null = held.
         var autoTabs = new Queue<DateTimeOffset>();
         var autoTabLimit = new ThrottledLog(TimeSpan.FromSeconds(60));
-        GatewayConfigStore? AutoTab(string machineId)
+        GatewayConfigStore? AutoTab(string machineId, out string? whyNot)
         {
+            whyNot = null;
             lock (autoTabs)
             {
                 if (_machines.TryGetOwn(machineId, out var existing, out _))
@@ -541,12 +546,14 @@ public sealed class GatewayHost
                 {
                     autoTabLimit.Write("limit", $"[config] {machineId}: no tab created automatically, {AutoTabsPerHour} were created in the last hour " +
                                                 "(does an adapter send a new machine_id with every message?): held, register it on the config page");
+                    whyNot = $"is not registered (no tab): {AutoTabsPerHour} tabs were already created automatically in the last hour";
                     return null;
                 }
                 var copiedFrom = _machines.SimilarTab(machineId);
                 if (_machines.CreateAuto(machineId, copiedFrom) is { } problem)
                 {
                     Console.WriteLine($"[config] {machineId}: no tab created automatically: {problem}");
+                    whyNot = $"is not registered (no tab): a tab could not be created automatically ({problem})";
                     return null;
                 }
                 autoTabs.Enqueue(now);
@@ -562,8 +569,10 @@ public sealed class GatewayHost
         // mapped or set to ignore on its tab.
         void HoldUnmapped(string sender, AckTracker.Ticket ticket, string machineId, string? mapping, List<string> tags, string? dataSource)
         {
-            ticket.Drop();
             _machines.Unmapped.Hold(machineId, mapping, sender, tags);
+            HeldMessages.Hold(ticket.Key, machineId, dataSource, ticket.MessageId,
+                $"sent tags its mapping ({mapping ?? "Template"}) doesn't know: {string.Join(", ", tags)}", sender);
+            ticket.Drop(); // after the listing: a copy acked meanwhile then clears it
             _traffic?.Held(machineId, sender, ticket.MessageId);
             heldUnmapped.Write($"unmapped|{machineId}",
                 $"[ingest] {machineId} sent tags its mapping doesn't know ({string.Join(", ", tags)}): its data cannot be used until they are mapped or set to ignore on the {mapping ?? "Template"} tab (held, not answered, the adapter keeps it)");
