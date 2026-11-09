@@ -62,6 +62,31 @@ container). `localhost` in `mesUrl` or the broker means the container itself: us
 Only one gateway can run at a time (same ports).
 On a Linux host, `data\` must be writable by the container's user (uid 1654).
 
+### CI and deploy (GitHub Actions)
+
+Two workflows in `.github\workflows\`, on our own Windows runners (labels `ci` + `windows`, `deploy` + `windows`; Windows PowerShell):
+
+| Workflow | Runner label | What it does |
+|---|---|---|
+| `ci.yml` (pushes to `main`, PRs to `main`, by hand) | `ci` | **checks**: build, all regression checks, the default `Config\` loads · **tools**: fake MES, MachineSim, LocalMqttTest still build · **e2e**: a real gateway (`127.0.0.1:19000`, page on `15100`), the fake MES (`15000`/`15001`) and MachineSim (2 machines, 1 min); `MachineSim --check` must PASS. Logs: the run's `e2e-logs` artifact. By hand after a Release build: `powershell -ExecutionPolicy Bypass -File .github\scripts\ci-e2e.ps1` |
+| `deploy.yml` (after CI passed on `main`, or by hand on `main`) | `deploy` | builds the image on that PC and replaces the `edge-gateway` container (`docker compose up -d --no-deps gateway`: no fake MES), then waits for the config page and runs the post-deploy check. The image before stays as `edge-gateway:previous`; roll back: `docker tag edge-gateway:previous edge-gateway:latest` then `docker compose up -d --no-deps gateway` |
+
+The deploy's data folder is the repo variable `GATEWAY_DATA_DIR` (default `C:\EdgeGateway\data`), not
+`data\` in the runner's work folder, which is cleaned on every run. First deploy on a PC that already
+runs the gateway in Docker: `docker compose down` in the old folder (the container name is the same),
+copy its `data\` to `GATEWAY_DATA_DIR`, then run **Deploy** by hand.
+
+**Post-deploy check** (`.github\scripts\post-deploy-check.ps1`, read-only through the config page API:
+saves nothing, sends no records): the gateway is running, the MQTT broker is connected, and every MES
+address answers the page's **Test** (one GET). Held machines, failed messages and a backlog with nothing
+delivered are shown as warnings. A failure leaves the new container running and turns the run red.
+Repo variable `DEPLOY_CHECK_MQTT=false` skips the MQTT part. A brand-new data folder still points at
+the fake MES, so the first deploy's MES check fails until the real `mesUrl` is set. By hand, on the
+gateway PC: `powershell -File .github\scripts\post-deploy-check.ps1`.
+
+Runners: `ci` needs internet for nuget.org (the workflow installs .NET 8 and 10 itself) and free ports
+15000, 15001, 15100, 19000 (the e2e stops at once if one is taken; the usual 5000/5001/5100/9000 may be in use); `deploy` needs Docker Desktop running (Linux containers) for the runner's user.
+
 ## Where things are
 
 Everything below is in the data folder: next to the running exe (e.g. `bin\Debug\net8.0\`), or the
@@ -95,6 +120,7 @@ these files, not the project's `Config\` folder.
 | `Admin\`, `wwwroot\config\` | the config page and its API |
 | `Config\` | default config files (copied next to the exe on build) |
 | `Dockerfile`, `docker-compose.yml` | the Docker image and how it runs |
+| `.github\workflows\` | CI (`ci.yml`) and deploy (`deploy.yml`), see "CI and deploy" |
 | `docs\` | diagrams |
 | `tests\EdgeGateway.Checks\` | regression checks, one per fixed GitHub issue |
 | `tools\` | `LocalMqttTest` (local broker, load test, test-env scripts), `MES_EMULATOR` (fake MES), `MachineSim` (machine simulator + end-to-end check) |

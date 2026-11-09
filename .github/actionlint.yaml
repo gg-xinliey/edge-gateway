@@ -1,0 +1,5 @@
+# Labels of our self-hosted runners, for actionlint.
+self-hosted-runner:
+  labels:
+    - ci
+    - deploy

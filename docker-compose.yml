@@ -15,7 +15,8 @@ services:
       - "9000:9000"                  # machines (TCP), on every address of this PC
       - "127.0.0.1:5100:5100"        # config page: on this PC only, http://localhost:5100/config/
     volumes:
-      - ./data:/data                 # Config with machine tabs, outbox, logs, state
+      # Config with machine tabs, outbox, logs, state. GATEWAY_DATA_DIR: another folder (the deploy workflow).
+      - ${GATEWAY_DATA_DIR:-./data}:/data
     extra_hosts:
       - "host.docker.internal:host-gateway"   # this PC, seen from inside the container
     environment:
@@ -34,6 +35,6 @@ services:
       - "127.0.0.1:5001:5001"        # control on this PC only: http://localhost:5001/stats
     volumes:
       - ./mes-data:/mes              # received.jsonl: what the fake MES stored
-      - ./data:/gateway-data:ro      # the gateway's MES format (Config/mes-schema.json)
+      - ${GATEWAY_DATA_DIR:-./data}:/gateway-data:ro   # the gateway's MES format (Config/mes-schema.json)
     environment:
       - TZ=Asia/Bangkok
