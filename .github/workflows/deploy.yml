@@ -1,0 +1,109 @@
+# Deploy on the self-hosted Windows runner labelled "deploy" (Docker Desktop, Linux containers).
+# Runs after CI passed for a push to main, or by hand (Actions -> Deploy -> Run workflow, main only).
+# Keeps the image before as edge-gateway:previous. Roll back on the deploy PC:
+#   docker tag edge-gateway:previous edge-gateway:latest; docker compose up -d --no-deps gateway
+# Builds the image on this PC and replaces the running gateway container (docker-compose.yml,
+# the "gateway" service only; the fake MES is not started).
+#
+# The data folder (Config with machine tabs, outbox, logs, state) is GATEWAY_DATA_DIR: the
+# repo variable of that name, else C:\EdgeGateway\data. It must be outside the runner's work
+# folder, which checkout cleans on every run.
+name: Deploy
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: powershell
+
+jobs:
+  deploy:
+    name: Deploy gateway container
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: [self-hosted, deploy, windows]
+    environment: production
+    timeout-minutes: 30
+    env:
+      COMPOSE_PROJECT_NAME: edge-gateway
+      GATEWAY_DATA_DIR: ${{ vars.GATEWAY_DATA_DIR || 'C:\EdgeGateway\data' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # exactly the commit CI tested (by hand: the chosen branch)
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Data folder
+        run: |
+          New-Item -ItemType Directory -Force $env:GATEWAY_DATA_DIR | Out-Null
+          Write-Host "data folder: $env:GATEWAY_DATA_DIR"
+          docker version
+          if ($LASTEXITCODE -ne 0) { throw "Docker is not running on this PC" }
+
+      - name: Keep the current image as edge-gateway:previous
+        # for a roll back; the one it replaces is removed after a good deploy
+        run: |
+          $older = docker images -q edge-gateway:previous
+          if (docker images -q edge-gateway:latest) { docker tag edge-gateway:latest edge-gateway:previous }
+          "OLDER_IMAGE=$older" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          exit 0
+
+      - name: Build image
+        # the running container is not touched if this fails
+        run: docker compose build gateway
+
+      - name: Replace container
+        # docker stops the old one cleanly (stop_grace_period 30 s), then starts the new image
+        run: docker compose up -d --no-deps gateway
+
+      - name: Health check
+        run: |
+          $deadline = (Get-Date).AddSeconds(90)
+          while ($true) {
+            $state = docker inspect -f '{{.State.Status}} {{.RestartCount}}' edge-gateway
+            try {
+              $r = Invoke-WebRequest 'http://localhost:5100/config/' -UseBasicParsing -TimeoutSec 5
+              if ($r.StatusCode -eq 200) { Write-Host "gateway up ($state)"; break }
+            } catch { }
+            if ((Get-Date) -gt $deadline) { throw "config page not answering after 90 s (container: $state)" }
+            Start-Sleep -Seconds 3
+          }
+          if (-not $state.StartsWith('running')) { throw "container is not running: $state" }
+
+      - name: Post-deploy check (read-only)
+        # Through the config page API: running, MQTT connected, every MES address answers
+        # (the page's Test button: one GET, no records). Saves nothing. A failure leaves the
+        # new container running and turns this run red. Repo variable DEPLOY_CHECK_MQTT=false
+        # skips the MQTT part.
+        run: |
+          $mqtt = @()
+          if ('${{ vars.DEPLOY_CHECK_MQTT }}' -eq 'false') { $mqtt = @('-SkipMqtt') }
+          powershell -NoProfile -ExecutionPolicy Bypass -File .github\scripts\post-deploy-check.ps1 -BaseUrl http://localhost:5100 @mqtt
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Remove the image before the previous one
+        # only this project's image, and never the running one or edge-gateway:previous
+        run: |
+          $keep = @(docker images -q edge-gateway:latest) + @(docker images -q edge-gateway:previous)
+          if ($env:OLDER_IMAGE -and $keep -notcontains $env:OLDER_IMAGE) {
+            docker image rm $env:OLDER_IMAGE
+            if ($LASTEXITCODE -ne 0) { Write-Host "::warning::could not remove image $env:OLDER_IMAGE" }
+          }
+          exit 0
+
+      - name: Gateway log
+        if: always()
+        run: docker compose logs --tail 200 gateway

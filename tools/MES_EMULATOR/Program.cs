@@ -29,10 +29,15 @@ using System.Text.Json.Nodes;
 //   --all-ips             listen on every address, not only localhost
 //   --data <folder>       where received.jsonl goes (default: this project folder)
 //   --schema <file>       the gateway's mes-schema.json (missing: the copy next to the exe)
+//   --port <n>            envelopes on this port instead of 5000
+//   --control-port <n>    control on this port instead of 5001 (CI uses 15000 / 15001, so
+//                         it runs next to a fake MES that already has 5000 / 5001)
 
 var verbose = args.Contains("-v");
 string? Arg(string name) { var i = Array.IndexOf(args, name); return i >= 0 && i + 1 < args.Length ? args[i + 1] : null; }
 var host = args.Contains("--all-ips") ? "+" : "localhost";
+var dataPort = int.TryParse(Arg("--port"), out var dp) ? dp : 5000;
+var controlPort = int.TryParse(Arg("--control-port"), out var cp) ? cp : 5001;
 var projectDir = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", ".."));
 var receivedFile = Path.Combine(Arg("--data") ?? projectDir, "received.jsonl");
 var schema = LoadSchema(new[] { Arg("--schema"), Path.Combine(AppContext.BaseDirectory, "mes-schema.json"),
@@ -64,7 +69,7 @@ void OpenData()
 {
     if (data is { IsListening: true }) return;
     data = new HttpListener();
-    data.Prefixes.Add($"http://{host}:5000/");
+    data.Prefixes.Add($"http://{host}:{dataPort}/");
     data.Start();
     _ = Task.Run(() => ServeData(data));
 }
@@ -77,9 +82,9 @@ void CloseData()
 
 OpenData();
 var control = new HttpListener();
-control.Prefixes.Add($"http://{host}:5001/");
+control.Prefixes.Add($"http://{host}:{controlPort}/");
 control.Start();
-Console.WriteLine($"Fake MES on http://localhost:5000/  (control: http://localhost:5001/mode?set=up|down|unreachable|slow|reject, /stats, /reset)");
+Console.WriteLine($"Fake MES on http://localhost:{dataPort}/  (control: http://localhost:{controlPort}/mode?set=up|down|unreachable|slow|reject, /stats, /reset)");
 Console.WriteLine($"Known data groups: {string.Join(", ", schema.Keys)}");
 Console.WriteLine($"Stored events go to {receivedFile}");
 

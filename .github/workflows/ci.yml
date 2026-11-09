@@ -1,0 +1,126 @@
+# CI on our self-hosted Windows runners labelled "ci" (Windows PowerShell).
+#   checks  the regression checks (tests/EdgeGateway.Checks) and the repo's default Config
+#   tools   the test tools still compile (fake MES, MachineSim, LocalMqttTest)
+#   e2e     a real gateway, the fake MES and MachineSim on this PC (loopback only):
+#           every MES record must match the line a machine sent (MachineSim --check)
+# Deploy (deploy.yml) runs after this workflow passes on main.
+name: CI
+
+on:
+  push:
+    branches: [main]        # main: tested again after a merge; this run is what deploy.yml waits for
+  pull_request:
+    branches: [main]        # PR branches: tested once, here (not also on push: one runner)
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # a newer push replaces an older run, except on main (every main commit is deployed)
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: powershell
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  DOTNET_NOLOGO: "1"
+
+jobs:
+  checks:
+    name: Regression checks
+    # "windows": the ci label is on Linux runners too; this repo is tested on Windows only
+    runs-on: [self-hosted, ci, windows]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.tool_cache }}/dotnet   # no admin rights needed
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Build gateway
+        run: dotnet build EdgeGateway.csproj -c Release
+
+      - name: Regression checks (all)
+        run: dotnet run --project tests/EdgeGateway.Checks
+
+      - name: Default Config loads
+        run: dotnet run --project tests/EdgeGateway.Checks -- cfg Config
+
+  tools:
+    name: Build test tools
+    runs-on: [self-hosted, ci, windows]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.tool_cache }}/dotnet
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Build tools
+        run: |
+          foreach ($p in 'tools/MES_EMULATOR', 'tools/MachineSim', 'tools/LocalMqttTest') {
+            dotnet build $p -c Release
+            if ($LASTEXITCODE -ne 0) { throw "$p does not build" }
+          }
+
+  e2e:
+    name: End-to-end (gateway + fake MES + MachineSim)
+    needs: [checks, tools]
+    runs-on: [self-hosted, ci, windows]
+    timeout-minutes: 15
+    env:
+      # Ports on 127.0.0.1 only; the fake MES uses 15000 / 15001 (the script's defaults).
+      GW_TCP_PORT: "19000"
+      GW_ADMIN_PORT: "15100"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.tool_cache }}/dotnet
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Build gateway, fake MES, MachineSim
+        run: |
+          foreach ($p in 'EdgeGateway.csproj', 'tools/MES_EMULATOR', 'tools/MachineSim') {
+            dotnet build $p -c Release
+            if ($LASTEXITCODE -ne 0) { throw "$p does not build" }
+          }
+
+      - name: End-to-end run (one step, see the script)
+        # Gateway, fake MES, the post-deploy check script, MachineSim and the comparison in one
+        # process: on Windows the runner ends every process a step started when the step ends.
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .github/scripts/ci-e2e.ps1 `
+            -TcpPort $env:GW_TCP_PORT -AdminPort $env:GW_ADMIN_PORT `
+            -MachineId "CI-E2E-${{ github.run_id }}-${{ github.run_attempt }}"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs
+          if-no-files-found: ignore
+          retention-days: 14
+          path: |
+            ${{ runner.temp }}/e2e/*.log
+            ${{ runner.temp }}/e2e/gw/logs/
+            ${{ runner.temp }}/e2e/mes/received.jsonl
+            tools/MachineSim/run-data.jsonl
+            tools/MachineSim/last-run.txt

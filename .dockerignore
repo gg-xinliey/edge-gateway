@@ -3,6 +3,7 @@ bin/
 obj/
 .vs/
 .git/
+.github/
 data/
 outbox/
 logs/
