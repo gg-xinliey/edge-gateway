@@ -211,6 +211,7 @@ Open **http://localhost:5100/config/**. It only opens on the gateway PC itself.
 | **⚠ N rejected by MES** (red, only when it happens) | Records MES refused as invalid. Click to see them in General → MES failures |
 
 - **×** on a machine's tab closes it (asks first). Unsaved changes are asked about before switching tabs.
+- **Rename** on a confirmed machine's card gives it a name for the machine list only, e.g. the customer first so the list sorts by customer (the list is sorted by these names, numbers in order: NXT2 before NXT10). The card shows the real `machine_id` under it. Nothing else changes: the data, MES records, folders, Sent to MES / Received / Log and the similar-machines rule keep the `machine_id`. An automatic tab must be confirmed first. Empty = the `machine_id` again. Saved in `Config\machines\<id>\display-name.json`.
 - A machine tab in red (⚠) means its files can't be read; its lines are held until they are fixed.
 - In **Machines**, **own tab** opens that machine's tab; **held: no tab** marks a machine whose data is held.
 

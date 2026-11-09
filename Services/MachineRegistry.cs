@@ -206,6 +206,59 @@ public sealed class MachineRegistry
         return confirmed;
     }
 
+    // A name for the config page's machine list only (e.g. the customer first, for sorting). The
+    // machine_id stays what the data, folders, MES and the similar-machine rule use. Only on a
+    // confirmed tab: an automatic one shows its machine_id until somebody confirmed it. This file in
+    // its folder (not copied by Create / Reassign, kept with the folder when the tab is closed).
+    public const string DisplayNameFile = "display-name.json";
+    public const int MaxDisplayName = 64;
+
+    // null = none: the list shows the machine_id.
+    public string? DisplayName(string machineId)
+    {
+        if (FolderFor(machineId) is not { } folder || !File.Exists(Path.Combine(folder, DisplayNameFile)))
+            return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(File.ReadAllText(Path.Combine(folder, DisplayNameFile)));
+            return doc.RootElement.TryGetProperty("displayName", out var name) && name.ValueKind == JsonValueKind.String
+                   && !string.IsNullOrWhiteSpace(name.GetString()) ? name.GetString()!.Trim() : null;
+        }
+        catch (Exception ex) when (ex is JsonException or IOException)
+        {
+            return null;
+        }
+    }
+
+    // Empty (or the machine_id itself) = back to the machine_id. Null = done, else why not.
+    public string? Rename(string machineId, string? displayName)
+    {
+        if (FolderFor(machineId) is not { } folder)
+            return $"{machineId} has no tab.";
+        if (IsAuto(machineId))
+            return $"Confirm {machineId}'s tab first: an automatic tab is shown with its machine_id.";
+        var name = displayName?.Trim() ?? "";
+        var file = Path.Combine(folder, DisplayNameFile);
+        if (name.Length == 0 || name.Equals(machineId, StringComparison.Ordinal))
+        {
+            File.Delete(file);
+            Console.WriteLine($"[config] {machineId}: shown with its machine_id again");
+            return null;
+        }
+        if (name.Length > MaxDisplayName)
+            return $"At most {MaxDisplayName} characters.";
+        var clash = Ids.FirstOrDefault(id => !id.Equals(machineId, StringComparison.OrdinalIgnoreCase)
+            && (id.Equals(name, StringComparison.OrdinalIgnoreCase) || string.Equals(DisplayName(id), name, StringComparison.OrdinalIgnoreCase)));
+        if (clash is not null)
+            return $"{clash} already has that name.";
+
+        var temp = file + ".tmp"; // whole file next to it, then swapped in (#17)
+        File.WriteAllText(temp, JsonSerializer.Serialize(new { displayName = name }));
+        File.Move(temp, file, overwrite: true);
+        Console.WriteLine($"[config] {machineId}: shown as \"{name}\" in the machine list (its machine_id and data are unchanged)");
+        return null;
+    }
+
     public const string WrongPassword = "Wrong password."; // Reassign's answer; the page gets 403 for it
 
     // A tab gets another mapping: its point-map.json and timestamp-rules.json become a copy of

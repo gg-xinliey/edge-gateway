@@ -786,6 +786,34 @@ if (which is "all" or "autoconfirm")
         $"confirmed [{string.Join(",", confirmed)}] (want OLD), then [{string.Join(",", again)}]; still auto: NEW {reg.IsAuto("NEW")}, NOAT {reg.IsAuto("NOAT")}");
 }
 
+if (which is "all" or "rename")
+{
+    // A display name for the machine list: confirmed tabs only, unique, not copied to other tabs,
+    // the mapping files untouched; empty = the machine_id again.
+    var (root, json) = TempConfig("A", "B");
+    var registry = new MachineRegistry(new GatewayConfigStore(root, json), new UnidentifiedTagTracker(), json);
+    registry.CreateAuto("C", null);
+    var mapBefore = File.ReadAllText(Path.Combine(root, "machines", "A", "point-map.json"));
+    var renamed = registry.Rename("A", "  CUST1 A  ");
+    var shown = registry.DisplayName("A");
+    var autoRefused = registry.Rename("C", "x");
+    var clashName = registry.Rename("B", "cust1 a");
+    var clashId = registry.Rename("B", "a");
+    var tooLong = registry.Rename("B", new string('x', 65));
+    registry.Create("D", "A");
+    registry.Reassign("B", "A", null, "");
+    var copied = registry.DisplayName("D") ?? registry.DisplayName("B");
+    var mapSame = File.ReadAllText(Path.Combine(root, "machines", "A", "point-map.json")) == mapBefore;
+    var cleared = registry.Rename("A", "") is null && registry.DisplayName("A") is null;
+    Report("rename: a confirmed tab gets a display name (trimmed), its mapping untouched",
+        renamed is null && shown == "CUST1 A" && mapSame, $"rename -> {renamed ?? "ok"}, shown \"{shown}\", mapping unchanged: {mapSame}");
+    Report("rename: refused for an automatic tab, a name taken (any case, also a machine_id) or > 64 characters",
+        autoRefused is not null && clashName is not null && clashId is not null && tooLong is not null,
+        $"auto: {autoRefused ?? "allowed"}; taken name: {clashName ?? "allowed"}; taken id: {clashId ?? "allowed"}; 65 chars: {tooLong ?? "allowed"}");
+    Report("rename: not copied by + Add / Change mapping; empty = the machine_id again", copied is null && cleared,
+        $"copied to D or B: {copied ?? "no"}; cleared: {cleared}");
+}
+
 if (which is "all" or "heldloop")
 {
     // Field report: a machine's message was held for a tag its mapping didn't know; after the tag was

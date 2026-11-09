@@ -63,6 +63,9 @@ const state = {
 };
 const IGNORED = 'IGNORED';  // PointMap group for tags that are known but never sent
 
+// The name in the machine list: the display name (e.g. the customer first) when a confirmed tab has one.
+const shownName = m => m.displayName || m.machineId;
+
 // Held-for-unmapped-tags entries whose mapping is the tab shown ('' = Template).
 const unmappedFor = scope => state.unmapped.filter(u => (u.mapping ?? '') === scope);
 
@@ -404,16 +407,19 @@ function renderTabs() {
 
   $('tabs').replaceChildren(...[
     tab(SHARED, sharedLabel(), { fixed: true, unid: state.scope ? state.status?.unidentified?.[''] ?? 0 : unidentifiedList().length, extra: unmappedFor('').length ? 'broken' : '', title: holdPolicy() ? 'Template: what "+ Add a machine" copies into a new machine tab. Machines without a tab are held, not mapped with this.' : 'The shared mapping: every machine that has no own tab' }),
-    ...state.machineConfigs.filter(m => m.machineId.toLowerCase().includes(state.findMachine.trim().toLowerCase())).map(m => {
+    ...state.machineConfigs
+      .filter(m => `${m.machineId} ${m.displayName ?? ''}`.toLowerCase().includes(state.findMachine.trim().toLowerCase()))
+      .sort((a, b) => shownName(a).localeCompare(shownName(b), undefined, { sensitivity: 'base', numeric: true })) // NXT2 before NXT10
+      .map(m => {
       const waiting = unmappedFor(m.machineId);
       const alert = !m.readable || waiting.length > 0;
       const status = connectionOf(m.machineId);
-      return tab(m.machineId, m.machineId, {
+      return tab(m.machineId, shownName(m), {
         close: true, extra: alert ? 'broken' : '', status, auto: m.autoCopiedFrom != null,
         unid: m.machineId === state.scope ? unidentifiedList().length : state.status?.unidentified?.[m.machineId] ?? 0,
         title: !m.readable ? `${m.machineId}: its files can't be read (${m.error})`
           : waiting.length ? `${m.machineId}: data held, tags not mapped yet: ${[...new Set(waiting.flatMap(u => u.tags))].join(', ')}`
-          : `${m.machineId} (${STATUS_WORDS[status]}): its own mapping and records sent to MES`,
+          : `${m.displayName ? `${m.displayName} = machine_id ${m.machineId}` : m.machineId} (${STATUS_WORDS[status]}): its own mapping and records sent to MES`,
       });
     }),
   ]);
@@ -611,9 +617,33 @@ function renderBanner() {
       : h('div', { class: 'views' }, h('button', { type: 'button', class: 'on' }, icon('i-tray'), 'Records: sent, waiting, rejected')));
 }
 
+// Typing a name on the machine card: Enter saves, Esc cancels; empty = back to the machine_id.
+function renameBox(id, cfg) {
+  const stop = () => { state.renaming = null; renderProfile(); };
+  const box = h('form', { class: 'rename', onsubmit: e => { e.preventDefault(); saveRename(id, state.renameText); } },
+    h('input', { value: state.renameText, placeholder: id, maxLength: 64, 'aria-label': `Name shown for ${id} in the machine list`,
+      oninput: e => { state.renameText = e.target.value; }, onkeydown: e => { if (e.key === 'Escape') stop(); } }),
+    h('button', { type: 'submit', class: 'btn small ok', textContent: 'Save' }),
+    h('button', { type: 'button', class: 'btn small', textContent: 'Cancel', onclick: stop }));
+  setTimeout(() => box.querySelector('input')?.focus());
+  return box;
+}
+
+async function saveRename(id, name) {
+  try {
+    await request(`/api/machine-configs/rename?machine=${encodeURIComponent(id)}`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ displayName: name }) });
+  } catch (e) { toast(`Not renamed: ${e.message}`, true); return; }
+  state.renaming = null;
+  await loadMachineConfigs();
+  toast(name.trim() ? `${id} is shown as "${name.trim()}" (its machine_id and data are unchanged).` : `${id} is shown with its machine_id again.`);
+  render();
+}
+
 // Left of the work area on a machine tab: who it is, how it is doing, what it sends live.
 function renderProfile() {
   const el = $('profile');
+  if (state.renaming && el.querySelector('.rename')?.contains(document.activeElement)) return; // typing a name: the 4 s refresh waits
   const show = isMachineTab(state.tab) && state.data['point-map'];
   el.hidden = !show;
   $('work').classList.toggle('with-profile', !!show);
@@ -635,7 +665,16 @@ function renderProfile() {
     h('div', { class: 'plate' },
       h('span', { class: `lvl${auto ? ' auto' : ''}`, textContent: !id ? 'template' : auto ? 'auto' : 'confirmed' }),
       icon(id ? 'i-robot' : 'i-copy')),
-    h('h2', { textContent: id || sharedLabel() }),
+    id && state.renaming === id ? renameBox(id, cfg)
+      : h('div', { class: 'name-row' },
+          h('h2', { textContent: id ? shownName(cfg ?? { machineId: id }) : sharedLabel() }),
+          id ? h('button', {
+            type: 'button', class: 'link', disabled: auto, textContent: 'rename',
+            title: auto ? 'Confirm this tab first: an automatic tab is shown with its machine_id'
+                        : 'The name shown in the machine list (e.g. the customer first, for sorting). Its machine_id and data stay as they are.',
+            onclick: () => { state.renaming = id; state.renameText = cfg?.displayName ?? ''; renderProfile(); },
+          }) : null),
+    id && cfg?.displayName ? h('div', { class: 'sub', title: 'What the data, MES and the folders use', textContent: `machine_id: ${id}` }) : null,
     id ? h('div', { class: 'sub' }, h('span', { class: `dot ${status}` }),
           `${STATUS_WORDS[status][0].toUpperCase()}${STATUS_WORDS[status].slice(1)}${live?.lastMessage ? ` · last line ${ago(live.lastMessage)}` : ''}`)
        : h('div', { class: 'sub', textContent: holdPolicy() ? 'Copied into new machine tabs' : 'Every machine without its own tab' }),

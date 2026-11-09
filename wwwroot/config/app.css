@@ -193,6 +193,10 @@ body.resizing { cursor: col-resize; user-select: none; }
 .plate .lvl.auto { border-color: var(--warn); background: var(--warn); color: #1f1606; font-weight: 600; }
 .portrait h2 { margin: 0; font-size: 18px; font-weight: 650; overflow-wrap: anywhere; }
 .portrait .sub { display: flex; align-items: center; gap: 6px; color: var(--muted); }
+.portrait .name-row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.portrait .name-row .link:disabled { opacity: .45; cursor: not-allowed; }
+.portrait .rename { display: flex; gap: 6px; }
+.portrait .rename input { flex: 1; min-width: 0; height: 32px; padding: 0 8px; border: 1px solid var(--line); border-radius: 5px; background: var(--inset); color: var(--text); }
 .head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); border-radius: 6px 6px 0 0; background: var(--panel-head); font-weight: 600; }
 .head .badge { margin-left: auto; padding: 1px 8px; border-radius: 4px; background: var(--accent); color: var(--accent-ink); font-size: 11px; font-weight: 600; white-space: nowrap; }
 .head .badge.quiet { background: #2c3a50; color: var(--muted); }

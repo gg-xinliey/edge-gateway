@@ -373,6 +373,25 @@ public sealed class AdminWebServer
             return;
         }
 
+        // The name shown in the machine list (display only; the machine_id and data stay). Confirmed tabs only.
+        if (path.Equals("/api/machine-configs/rename", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!HttpMethodsEqual(context, "POST"))
+            {
+                await WriteJsonAsync(context.Response, 405, new { error = "Method not allowed" });
+                return;
+            }
+            using var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding ?? Encoding.UTF8);
+            using var body = JsonDocument.Parse(await reader.ReadToEndAsync());
+            var name = body.RootElement.TryGetProperty("displayName", out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+            var problem = _machines.Rename(MachineParam(context) ?? "", name);
+            if (problem is null)
+                await WriteJsonAsync(context.Response, 200, new { ok = true });
+            else
+                await WriteJsonAsync(context.Response, 400, new { error = problem });
+            return;
+        }
+
         if (path.Equals("/api/machine-configs", StringComparison.OrdinalIgnoreCase))
         {
             if (HttpMethodsEqual(context, "GET"))
@@ -380,6 +399,7 @@ public sealed class AdminWebServer
                 await WriteJsonAsync(context.Response, 200, _machines.List().Select(m => new
                 {
                     machineId = m.Id, readable = m.Readable, error = m.Error,
+                    displayName = _machines.DisplayName(m.Id), // the machine list's name; null = the machine_id
                     autoCopiedFrom = _machines.AutoCopiedFrom(m.Id), // null = not created automatically; "" = from the template
                 }));
                 return;

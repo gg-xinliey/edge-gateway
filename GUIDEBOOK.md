@@ -120,6 +120,11 @@ Paths are inside the data folder (`data\` in Docker, `--data` otherwise).
 ### ALARM WEBHOOK (`alarmWebhookUrl`)
 - Posts JSON to Teams / Power Automate / Slack when a problem starts or clears: MES down **5 min** with records waiting, backlog over **10,000**, MES failures, held machines, auto tabs, time warnings. Checked every **10 s**. Empty = off.
 
+### RENAME (display name)
+- A confirmed machine's card → **Rename**: the name shown in the machine list only (e.g. the customer first, for sorting; NXT2 sorts before NXT10). The card shows the real `machine_id` under it.
+- Changes **nothing else**: data, MES, folders, Sent to MES / Received / Log and the similar-machines rule keep the `machine_id`.
+- Auto tabs: confirm first. Unique, max 64 characters, empty = back to the `machine_id`. Saved in `Config\machines\<id>\display-name.json`.
+
 ### MAPPING PASSWORD (`mappingPassword`)
 - Needed to change a **confirmed** tab's mapping. Empty = not asked.
 
